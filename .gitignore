@@ -46,14 +46,25 @@ htmlcov/
 # Notebooks
 .ipynb_checkpoints/
 
-# Models and weights (never commit)
+# Models and weights (never commit — too large). The models/ folder
+# itself is kept (models/README.md) so it exists for local dev; only
+# the weight files inside are ignored.
 *.gguf
 *.bin
 *.pt
 *.pth
 *.onnx
 *.safetensors
-01_JROS/**/models/
+models/*
+!models/README.md
+!models/.gitkeep
+
+# Benchmark RUN OUTPUT — the suite code under benchmark/ is committed,
+# but its generated reports / rows / logs are local artifacts.
+benchmark/**/BENCHMARK_*.md
+benchmark/**/*_rows.jsonl
+benchmark/**/*.jsonl
+benchmark/**/*.log
 
 # JROS runtime artifacts
 *.pid

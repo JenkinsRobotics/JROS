@@ -200,8 +200,18 @@ class _ToolCapturingAgent:
                 if name:
                     self.captured.append(name)
                 return real(args[0])
-            # Parametrised form: @agent.tool_plain(retries=…) — pass through.
-            return real(*args, **kwargs)
+            # Parametrised form: @agent.tool_plain(retries=…) returns a
+            # decorator. Wrap that decorator too, otherwise the skill's tools
+            # are registered but missing from its loadable toolset.
+            maybe_decorator = real(*args, **kwargs)
+            if callable(maybe_decorator):
+                def capture_parametrized(fn: Callable[..., Any]) -> Any:
+                    name = getattr(fn, "__name__", None)
+                    if name:
+                        self.captured.append(name)
+                    return maybe_decorator(fn)
+                return capture_parametrized
+            return maybe_decorator
         return deco
 
     @property

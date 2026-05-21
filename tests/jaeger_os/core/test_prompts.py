@@ -53,3 +53,17 @@ def test_no_soul_md_still_builds_a_prompt(tmp_path) -> None:
     """soul.md is optional — absent, the prompt is still well-formed."""
     sp = build_system_prompt(InstanceLayout(root=tmp_path))
     assert "Mandatory tool rules" in sp
+
+
+def test_prompt_matches_default_unscoped_tool_surface(tmp_path, monkeypatch) -> None:
+    monkeypatch.delenv("JAEGER_TOOLSET_SCOPING", raising=False)
+    sp = build_system_prompt(InstanceLayout(root=tmp_path))
+    assert "The full built-in tool surface is visible" in sp
+    assert "You see a focused CORE set of tools" not in sp
+
+
+def test_prompt_mentions_load_toolset_when_scoping_enabled(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("JAEGER_TOOLSET_SCOPING", "1")
+    sp = build_system_prompt(InstanceLayout(root=tmp_path))
+    assert "You see a focused CORE set of tools" in sp
+    assert "call `load_toolset`" in sp

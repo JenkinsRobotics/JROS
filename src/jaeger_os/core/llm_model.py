@@ -344,6 +344,181 @@ def _extract_drift_tool_calls(text: str) -> list[dict[str, Any]]:
             })
     return out
 
+
+def _last_user_text(messages: list[dict[str, Any]]) -> str:
+    for msg in reversed(messages):
+        if msg.get("role") == "user":
+            content = msg.get("content") or ""
+            return content if isinstance(content, str) else str(content)
+    return ""
+
+
+_TOOL_INTENT_HINTS: dict[str, tuple[str, ...]] = {
+    "get_time": ("time", "date", "day", "today", "year", "timezone"),
+    "calculate": ("calculate", "compute", "math", "sqrt", "square root", "divided", "times", "plus"),
+    "system_status": ("cpu", "disk", "memory", "machine", "system status"),
+    "list_skill_dir": ("list", "workspace", "files", "directory", "dir"),
+    "read_file": ("read", "open file", "inside", "contents"),
+    "write_file": ("write", "save", "create", "file"),
+    "append_file": ("append", "add line"),
+    "patch": ("patch", "edit", "fix", "modify", "replace", "rewrite"),
+    "delete_file": ("delete", "remove"),
+    "search_files": ("search files", "grep", "find in files"),
+    "run_python": ("run", "execute", "python", "script", "verify"),
+    "run_in_venv": ("venv", "package", "library", "import"),
+    "terminal": ("terminal", "shell", "command", "git", "npm", "brew", "ffmpeg"),
+    "install_package": ("install", "pip", "dependency", "package"),
+    "web_search": ("web", "search", "recent", "latest", "current news", "look up"),
+    "web_extract": ("url", "page", "extract", "docs", "read website"),
+    "get_weather": ("weather", "forecast", "temperature"),
+    "remember": ("remember", "my favorite", "i prefer", "i am", "i'm", "my name"),
+    "recall": ("recall", "remember what", "what did i", "favorite", "prefer"),
+    "forget": ("forget", "remove my", "delete my"),
+    "list_facts": ("what do you know", "list facts", "everything you know"),
+    "search_memory": ("search memory", "talk about", "yesterday", "past"),
+    "text_to_speech": ("speak", "out loud", "narrate", "say aloud"),
+    "listen": ("listen", "record", "microphone", "mic"),
+    "vision_analyze": ("image", "picture", "photo", "look at"),
+    "image_generate": ("generate image", "draw", "create image"),
+    "schedule_prompt": ("schedule", "cron", "remind"),
+    "list_schedules": ("scheduled", "schedules"),
+    "cancel_schedule": ("cancel schedule", "cancel the scheduled"),
+    "list_plugins": ("plugins", "integrations"),
+    "setup_plugin": ("setup", "set up", "configure"),
+    "list_credentials": ("credentials", "stored keys"),
+    "get_credential": ("credential", "api key", "token"),
+    "reload_skills": ("reload skill", "skill registry"),
+    "computer_do": (
+        "use the computer", "operate the computer", "do on my computer",
+        "in the app", "browser", "safari", "finder", "settings",
+    ),
+    "computer_use": (
+        "click", "double click", "right click", "drag", "scroll", "type",
+        "press", "hotkey", "window", "focus window", "menu bar",
+    ),
+    "computer_capture": ("screenshot", "screen", "see the screen", "look at the screen", "capture"),
+    "computer_look": ("look at the computer", "look at the screen", "active window", "onscreen"),
+    "computer_windows": ("windows", "open apps", "running apps", "frontmost app"),
+    "computer_open": ("open app", "launch app", "focus app", "switch to"),
+    "computer_click": ("click", "button", "element", "control"),
+}
+
+
+def _auto_tool_shortlist_enabled() -> bool:
+    return os.environ.get("JAEGER_AUTO_TOOL_SHORTLIST", "1").strip().lower() not in (
+        "0", "false", "no", "off",
+    )
+
+
+def _tool_schema_limit(default: int) -> int:
+    raw = os.environ.get("JAEGER_TOOL_SCHEMA_LIMIT")
+    if not raw:
+        return default
+    try:
+        return max(8, int(raw))
+    except ValueError:
+        return default
+
+
+def _tool_name(tool: dict[str, Any]) -> str:
+    return ((tool.get("function") or {}).get("name") or "").strip()
+
+
+def _select_tool_schemas(
+    tools: list[dict[str, Any]],
+    messages: list[dict[str, Any]],
+    *,
+    limit: int,
+    require_intent_match: bool,
+) -> list[dict[str, Any]]:
+    """Select a compact tool surface while preserving original order.
+
+    `require_intent_match` keeps the proactive path conservative: if the
+    request does not clearly match known tool hints, return the full schema
+    set instead of hiding a tool the model may need.
+    """
+    if len(tools) <= limit:
+        return tools
+    text = _last_user_text(messages).lower()
+    must_have = (
+        "clarify", "help_me", "todo", "load_toolset",
+        "get_time", "calculate",
+        "read_file", "write_file", "append_file", "patch",
+    )
+    selected: list[dict[str, Any]] = []
+    seen: set[str] = set()
+
+    def add(tool: dict[str, Any]) -> None:
+        if len(selected) >= limit:
+            return
+        name = _tool_name(tool)
+        if name and name not in seen:
+            seen.add(name)
+            selected.append(tool)
+
+    by_name = {_tool_name(tool): tool for tool in tools if _tool_name(tool)}
+    limit = max(limit, sum(1 for name in must_have if name in by_name))
+    for name in must_have:
+        if name in by_name:
+            add(by_name[name])
+
+    matched_intents = 0
+    for name, hints in _TOOL_INTENT_HINTS.items():
+        if name in by_name and any(h in text for h in hints):
+            add(by_name[name])
+            matched_intents += 1
+
+    if require_intent_match and matched_intents == 0:
+        return tools
+
+    for tool in tools:
+        if len(selected) >= limit:
+            break
+        add(tool)
+    return selected
+
+
+def _shortlist_tools_for_turn(
+    tools: list[dict[str, Any]],
+    messages: list[dict[str, Any]],
+    *,
+    limit: int = 32,
+) -> list[dict[str, Any]]:
+    """Proactively reduce schema noise for local models.
+
+    This is intentionally conservative: it only shrinks the visible tool
+    surface when the user prompt matches explicit intent hints. Ambiguous
+    prompts still get the full tool list.
+    """
+    if not _auto_tool_shortlist_enabled():
+        return tools
+    return _select_tool_schemas(
+        tools,
+        messages,
+        limit=_tool_schema_limit(limit),
+        require_intent_match=True,
+    )
+
+
+def _compact_tools_for_context(
+    tools: list[dict[str, Any]],
+    messages: list[dict[str, Any]],
+    *,
+    limit: int = 18,
+) -> list[dict[str, Any]]:
+    """Select a small relevant tool schema set after context overflow.
+
+    This is a fallback for local llama.cpp models: if the full schema surface
+    overflows n_ctx, a narrower schema list is far better than failing before
+    the agent can make any tool call.
+    """
+    return _select_tool_schemas(
+        tools,
+        messages,
+        limit=limit,
+        require_intent_match=False,
+    )
+
 from pydantic_ai.messages import (
     ModelMessage,
     ModelResponse,
@@ -394,14 +569,15 @@ class LlamaCppModel(Model):
     ) -> ModelResponse:
         chat_messages = self._to_chat_messages(messages)
         tools = self._to_openai_tools(model_request_parameters.function_tools)
+        active_tools = _shortlist_tools_for_turn(tools, chat_messages)
         # Stash the tool schemas so _fast_finalize renders the SAME
         # <system + tools> prefix this decide call uses. Without it the
         # finalize call (system-only) evicts the tool-schema KV and the
         # next decide cold-prefills all ~60 schemas — ~12s wasted/turn.
-        if tools:
+        if active_tools:
             try:
                 from jaeger_os.main import _pipeline as _pl
-                _pl["openai_tools"] = tools
+                _pl["openai_tools"] = active_tools
             except Exception:  # noqa: BLE001
                 pass
 
@@ -412,15 +588,32 @@ class LlamaCppModel(Model):
             "temperature": settings.get("temperature", 0.0),
             "top_p": settings.get("top_p", 0.95),
         }
-        if tools:
-            kwargs["tools"] = tools
+        if active_tools:
+            kwargs["tools"] = active_tools
             kwargs["tool_choice"] = settings.get("tool_choice", "auto")
 
         loop = asyncio.get_running_loop()
         started = time.perf_counter()
-        completion = await loop.run_in_executor(
-            None, lambda: self._llama.create_chat_completion(**kwargs)
-        )
+        try:
+            completion = await loop.run_in_executor(
+                None, lambda: self._llama.create_chat_completion(**kwargs)
+            )
+        except ValueError as exc:
+            msg = str(exc)
+            if "exceed context window" not in msg and "Requested tokens" not in msg:
+                raise
+            compact = _compact_tools_for_context(active_tools, chat_messages)
+            if not compact or len(compact) >= len(active_tools):
+                raise
+            kwargs["tools"] = compact
+            try:
+                from jaeger_os.main import _pipeline as _pl
+                _pl["openai_tools"] = compact
+            except Exception:  # noqa: BLE001
+                pass
+            completion = await loop.run_in_executor(
+                None, lambda: self._llama.create_chat_completion(**kwargs)
+            )
         elapsed = time.perf_counter() - started
         self.last_call_times.append(elapsed)
         # We don't have true TTFT from non-streaming completions, so treat
@@ -618,6 +811,7 @@ class LlamaCppModel(Model):
                 cleaned = content
                 for pattern in _DRIFT_PATTERNS:
                     cleaned = pattern.sub("", cleaned)
+                cleaned = _QWEN_TOOLCALL.sub("", cleaned)
                 cleaned = cleaned.strip()
                 content = cleaned if cleaned else None
 

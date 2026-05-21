@@ -113,6 +113,24 @@ def test_qwen_form_routes_through_drift_extractor() -> None:
     assert calls[0]["function"]["name"] == "get_time"
 
 
+def test_qwen_drift_markup_is_removed_from_visible_text() -> None:
+    m = LlamaCppModel(None, model_name="Qwen3-Coder-30B-A3B-Instruct-Q4_K_M.gguf")
+    response = m._to_model_response({
+        "choices": [{
+            "message": {
+                "content": (
+                    "<tool_call>\n<function=get_time>\n"
+                    "</function>\n</tool_call>"
+                )
+            }
+        }],
+        "usage": {},
+    })
+    assert len(response.parts) == 1
+    assert response.parts[0].part_kind == "tool-call"
+    assert response.parts[0].tool_name == "get_time"
+
+
 # ── native vs. legacy message conversion ─────────────────────────────
 
 

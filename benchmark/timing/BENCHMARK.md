@@ -1,6 +1,6 @@
 # Jaeger-OS timing benchmark
 
-Last run: `2026-05-21T00:43:56+00:00` · model: Gemma 4 26B-A4B Q4_K_M · transport: in-process llama-cpp-python.
+Last run: `2026-05-21T02:06:09+00:00` · model: Gemma 4 26B-A4B Q4_K_M · transport: in-process llama-cpp-python.
 
 All numbers are wall-clock seconds for one full prompt turn (decide → tool → optional finalize). The **legacy** column is the lowest historical total ever recorded for `python_jaeger` on that prompt — jaeger_os was forked from python_jaeger, so it IS the historical jaeger performance record. `—` = no historical entry for that prompt.
 
@@ -10,47 +10,47 @@ Regenerate with `python benchmark/timing/bench.py` or `--render-only` to re-rend
 
 | prompt | expected tool | legacy | jaeger_os |
 |---|---|---:|---:|
-| what time is it | `get_time` | 0.22 | 1.03 |
-| what time is it in shanghai | `get_time` | — | 1.14 |
-| calculate 47 times 23 plus 12 | `calculate` | 0.45 | 1.52 |
-| calculate the square root of 12345 | `calculate` | 0.44 | 1.52 |
-| list the workspace | `list_skill_dir` | — | 3.00 |
-| make a file called bench.txt with the message hello from the benchmark | `file_write` | — | 1.47 |
-| read bench.txt out loud | `speak_file` | — | 3.89 |
-| search the web for recent news about local llms | `web_search` | 5.09 | 7.16 |
-| what is the current weather in Seattle | `get_weather` | 1.98 | 1.82 |
-| tell me a one sentence story about a robot | _(free-text)_ | 0.49 | 0.64 |
+| what time is it | `get_time` | 0.22 | 1.02 |
+| what time is it in shanghai | `get_time` | — | 1.17 |
+| calculate 47 times 23 plus 12 | `calculate` | 0.45 | 1.43 |
+| calculate the square root of 12345 | `calculate` | 0.44 | 1.44 |
+| list the workspace | `list_skill_dir` | — | 0.98 |
+| make a file called bench.txt with the message hello from the benchmark | `file_write` | — | 1.49 |
+| read bench.txt out loud | `speak_file` | — | 5.60 |
+| search the web for recent news about local llms | `web_search` | 5.09 | 6.67 |
+| what is the current weather in Seattle | `get_weather` | 1.98 | 1.89 |
+| tell me a one sentence story about a robot | _(free-text)_ | 0.49 | 0.65 |
 | in three words, what is the capital of France | _(free-text)_ | 0.22 | 0.31 |
-| delete bench.txt | `delete_file` | — | 0.99 |
-| what is the cpu and disk status of this machine | `system_status` | 0.82 | 1.29 |
-| search the web for trending youtube topics about home robots | `web_search` | — | 6.00 |
-| write a 4 sentence youtube intro script about a robot named Lilith ... | `file_write` | — | 3.19 |
-| append a closing line to youtube_intro.txt asking viewers to subscribe | `append_file` | — | 1.67 |
-| narrate youtube_intro.txt out loud as if you are reading it for a y... | `speak_file` | — | 27.80 |
-| come up with a catchy youtube title for a video about a robot vacuu... | _(free-text)_ | — | 5.53 |
-| delete youtube_intro.txt | `delete_file` | — | 1.14 |
-| remember that my preferred youtube video length is 90 seconds | `remember` | — | 1.50 |
-| what video length do I prefer? | `recall` | — | 1.04 |
-| what do you know about me? | `list_facts` | — | 0.99 |
+| delete bench.txt | `delete_file` | — | 1.00 |
+| what is the cpu and disk status of this machine | `system_status` | 0.82 | 3.02 |
+| search the web for trending youtube topics about home robots | `web_search` | — | 6.09 |
+| write a 4 sentence youtube intro script about a robot named Lilith ... | `file_write` | — | 2.89 |
+| append a closing line to youtube_intro.txt asking viewers to subscribe | `append_file` | — | 1.68 |
+| narrate youtube_intro.txt out loud as if you are reading it for a y... | `speak_file` | — | 24.19 |
+| come up with a catchy youtube title for a video about a robot vacuu... | _(free-text)_ | — | 5.91 |
+| delete youtube_intro.txt | `delete_file` | — | 1.15 |
+| remember that my preferred youtube video length is 90 seconds | `remember` | — | 1.51 |
+| what video length do I prefer? | `recall` | — | 1.13 |
+| what do you know about me? | `list_facts` | — | 1.01 |
 | forget my video length preference | `forget` | — | 2.10 |
 | remember that my favorite color is teal | `remember` | 0.48 | 1.10 |
-| what is my favorite color | `recall` | 1.83 | 0.91 |
-| search your memory for anything we said about youtube | `search_memory` | — | 1.05 |
+| what is my favorite color | `recall` | 1.83 | 0.92 |
+| search your memory for anything we said about youtube | `search_memory` | — | 1.07 |
 | run a python snippet that prints the first 8 fibonacci numbers | `run_python` | — | 4.30 |
-| show me what tools you have available | `help_me` | — | 1.93 |
-| list any credentials I have stored | `list_credentials` | — | 0.90 |
-| reload your skill registry | `reload_skills` | — | 0.84 |
-| schedule a prompt with cron expression '0 9 * * *' named bench_test... | `schedule_prompt` | — | 2.79 |
-| show me my scheduled prompts | `list_schedules` | — | 1.75 |
-| cancel the bench_test schedule | `cancel_schedule` | — | 1.05 |
-| **TOTAL** |  | **12.02** | **93.37** |
-| **AVG / prompt** |  | **1.20** | **2.83** |
+| show me what tools you have available | `help_me` | — | 2.02 |
+| list any credentials I have stored | `list_credentials` | — | 0.91 |
+| reload your skill registry | `reload_skills` | — | 0.86 |
+| schedule a prompt with cron expression '0 9 * * *' named bench_test... | `schedule_prompt` | — | 2.61 |
+| show me my scheduled prompts | `list_schedules` | — | 1.52 |
+| cancel the bench_test schedule | `cancel_schedule` | — | 1.08 |
+| **TOTAL** |  | **12.02** | **90.71** |
+| **AVG / prompt** |  | **1.20** | **2.75** |
 
 ## Headlines
 
-- **jaeger_os** — 33 prompts run; routing OK on **28/33** (85%); total 93.37s, avg 2.83s/prompt.
+- **jaeger_os** — 33 prompts run; routing OK on **29/33** (88%); total 90.71s, avg 2.75s/prompt.
 - **legacy** (python_jaeger) best-of-history — 10/33 prompts covered; total 12.02s, avg 1.20s/prompt.
-- **jaeger_os vs legacy:** +135% slower than the historical best.
+- **jaeger_os vs legacy:** +129% slower than the historical best.
 
 ## How this was generated
 

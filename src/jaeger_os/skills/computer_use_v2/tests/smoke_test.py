@@ -21,9 +21,10 @@ def main() -> int:
     spec.loader.exec_module(mod)
 
     # Primitive functions, the orchestrator, and register() are present.
-    for fn in ("look", "list_windows", "open_app", "click", "type_text",
-               "press_key", "menu_select", "screenshot", "run_goal",
-               "register"):
+    for fn in ("look", "list_windows", "open_app", "focus_window", "click",
+               "double_click", "right_click", "scroll", "drag", "set_value",
+               "type_text", "press_key", "menu_select", "screenshot",
+               "use_computer", "run_goal", "register"):
         assert callable(getattr(mod, fn, None)), f"missing {fn}"
 
     # Pure helper — parse the all-windows dump (whole-desktop awareness).

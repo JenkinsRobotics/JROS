@@ -62,3 +62,13 @@ def test_fast_finalize_does_not_rephrase_spoken_text() -> None:
     )
     assert out == f"🔊 {joke}"
     assert spy.called is False  # no LLM rephrase pass
+
+
+def test_fast_finalize_skips_llm_for_deterministic_tools() -> None:
+    spy = _SpyClient()
+    out = _fast_finalize_sync(
+        spy, "calculate 2+2", "calculate",
+        {"result": 4, "expression": "2+2"},
+    )
+    assert out == "4"
+    assert spy.called is False

@@ -96,7 +96,22 @@ def main() -> int:
     cases.append({"name": "run_goal_no_client",
                   "ok": res.get("ok") is False and "client" in res.get("error", "")})
 
-    # 13 — window awareness: parse the whole-desktop dump.
+    # 13 — indexed targeting: index 2 resolves to the + button.
+    el = mod._find_element_by_index(screen["elements"], 2)
+    cases.append({"name": "match_by_index",
+                  "ok": el is not None and el["name"] == "+"})
+
+    # 14 — safety: destructive system shortcuts are hard-blocked.
+    script, err = mod._build_press_script("cmd+shift+q")
+    cases.append({"name": "blocked_key_combo",
+                  "ok": script is None and err and "blocked" in err})
+
+    # 15 — validation: rich scroll rejects bad directions before OS access.
+    res = mod.scroll("diagonal")
+    cases.append({"name": "scroll_validation",
+                  "ok": res.get("ok") is False and "direction" in res.get("error", "")})
+
+    # 16 — window awareness: parse the whole-desktop dump.
     apps = mod._parse_windows(
         "APP ||| Code ||| yes\nWIN ||| Code ||| main.py\n"
         "APP ||| Safari ||| no\nWIN ||| Safari ||| YouTube\n"

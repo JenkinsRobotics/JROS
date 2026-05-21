@@ -40,6 +40,7 @@ from pydantic_ai.messages import (
     ModelRequest,
     ModelResponse,
     TextPart,
+    ToolCallPart,
     ToolReturnPart,
     UserPromptPart,
 )
@@ -375,6 +376,7 @@ _pipeline: dict[str, Any] = {
 
 _session_histories: dict[str, list[Any]] = {}
 _session_loaded: set[str] = set()
+_session_state: dict[str, dict[str, Any]] = {}
 
 
 # ---------------------------------------------------------------------------
@@ -572,6 +574,126 @@ def _get_session_history(session_key: str) -> list[Any]:
     return history
 
 
+def _session_context_block(session_key: str, user_text: str) -> str:
+    """Return a compact context block for follow-up turns.
+
+    This is intentionally tiny and derived from trusted tool returns, not a
+    prose summary. It gives the local model anchors for phrases like "that
+    result" without replaying a long transcript.
+    """
+    state = _session_state.get(session_key) or {}
+    if not state:
+        return ""
+    lower = (user_text or "").lower()
+    followup = bool(re.search(
+        r"\b(that|it|there|same|previous|last)\b|what about",
+        lower,
+    ))
+    if not followup and len(state) > 2:
+        return ""
+    lines: list[str] = []
+    if state.get("last_calculation_result") is not None:
+        lines.append(f"last_calculation_result: {state['last_calculation_result']}")
+    if state.get("last_location"):
+        lines.append(f"last_location: {state['last_location']}")
+    if state.get("last_file"):
+        lines.append(f"last_file: {state['last_file']}")
+    if state.get("last_search_topic"):
+        lines.append(f"last_search_topic: {state['last_search_topic']}")
+    if not lines:
+        return ""
+    return "[session context from prior tool results]\n" + "\n".join(lines) + "\n[end session context]"
+
+
+def _augment_with_session_context(session_key: str, user_text: str) -> str:
+    block = _session_context_block(session_key, user_text)
+    return f"{block}\n\n{user_text}" if block else user_text
+
+
+def _iter_tool_returns(iter_out: dict[str, Any]) -> list[tuple[str, dict[str, Any], Any]]:
+    """Extract ordered ``(tool_name, args, result)`` triples from an iter result."""
+    triples: list[tuple[str, dict[str, Any], Any]] = []
+    if iter_out.get("skipped"):
+        fd = iter_out.get("first_decision") or {}
+        name = fd.get("tool")
+        if name:
+            args = fd.get("args") if isinstance(fd.get("args"), dict) else {}
+            triples.append((name, args, iter_out.get("skipped_result")))
+        return triples
+    result = iter_out.get("result")
+    if result is None:
+        return triples
+    try:
+        msgs = list(result.all_messages()) if hasattr(result, "all_messages") else []
+    except Exception:
+        return triples
+    pending: dict[str, dict[str, Any]] = {}
+    for msg in msgs:
+        kind = getattr(msg, "kind", None)
+        if kind == "response":
+            for part in msg.parts:
+                if getattr(part, "part_kind", None) == "tool-call":
+                    pending[part.tool_call_id] = {
+                        "name": part.tool_name,
+                        "args": part.args if isinstance(part.args, dict) else {},
+                    }
+        elif kind == "request":
+            for part in msg.parts:
+                if getattr(part, "part_kind", None) != "tool-return":
+                    continue
+                call = pending.pop(getattr(part, "tool_call_id", None), None) or {}
+                name = call.get("name") or getattr(part, "tool_name", "")
+                triples.append((name, call.get("args") or {}, getattr(part, "content", None)))
+    return triples
+
+
+def _update_session_state_from_iter(session_key: str, iter_out: dict[str, Any]) -> None:
+    state = _session_state.setdefault(session_key, {})
+    for name, args, result in _iter_tool_returns(iter_out):
+        if not isinstance(result, dict):
+            continue
+        if name == "calculate" and result.get("result") is not None:
+            state["last_calculation_result"] = result.get("result")
+            if args.get("expression"):
+                state["last_calculation_expression"] = args.get("expression")
+        elif name == "get_weather" and result.get("location"):
+            state["last_location"] = result.get("location")
+        elif name == "get_time":
+            loc = args.get("location") or args.get("timezone") or result.get("timezone")
+            if loc:
+                state["last_location"] = loc
+        elif name in {"write_file", "append_file", "patch", "read_file", "delete_file"}:
+            path = result.get("path") or args.get("path")
+            if path:
+                state["last_file"] = path
+        elif name == "web_search":
+            query = result.get("query") or args.get("query")
+            if query:
+                state["last_search_topic"] = query
+
+
+def _sanitize_history_messages(
+    messages: list[Any],
+    *,
+    effective_text: str,
+    original_text: str,
+) -> list[Any]:
+    """Keep synthetic session context out of durable chat history."""
+    if effective_text == original_text:
+        return messages
+    for msg in messages:
+        if getattr(msg, "kind", None) != "request":
+            continue
+        for part in getattr(msg, "parts", []):
+            if (
+                getattr(part, "part_kind", None) == "user-prompt"
+                and getattr(part, "content", None) == effective_text
+            ):
+                part.content = original_text
+                return messages
+    return messages
+
+
 # ---------------------------------------------------------------------------
 # Agent construction
 # ---------------------------------------------------------------------------
@@ -608,7 +730,9 @@ def _register_builtins(agent: Agent[None, str], client: Any) -> None:
     @requires_tier(PermissionTier.READ_ONLY, skill="host", operation="system_status",
                    summary="read machine + instance dir status")
     def system_status() -> dict:
-        """Machine + instance dir status."""
+        """Machine health only: CPU, memory, disk, and instance metadata.
+        Do NOT use this to list workspace files; use list_skill_dir for
+        "list the workspace", "show files", or "what files are here"."""
         return t.system_status()
 
     @agent.tool_plain
@@ -651,7 +775,8 @@ def _register_builtins(agent: Agent[None, str], client: Any) -> None:
     @requires_tier(PermissionTier.READ_ONLY, skill="files", operation="list_skill_dir",
                    summary="list contents of the skills directory")
     def list_skill_dir(path: str = ".") -> dict:
-        """List the contents of skills/ (or a subdirectory under it)."""
+        """List workspace files. Use for "list the workspace", "show files",
+        "what files are here", or contents of skills/ (or a subdirectory)."""
         return t.list_skill_dir(path=path)
 
     @agent.tool_plain
@@ -1334,6 +1459,12 @@ _FAST_FINALIZE_DIRECTIVE = (
     "using that result. Do NOT call any more tools. Plain text only."
 )
 
+_DETERMINISTIC_FINAL_TOOLS = frozenset({
+    "get_time", "calculate", "list_facts", "recall", "remember", "forget",
+    "delete_file", "list_credentials", "schedule_prompt", "cancel_schedule",
+    "reload_skills", "listen", "board_add", "board_move", "board_update",
+})
+
 
 def _fast_finalize_sync(
     client: Any,
@@ -1360,9 +1491,10 @@ def _fast_finalize_sync(
     # the one just spoken). Return the empty/short answer directly.
     if not formatted.strip():
         return formatted
-    # text_to_speech: the spoken line IS the answer, verbatim — a
-    # finalize pass would paraphrase the line the user just heard.
-    if tool_name == "text_to_speech":
+    # Deterministic/simple tools: the formatted result is already the
+    # answer. Skipping the final LLM pass improves latency and prevents
+    # result-grounding hallucinations (notably memory/list tools).
+    if tool_name in _DETERMINISTIC_FINAL_TOOLS or tool_name == "text_to_speech":
         return formatted
     if client is None:
         return formatted
@@ -1458,6 +1590,68 @@ def _looks_multistep(user_text: str) -> bool:
     return len(verbs) >= 2
 
 
+# --- P4: loop backstop -------------------------------------------------------
+# A turn must terminate. These guard a model that spins tool calls without
+# making progress: a hard ceiling on total calls, and a tight-loop catcher
+# for the exact same (tool, args) issued over and over. Observed legitimate
+# multi-step work tops out near ~16 calls and varies its arguments, so
+# neither limit trips on a healthy turn — they are a safety net, not a
+# fine-grained iteration tuner.
+_MAX_TOOL_CALLS = 24
+_MAX_IDENTICAL_CALLS = 4
+_MAX_SEMANTIC_FAILURES = 2
+
+
+def _semantic_failure_signature(tool_name: str, args: Any, content: Any) -> str | None:
+    """Return a stable signature for repeated tool failures.
+
+    Exact call matching misses common loops where the model varies irrelevant
+    args while hitting the same underlying error. This signature normalizes
+    the action to tool + target path/code shape + first useful error line.
+    """
+    if not isinstance(content, dict) or content.get("ok") is True:
+        return None
+    error = (
+        content.get("stderr")
+        or content.get("syntax_error")
+        or content.get("error")
+        or content.get("reason")
+        or ""
+    )
+    if not error:
+        return None
+    first_line = str(error).strip().splitlines()[0][:160]
+    if isinstance(args, dict):
+        target = (
+            args.get("path") or args.get("file") or args.get("name")
+            or content.get("path") or content.get("file") or ""
+        )
+        if not target and tool_name == "run_python":
+            code = str(args.get("code") or "")
+            target = f"code:{hash(code) & 0xffff:x}" if code else ""
+    else:
+        target = ""
+    return f"{tool_name}|{target}|{first_line}"
+
+
+def _loop_halt_reason(tool_calls_made: int,
+                      call_signatures: dict[str, int],
+                      failure_signatures: dict[str, int] | None = None) -> str | None:
+    """Return a halt reason when a turn is spinning, else None. Checks the
+    tight identical-call loop first, then the runaway total."""
+    for sig, n in (failure_signatures or {}).items():
+        if n >= _MAX_SEMANTIC_FAILURES:
+            return (f"hit the same {sig.split('|', 1)[0]} failure "
+                    f"{n} times")
+    for sig, n in call_signatures.items():
+        if n >= _MAX_IDENTICAL_CALLS:
+            return (f"called {sig.split('|', 1)[0]} with identical "
+                    f"arguments {n} times")
+    if tool_calls_made > _MAX_TOOL_CALLS:
+        return f"made {tool_calls_made} tool calls in a single turn"
+    return None
+
+
 async def _run_via_iter(
     agent: Agent,
     user_text: str,
@@ -1472,6 +1666,12 @@ async def _run_via_iter(
     # Multi-step prompts: don't short-circuit on the first tool call,
     # let the full agent.iter loop run so the model can chain naturally.
     suppress_skip_final = _looks_multistep(user_text)
+    # P4 loop backstop — guarantee the turn terminates.
+    tool_calls_made = 0
+    call_signatures: dict[str, int] = {}
+    failure_signatures: dict[str, int] = {}
+    pending_tool_calls: dict[str, dict[str, Any]] = {}
+    halt_reason: str | None = None
 
     async with agent.iter(user_text, message_history=message_history or None) as run:
         async for node in run:
@@ -1487,22 +1687,97 @@ async def _run_via_iter(
                     ):
                         skip_final = True
                         skip_tool_name = tc.tool_name
-            if skip_final and isinstance(node, ModelRequestNode):
+                # P4 loop backstop — count every call, halt a spinning turn.
+                for tp in tool_parts:
+                    tool_calls_made += 1
+                    sig = f"{tp.tool_name}|{tp.args!r}"
+                    call_signatures[sig] = call_signatures.get(sig, 0) + 1
+                    pending_tool_calls[getattr(tp, "tool_call_id", "")] = {
+                        "name": tp.tool_name,
+                        "args": tp.args,
+                    }
+                halt_reason = _loop_halt_reason(
+                    tool_calls_made, call_signatures, failure_signatures,
+                )
+                if halt_reason:
+                    break
+            if isinstance(node, ModelRequestNode):
                 for p in node.request.parts:
                     if isinstance(p, ToolReturnPart):
-                        skip_result = p.content
-                        break
+                        call = pending_tool_calls.pop(
+                            getattr(p, "tool_call_id", ""), {},
+                        )
+                        fail_sig = _semantic_failure_signature(
+                            call.get("name") or getattr(p, "tool_name", ""),
+                            call.get("args") or {},
+                            p.content,
+                        )
+                        if fail_sig:
+                            failure_signatures[fail_sig] = failure_signatures.get(fail_sig, 0) + 1
+                halt_reason = _loop_halt_reason(
+                    tool_calls_made, call_signatures, failure_signatures,
+                )
+                if halt_reason:
+                    break
+                if skip_final:
+                    for p in node.request.parts:
+                        if isinstance(p, ToolReturnPart):
+                            skip_result = p.content
+                            break
                 if skip_result is not None:
                     break
         else:
             return {"result": run.result, "skipped": False, "first_decision": first_decision}
 
+    # P4 loop backstop — the turn was stopped mid-flight. Return a graceful
+    # skip-final-shaped dict so every caller handles it without changes.
+    if halt_reason:
+        text = (
+            f"I stopped this turn early — I {halt_reason} without making "
+            "progress, so I was stuck in a loop rather than getting closer "
+            "to an answer. Tell me how you'd like to proceed."
+        )
+        skipped_msgs = [
+            ModelRequest(parts=[UserPromptPart(content=user_text)]),
+            ModelResponse(
+                parts=[TextPart(content=text)],
+                usage=RequestUsage(input_tokens=0, output_tokens=0),
+                model_name="local-gemma-4-26b-a4b",
+                timestamp=datetime.now(timezone.utc),
+            ),
+        ]
+        return {
+            "result": None, "skipped": True, "skipped_text": text,
+            "skipped_msgs": skipped_msgs, "skipped_result": None,
+            "first_decision": first_decision, "halted": True,
+        }
+
     # Fast-finalize: bounded LLM call that paraphrases the tool result
     # into a natural sentence. Falls back to the raw formatter when
     # ``client`` isn't threaded through (legacy callers, tests).
     text = _fast_finalize_sync(client, user_text, skip_tool_name or "", skip_result)
+    call_id = "fast_" + os.urandom(4).hex()
     skipped_msgs = [
         ModelRequest(parts=[UserPromptPart(content=user_text)]),
+        ModelResponse(
+            parts=[
+                ToolCallPart(
+                    tool_name=skip_tool_name or "",
+                    args=(first_decision or {}).get("args") or {},
+                    tool_call_id=call_id,
+                ),
+            ],
+            usage=RequestUsage(input_tokens=0, output_tokens=0),
+            model_name="local-gemma-4-26b-a4b",
+            timestamp=datetime.now(timezone.utc),
+        ),
+        ModelRequest(parts=[
+            ToolReturnPart(
+                tool_name=skip_tool_name or "",
+                content=skip_result,
+                tool_call_id=call_id,
+            ),
+        ]),
         ModelResponse(
             parts=[TextPart(content=text)],
             usage=RequestUsage(input_tokens=0, output_tokens=0),
@@ -1643,6 +1918,54 @@ _RETRY_PROMPT_TEMPLATE = (
     "`write_file`, and re-run with `run_python`. Do not give up."
 )
 
+_SYNTAX_RETRY_PROMPT_TEMPLATE = (
+    "The previous `{tool}` call wrote a Python file with a syntax error.\n"
+    "Path: `{path}`\n"
+    "Syntax error:\n```\n{syntax_error}\n```\n"
+    "Read the file with `read_file`, fix the syntax error using `patch` or "
+    "`write_file`, then run the file with `run_python` to verify it works."
+)
+
+_EXECUTION_RETRY_PROMPT_TEMPLATE = (
+    "You answered with a plan but did not execute the task. Execute the "
+    "original request now using the available tools. Do not restate a plan "
+    "unless a tool result makes the task impossible.\n\n"
+    "Original request:\n{request}"
+)
+
+
+def _history_after_iter(iter_out: dict[str, Any],
+                        fallback: list[Any] | None = None) -> list[Any] | None:
+    result = iter_out.get("result")
+    if result is not None and hasattr(result, "all_messages"):
+        try:
+            return list(result.all_messages())
+        except Exception:
+            pass
+    if iter_out.get("skipped_msgs"):
+        return (fallback or []) + list(iter_out["skipped_msgs"])
+    return fallback
+
+
+def _needs_execution_retry(iter_out: dict[str, Any], user_text: str) -> bool:
+    """Detect the common stall where a multi-step task gets a plan only."""
+    if iter_out.get("skipped") or iter_out.get("first_decision") is not None:
+        return False
+    lower = (user_text or "").strip().lower()
+    if lower.startswith(("explain", "how do i", "how can i", "what are the steps")):
+        return False
+    if not _looks_multistep(user_text):
+        return False
+    result = iter_out.get("result")
+    text = (getattr(result, "output", "") or "").strip().lower()
+    if not text:
+        return False
+    plan_markers = (
+        "first,", "first ", "next,", "next ", "then ", "step 1",
+        "i would", "i will", "plan:", "here's a plan", "here is a plan",
+    )
+    return any(marker in text for marker in plan_markers)
+
 
 def _find_failed_run_python(iter_out: dict[str, Any]) -> dict[str, Any] | None:
     """Return the ``run_python`` tool's result dict if it ran and failed
@@ -1687,6 +2010,48 @@ def _find_failed_run_python(iter_out: dict[str, Any]) -> dict[str, Any] | None:
     return None
 
 
+def _find_failed_python_write(iter_out: dict[str, Any]) -> dict[str, Any] | None:
+    """Return a Python file-write result with ``syntax_ok=False``.
+
+    This catches the earlier, cheaper failure signal emitted by write_file /
+    append_file / patch before the model burns retries by trying to execute a
+    file that cannot compile.
+    """
+    result = iter_out.get("result")
+    msgs: list[Any] = []
+    if result is not None and hasattr(result, "all_messages"):
+        try:
+            msgs = list(result.all_messages())
+        except Exception:
+            msgs = []
+    elif iter_out.get("skipped_msgs"):
+        msgs = list(iter_out["skipped_msgs"])
+
+    pending: dict[str, str] = {}
+    for msg in msgs:
+        kind = getattr(msg, "kind", None)
+        if kind == "response":
+            for part in msg.parts:
+                if getattr(part, "part_kind", None) == "tool-call":
+                    pending[part.tool_call_id] = part.tool_name
+        elif kind == "request":
+            for part in msg.parts:
+                if getattr(part, "part_kind", None) != "tool-return":
+                    continue
+                name = pending.pop(getattr(part, "tool_call_id", None), None) \
+                    or getattr(part, "tool_name", None)
+                if name not in {"write_file", "append_file", "patch"}:
+                    continue
+                content = getattr(part, "content", None)
+                if isinstance(content, dict) and content.get("syntax_ok") is False:
+                    return {
+                        "tool": name,
+                        "path": content.get("path") or content.get("file") or "",
+                        "syntax_error": content.get("syntax_error") or "syntax error",
+                    }
+    return None
+
+
 def _run_python_failure_if_any(result: dict[str, Any]) -> dict[str, Any] | None:
     """Return ``result`` if it represents a fixable failure, else None.
     Timeouts are NOT retried — an infinite loop won't get smarter on
@@ -1723,26 +2088,33 @@ async def _run_with_fix_loop(
         if thought:
             effective_text = _augment_with_thought(user_text, thought)
     iter_out = await _run_via_iter(agent, effective_text, history, client=client)
+    if _needs_execution_retry(iter_out, user_text):
+        history = _history_after_iter(iter_out, history)
+        retry_text = _EXECUTION_RETRY_PROMPT_TEMPLATE.format(request=user_text)
+        iter_out = await _run_via_iter(agent, retry_text, history, client=client)
+        iter_out["retried_after_plan_only_response"] = True
     for _ in range(max_retries):
         failure = _find_failed_run_python(iter_out)
-        if failure is None:
+        syntax_failure = None if failure is not None else _find_failed_python_write(iter_out)
+        if failure is None and syntax_failure is None:
             return iter_out
         # Build the retry history from the just-finished run so the
         # model sees its own prior tool calls. Falls back to whatever
         # we had if the result object doesn't expose all_messages().
-        result = iter_out.get("result")
-        if result is not None and hasattr(result, "all_messages"):
-            try:
-                history = list(result.all_messages())
-            except Exception:
-                pass
-        elif iter_out.get("skipped_msgs"):
-            history = (history or []) + list(iter_out["skipped_msgs"])
-        stderr = (failure.get("stderr") or failure.get("error") or "")[:1500]
-        retry_text = _RETRY_PROMPT_TEMPLATE.format(stderr=stderr.strip())
+        history = _history_after_iter(iter_out, history)
+        if syntax_failure is not None:
+            retry_text = _SYNTAX_RETRY_PROMPT_TEMPLATE.format(
+                tool=syntax_failure.get("tool") or "write_file",
+                path=syntax_failure.get("path") or "the file",
+                syntax_error=(syntax_failure.get("syntax_error") or "")[:1500].strip(),
+            )
+        else:
+            stderr = (failure.get("stderr") or failure.get("error") or "")[:1500]
+            retry_text = _RETRY_PROMPT_TEMPLATE.format(stderr=stderr.strip())
         iter_out = await _run_via_iter(agent, retry_text, history, client=client)
         # Mark so callers / logs can see this was a retry-loop turn.
-        iter_out["retried_after_run_python_failure"] = True
+        iter_out["retried_after_run_python_failure"] = failure is not None
+        iter_out["retried_after_python_syntax_failure"] = syntax_failure is not None
     return iter_out
 
 
@@ -1872,6 +2244,10 @@ def _preflight_log() -> None:
 def run_command(client: Any, user_text: str, session_key: str | None = None) -> None:
     key = session_key or _DEFAULT_SESSION_KEY
     history = _get_session_history(key) if _pipeline["with_memory"] else None
+    effective_text = (
+        _augment_with_session_context(key, user_text)
+        if _pipeline["with_memory"] else user_text
+    )
     agent = _get_agent(client)
     # LlamaCppModel carries per-call timing instrumentation; external
     # models (OpenAIChatModel / AnthropicModel) don't — guard the calls.
@@ -1884,11 +2260,11 @@ def run_command(client: Any, user_text: str, session_key: str | None = None) -> 
         if lock is not None:
             with lock:
                 iter_out = asyncio.run(
-                    _run_with_fix_loop(agent, user_text, history, client=client)
+                    _run_with_fix_loop(agent, effective_text, history, client=client)
                 )
         else:
             iter_out = asyncio.run(
-                _run_with_fix_loop(agent, user_text, history, client=client)
+                _run_with_fix_loop(agent, effective_text, history, client=client)
             )
     except Exception as exc:
         elapsed = time.perf_counter() - started
@@ -1953,14 +2329,27 @@ def run_command(client: Any, user_text: str, session_key: str | None = None) -> 
         "latency": asdict(report),
     })
 
+    if _pipeline["with_memory"]:
+        _update_session_state_from_iter(key, iter_out)
+
     if _pipeline["with_memory"] and history is not None:
         if skipped:
-            history.extend(iter_out["skipped_msgs"])
+            new_msgs = _sanitize_history_messages(
+                list(iter_out["skipped_msgs"]),
+                effective_text=effective_text,
+                original_text=user_text,
+            )
+            history.extend(new_msgs)
         else:
             try:
                 new_msgs = result.new_messages() if hasattr(result, "new_messages") else result.all_messages()
             except Exception:
                 new_msgs = []
+            new_msgs = _sanitize_history_messages(
+                list(new_msgs),
+                effective_text=effective_text,
+                original_text=user_text,
+            )
             history.extend(new_msgs)
         overflow = len(history) - _MAX_HISTORY_MESSAGES
         if overflow > 0:
@@ -1982,6 +2371,10 @@ def run_for_voice(client: Any, user_text: str, session_key: str | None = None) -
     so each chat keeps its own context."""
     key = session_key or "voice"
     history = _get_session_history(key) if _pipeline["with_memory"] else None
+    effective_text = (
+        _augment_with_session_context(key, user_text)
+        if _pipeline["with_memory"] else user_text
+    )
     agent = _get_agent(client)
     model: Any = agent.model
     if hasattr(model, "reset_timings"):
@@ -1991,9 +2384,13 @@ def run_for_voice(client: Any, user_text: str, session_key: str | None = None) -
     try:
         if lock is not None:
             with lock:
-                iter_out = asyncio.run(_run_via_iter(agent, user_text, history))
+                iter_out = asyncio.run(
+                    _run_with_fix_loop(agent, effective_text, history, client=client)
+                )
         else:
-            iter_out = asyncio.run(_run_via_iter(agent, user_text, history))
+            iter_out = asyncio.run(
+                _run_with_fix_loop(agent, effective_text, history, client=client)
+            )
     except Exception as exc:
         return {
             "text": "", "error": str(exc), "tool_activity": [],
@@ -2028,14 +2425,27 @@ def run_for_voice(client: Any, user_text: str, session_key: str | None = None) -
         "latency": {"total": elapsed, "voice": True},
     })
 
+    if _pipeline["with_memory"]:
+        _update_session_state_from_iter(key, iter_out)
+
     if _pipeline["with_memory"] and history is not None:
         if skipped:
-            history.extend(iter_out["skipped_msgs"])
+            new_msgs = _sanitize_history_messages(
+                list(iter_out["skipped_msgs"]),
+                effective_text=effective_text,
+                original_text=user_text,
+            )
+            history.extend(new_msgs)
         else:
             try:
                 new_msgs = result.new_messages() if hasattr(result, "new_messages") else result.all_messages()
             except Exception:
                 new_msgs = []
+            new_msgs = _sanitize_history_messages(
+                list(new_msgs),
+                effective_text=effective_text,
+                original_text=user_text,
+            )
             history.extend(new_msgs)
         overflow = len(history) - _MAX_HISTORY_MESSAGES
         if overflow > 0:

@@ -76,9 +76,9 @@ Operating discipline — how to actually get a task done:
 - One request often needs several tool calls. Keep going until the task
   is genuinely done; don't stop after the first step or hand a checklist
   back to the user.
-- For a task with 3+ steps, call `todo` FIRST to lay out the plan, then
-  work the items one at a time, marking each `completed` as you finish.
-  When every item is done, so is the task.
+- For a task with 3+ steps, make a brief internal plan, then call the
+  real work tools. Use `todo` only when the user asks for task tracking
+  or the task is long enough that a visible checklist materially helps.
 - Independent tool calls in the same turn can be issued together —
   prefer that over a slow round-trip each.
 - Before editing a file, read it first. Before importing a package,
@@ -88,7 +88,7 @@ Operating discipline — how to actually get a task done:
 """
 
 
-RUNTIME_TAIL = """\
+RUNTIME_TAIL_BASE = """\
 The only writable area is the sandboxed `skills/` directory of your
 instance. All "path" arguments to file tools are relative to that root.
 Do NOT prefix paths with "skills/", "~", or any absolute path. If the
@@ -98,10 +98,6 @@ to skills/ and explain where it actually went.
 Behavior:
 - Use tools to fulfill requests. Each tool has a typed signature; pass
   arguments that match.
-- You see a focused CORE set of tools. If a task needs a capability you
-  don't see a tool for, call `load_toolset` to make the right group
-  visible BEFORE concluding you can't do it — the tools you need are
-  one `load_toolset` call away.
 - If the request is genuinely beyond every toolset, say so honestly —
   don't invent a tool error or pretend a tool ran when it didn't.
 - After a tool returns, decide whether the user's request is fully
@@ -112,6 +108,19 @@ Behavior:
   "then save it"), call the next tool.
 - After authoring or modifying skill files, call `reload_skills()` so
   the loader registers your new code.
+"""
+
+RUNTIME_TOOLSET_SCOPED = """\
+- You see a focused CORE set of tools. If a task needs a capability you
+  don't see a tool for, call `load_toolset` to make the right group
+  visible BEFORE concluding you can't do it — the tools you need are
+  one `load_toolset` call away.
+"""
+
+RUNTIME_TOOLSET_UNSCOPED = """\
+- The full built-in tool surface is visible. Pick the specific tool that
+  matches the request; do not call `load_toolset` unless you are explicitly
+  asked to inspect or widen toolsets.
 """
 
 
@@ -136,6 +145,20 @@ def _load_soul(layout: InstanceLayout) -> str:
     if len(text) > _SOUL_MAX_CHARS:
         text = text[:_SOUL_MAX_CHARS].rstrip() + "\n…(soul.md truncated)"
     return text
+
+
+def _runtime_tail() -> str:
+    try:
+        from .toolsets import _scoping_enabled
+        scoped = _scoping_enabled()
+    except Exception:
+        scoped = False
+    toolset_note = RUNTIME_TOOLSET_SCOPED if scoped else RUNTIME_TOOLSET_UNSCOPED
+    return RUNTIME_TAIL_BASE.strip().replace(
+        "Behavior:\n",
+        "Behavior:\n" + toolset_note.strip() + "\n",
+        1,
+    )
 
 
 def build_system_prompt(layout: InstanceLayout) -> str:
@@ -176,5 +199,5 @@ def build_system_prompt(layout: InstanceLayout) -> str:
     if include_v2 and CORE_PROMPT_PATH.exists():
         parts.append(CORE_PROMPT_PATH.read_text(encoding="utf-8").strip())
 
-    parts.append(RUNTIME_TAIL.strip())
+    parts.append(_runtime_tail())
     return "\n\n".join(parts)

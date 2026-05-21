@@ -21,6 +21,8 @@ from rich.console import Group
 from rich.panel import Panel
 from rich.text import Text
 
+from .theme import ACCENT, ACCENT_BOLD
+
 
 # ── Tool catalog (grouped) ──────────────────────────────────────────
 
@@ -82,12 +84,12 @@ def boot_panel(
     hermes-agent screenshot (right column with version, tools by
     category, session info)."""
     header = Text()
-    header.append(f"Jaeger-OS {version}", style="bold yellow")
+    header.append(f"Jaeger-OS {version}", style=ACCENT_BOLD)
     header.append(f"  ·  instance: {instance_name}", style="dim")
     header.append(f"  ·  model: {model_name}", style="dim")
 
     tools_block = Group(
-        Text("▼ Available Tools", style="bold yellow"),
+        Text("▼ Available Tools", style=ACCENT_BOLD),
         *(_format_tool_group(name, tools) for name, tools in TOOL_GROUPS.items()),
     )
 
@@ -103,7 +105,7 @@ def boot_panel(
     return Panel(
         body,
         box=ROUNDED,
-        border_style="yellow",
+        border_style=ACCENT,
         padding=(1, 2),
     )
 
@@ -137,7 +139,7 @@ def status_bar(
     state_text = f"{state_glyph} {state}"
     if elapsed_s > 0:
         state_text += f"  {elapsed_s:5.1f}s"
-    bits.append((state_text, "yellow"))
+    bits.append((state_text, ACCENT))
 
     # Model
     bits.append((model_name, "dim cyan"))
@@ -192,11 +194,11 @@ def thinking_panel(text: str, *, tokens: int | None = None) -> Panel:
 def tool_activity(tool_name: str, summary: str, elapsed_s: float) -> Text:
     """One-line tool-call activity, hermes-agent-style (▸ tool_name … elapsed)."""
     line = Text()
-    line.append("▸ ", style="bold yellow")
+    line.append("▸ ", style=ACCENT_BOLD)
     line.append(tool_name, style="bold cyan")
     if summary:
         line.append(f"  {summary}", style="dim")
-    line.append(f"  ({elapsed_s:.2f}s)", style="dim yellow")
+    line.append(f"  ({elapsed_s:.2f}s)", style=f"dim {ACCENT}")
     return line
 
 

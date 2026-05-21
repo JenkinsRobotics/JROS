@@ -99,10 +99,44 @@ def _read_facts_raw() -> dict[str, str]:
     return {k: v for k, v in data.items() if isinstance(k, str) and not k.startswith("_")}
 
 
-def _write_facts_atomic(facts: dict[str, str]) -> None:
+def _read_categories_raw() -> dict[str, str]:
+    """The per-key category map stored alongside the facts. Empty when
+    the file predates categorised memory (every such fact is 'general')."""
+    path = _require("facts_path")
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return {}
+    cats = data.get("categories") if isinstance(data, dict) else None
+    if not isinstance(cats, dict):
+        return {}
+    return {k: v for k, v in cats.items()
+            if isinstance(k, str) and isinstance(v, str)}
+
+
+def _norm_category(category: str | None) -> str:
+    """Normalise a free-form category label. Empty ⇒ 'general'."""
+    return (category or "").strip().lower() or "general"
+
+
+def _write_facts_atomic(
+    facts: dict[str, str],
+    categories: dict[str, str] | None = None,
+) -> None:
     path = _require("facts_path")
     path.parent.mkdir(parents=True, exist_ok=True)
-    payload = {"schema_version": SCHEMA_VERSION, "facts": dict(facts)}
+    # Preserve the existing category map when the caller doesn't pass one
+    # (e.g. forget()), and drop categories for keys that no longer exist.
+    if categories is None:
+        categories = _read_categories_raw()
+    categories = {k: v for k, v in categories.items() if k in facts and v}
+    payload = {
+        "schema_version": SCHEMA_VERSION,
+        "facts": dict(facts),
+        "categories": categories,
+    }
     fd, tmp_name = tempfile.mkstemp(dir=path.parent, prefix=".facts.", suffix=".tmp")
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
@@ -116,11 +150,16 @@ def _write_facts_atomic(facts: dict[str, str]) -> None:
         raise
 
 
-def remember(key: str, value: str) -> None:
+def remember(key: str, value: str, category: str | None = None) -> None:
+    """Store a fact. ``category`` groups it (e.g. 'contacts',
+    'preferences', 'projects') — omitted facts land in 'general'."""
     with _lock, _file_lock("facts_lock_path"):
         facts = _read_facts_raw()
+        categories = _read_categories_raw()
         facts[key] = value
-        _write_facts_atomic(facts)
+        if category:
+            categories[key] = _norm_category(category)
+        _write_facts_atomic(facts, categories)
 
 
 _WORD_RE = re.compile(r"[a-z0-9]+")
@@ -167,6 +206,20 @@ def forget(key: str) -> bool:
 def list_facts() -> dict[str, str]:
     with _file_lock("facts_lock_path", exclusive=False):
         return _read_facts_raw()
+
+
+def list_facts_by_category() -> dict[str, dict[str, str]]:
+    """Facts grouped by category — ``{category: {key: value}}``. Facts
+    stored before categories existed (or saved without one) fall under
+    'general'. Categories are sorted with 'general' last."""
+    with _file_lock("facts_lock_path", exclusive=False):
+        facts = _read_facts_raw()
+        categories = _read_categories_raw()
+    grouped: dict[str, dict[str, str]] = {}
+    for k, v in facts.items():
+        grouped.setdefault(categories.get(k) or "general", {})[k] = v
+    return dict(sorted(grouped.items(),
+                       key=lambda kv: (kv[0] == "general", kv[0])))
 
 
 # ---------------------------------------------------------------------------
@@ -485,7 +538,10 @@ def load_identity_string(layout: Any) -> str:
     except Exception:
         return ""
     return (
-        f"You are {ident.name}.\n"
+        f"You are {ident.name}. That is your name and your identity — when "
+        f"asked who or what you are, answer as {ident.name}. \"A large "
+        f"language model\" and \"trained by Google\" describe the underlying "
+        f"technology, not you; never introduce yourself that way.\n"
         f"Role: {ident.role}\n"
         f"Voice: {ident.personality}"
     )

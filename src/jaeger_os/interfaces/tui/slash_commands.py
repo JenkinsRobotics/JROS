@@ -11,6 +11,7 @@ the line after the command name; handlers split it themselves.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
@@ -18,6 +19,8 @@ from typing import Any, Callable
 from rich.console import Console
 from rich.table import Table
 from rich.text import Text
+
+from .theme import ACCENT_BOLD
 
 
 @dataclass(frozen=True)
@@ -58,14 +61,60 @@ class SlashResult:
 # ── Handlers ─────────────────────────────────────────────────────────
 
 
+# Slash commands grouped for the `/help` menu — hermes-style
+# categorized list. A command absent here still shows under "Other"
+# (see _help) so a new SlashCommand is never silently undocumented.
+_HELP_CATEGORIES: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("Session",          ("help", "status", "statusbar", "usage", "config",
+                           "verbose", "reboot", "shutdown", "quit")),
+    ("Conversation",     ("new", "history", "copy", "save", "undo", "retry",
+                          "steer", "busy", "stop", "reset")),
+    ("Model & Tools",    ("model", "models", "download", "tools", "voice")),
+    ("Instances",        ("instance", "instances", "factoryreset")),
+    ("Skills & Tasks",   ("skills", "deepthink", "board", "goal")),
+    ("Memory & Plugins", ("facts", "plugins")),
+)
+
+
 def _help(ctx: SlashContext, args: str) -> SlashResult:  # noqa: ARG001
-    """Render the help table inline."""
-    table = Table(show_header=True, header_style="bold yellow")
-    table.add_column("Command")
-    table.add_column("What it does")
-    for cmd in REGISTRY:
-        table.add_row(f"/{cmd.name}", cmd.summary)
-    ctx.console.print(table)
+    """Render the slash-command menu, categorized — hermes-style."""
+    c = ctx.console
+    width = 50
+
+    def _row(cmd: SlashCommand) -> Text:
+        line = Text("    ")
+        line.append(f"/{cmd.name}".ljust(14), style=ACCENT_BOLD)
+        line.append("  ")
+        line.append(cmd.summary, style="dim")
+        return line
+
+    c.print()
+    c.print(Text("┌" + "─" * width + "┐", style=ACCENT_BOLD))
+    c.print(Text("│" + "Jaeger-OS · slash commands".center(width) + "│",
+                 style=ACCENT_BOLD))
+    c.print(Text("└" + "─" * width + "┘", style=ACCENT_BOLD))
+
+    seen: set[str] = set()
+    for category, names in _HELP_CATEGORIES:
+        c.print()
+        c.print(Text(f"  ── {category} ──", style="bold dim"))
+        for name in names:
+            cmd = _BY_NAME.get(name)
+            if cmd is not None:
+                seen.add(name)
+                c.print(_row(cmd))
+
+    extras = [cmd for cmd in REGISTRY if cmd.name not in seen]
+    if extras:
+        c.print()
+        c.print(Text("  ── Other ──", style="bold dim"))
+        for cmd in extras:
+            c.print(_row(cmd))
+
+    c.print()
+    c.print(Text("  Tip: just type to chat — slash (/) is only for commands.",
+                 style="dim"))
+    c.print()
     return SlashResult()
 
 
@@ -100,12 +149,9 @@ def _facts(ctx: SlashContext, args: str) -> SlashResult:  # noqa: ARG001
     return SlashResult()
 
 
-def _reset(ctx: SlashContext, args: str) -> SlashResult:  # noqa: ARG001
-    ctx.console.print(
-        "[yellow]reset:[/] in-process session reset is a future feature. "
-        "For now exit and restart for a fresh agent."
-    )
-    return SlashResult()
+def _reset(ctx: SlashContext, args: str) -> SlashResult:
+    """Alias for /new — clear the in-process conversation history."""
+    return _new(ctx, args)
 
 
 # ── Instance management ─────────────────────────────────────────────
@@ -187,39 +233,229 @@ def _do_switch_instance(ctx: SlashContext, name: str) -> SlashResult:
 # ── Model management ────────────────────────────────────────────────
 
 
-def _model(ctx: SlashContext, args: str) -> SlashResult:  # noqa: ARG001
-    """Show the active brain. Local llama-cpp by default; an external
-    provider (LM Studio / OpenAI / Anthropic) when the instance config
-    has `external_model.enabled: true`. Switching is config-driven —
-    edit config.yaml and restart."""
+def _brain_line(cfg: Any, client: Any) -> str:
+    """One-line description of the active brain."""
+    ext = getattr(cfg, "external_model", None) if cfg else None
+    if (ext is not None and ext.enabled
+            and getattr(client, "kind", "local") == "external"):
+        return f"[cyan]external · {ext.provider}[/] · {ext.model}"
+    if cfg is not None:
+        return (f"[cyan]local · llama-cpp[/] · "
+                f"{Path(str(cfg.model.model_path)).name}")
+    return "[yellow]no active pipeline[/]"
+
+
+def _model(ctx: SlashContext, args: str) -> SlashResult:
+    """Show or switch the agent's brain.
+
+       /model                          show every model
+       /model use local                in-process llama-cpp model
+       /model use ollama <name>        a local Ollama server
+       /model use lmstudio <name>      a local LM Studio server
+       /model use ollama-cloud <name>  Ollama Cloud (prompts for a key)
+    """
+    parts = args.split()
+    if parts and parts[0].lower() == "use":
+        return _model_use(ctx, parts[1:])
+
+    from jaeger_os.core.model_discovery import discover_all
+    from jaeger_os.main import _pipeline
+    cfg = _pipeline.get("config")
+    ctx.console.print(
+        f"[bold]Active brain:[/] {_brain_line(cfg, _pipeline.get('client'))}"
+    )
+    with ctx.console.status("[dim]scanning for models…[/]"):
+        found = discover_all()
+
+    # JROS in-process GGUF models.
+    ctx.console.print("\n[bold]JROS models[/] [dim]· in-process GGUF[/]")
+    for m in found["jaeger"]:
+        dot = "[green]●[/]" if m.get("path") else "[dim]○[/]"
+        size = f"{m['size_gb']} GB" if m.get("size_gb") else ""
+        ctx.console.print(f"  {dot} {m['name']:30s} {size:9s} "
+                          f"[dim]{m.get('status', '')}[/]")
+    ctx.console.print("  [dim]download:  /download <name>[/]")
+
+    # Local Ollama + LM Studio servers (the troubleshooting A/B targets).
+    for label, key, switch in (("Ollama", "ollama", "ollama"),
+                               ("LM Studio", "lmstudio", "lmstudio")):
+        src = found[key]
+        status = "[green]online[/]" if src["online"] else "[dim]offline[/]"
+        ctx.console.print(
+            f"\n[bold]{label}[/] [dim]· {src['endpoint']}[/]  {status}")
+        if src["online"] and src["models"]:
+            for m in src["models"]:
+                sz = f"  {m['size_gb']} GB" if m.get("size_gb") else ""
+                ctx.console.print(f"  - {m['name']}{sz}")
+            ctx.console.print(f"  [dim]switch:  /model use {switch} <name>[/]")
+        elif src["online"]:
+            ctx.console.print("  [dim](no models installed)[/]")
+        else:
+            ctx.console.print(
+                f"  [dim]not running — start {label} to A/B against it[/]")
+
+    # Ollama Cloud — a cloud brain; there is nothing local to probe, so
+    # it's a static entry. The agent phones out when this is selected.
+    ctx.console.print(
+        "\n[bold]Ollama Cloud[/] [dim]· https://ollama.com/v1[/]  "
+        "[cyan]cloud[/]"
+    )
+    ctx.console.print(
+        "  [dim]switch:  /model use ollama-cloud <model>   "
+        "(e.g. qwen3.5:397b — prompts for an API key, once)[/]"
+    )
+
+    ctx.console.print(
+        "\n[dim]switch:[/]  /model use local"
+        "  ·  /model use ollama <name>  ·  /model use lmstudio <name>"
+        "  ·  /model use ollama-cloud <name>"
+    )
+    return SlashResult()
+
+
+def _ensure_cloud_key(ctx: SlashContext, cfg: Any) -> bool:
+    """Make sure the external-model API key is available before we boot
+    onto a cloud endpoint. If none resolves, prompt for it with hidden
+    input and store it in the instance credential store (0600). Returns
+    False if the user supplies nothing."""
+    from jaeger_os.core import credentials as creds
+    from jaeger_os.core.external_model import resolve_api_key
+    from jaeger_os.core.instance import InstanceLayout
+
+    layout = InstanceLayout(root=Path(str(ctx.instance_dir)))
+    try:
+        if resolve_api_key(cfg.external_model, layout):
+            ctx.console.print("[dim]✓ API key already configured.[/]")
+            return True
+    except Exception:  # noqa: BLE001
+        pass
+
+    ctx.console.print(
+        "[bold]Ollama Cloud needs an API key.[/] "
+        "[dim]Create one at ollama.com → Settings → API keys.[/]"
+    )
+    try:
+        key = ctx.console.input(
+            "  paste key [dim](hidden)[/]: ", password=True
+        ).strip()
+    except (EOFError, KeyboardInterrupt):
+        ctx.console.print("\n[yellow]Cancelled — brain unchanged.[/]")
+        return False
+    if not key:
+        ctx.console.print("[yellow]No key entered — brain unchanged.[/]")
+        return False
+    try:
+        creds.set_credential(
+            layout, cfg.external_model.api_key_credential, key)
+    except Exception as exc:  # noqa: BLE001
+        ctx.console.print(f"[red]Couldn't store the key:[/] {exc}")
+        return False
+    ctx.console.print(
+        f"[green]✓ key stored[/] [dim]— "
+        f"{layout.root.name}/credentials/"
+        f"{cfg.external_model.api_key_credential}, 0600, never logged.[/]"
+    )
+    return True
+
+
+def _model_use(ctx: SlashContext, args: list[str]) -> SlashResult:
+    """Switch the brain — write external_model into config.yaml, reboot."""
+    if ctx.tui is None:
+        ctx.console.print("[yellow]Switching the brain needs the TUI.[/]")
+        return SlashResult()
+    if not args:
+        ctx.console.print("[yellow]Usage:[/] /model use local | "
+                          "ollama <name> | lmstudio <name>")
+        return SlashResult()
+
     from jaeger_os.main import _pipeline
     cfg = _pipeline.get("config")
     if cfg is None:
-        ctx.console.print(
-            "[yellow]Model info unavailable[/] — no active pipeline yet."
-        )
+        ctx.console.print("[yellow]No active pipeline.[/]")
         return SlashResult()
-    client = _pipeline.get("client")
-    ext = getattr(cfg, "external_model", None)
-    if ext is not None and ext.enabled and getattr(client, "kind", "local") == "external":
-        ctx.console.print(f"[bold]Active brain:[/] external · {ext.provider}")
-        ctx.console.print(f"[bold]Model:[/] {ext.model}")
-        if ext.provider in ("lmstudio", "openai"):
-            ctx.console.print(f"[bold]Endpoint:[/] {ext.base_url}")
-        ctx.console.print("[dim]Local-first fallback: the bundled llama-cpp model.[/]")
+
+    target = args[0].lower()
+    wanted = " ".join(args[1:]).strip()
+
+    if target in ("local", "llama-cpp", "llamacpp", "jaeger"):
+        cfg.external_model.enabled = False
+        summary = "local · llama-cpp"
+    elif target in ("ollama", "lmstudio", "lm-studio"):
+        provider = "ollama" if target == "ollama" else "lmstudio"
+        from jaeger_os.core.model_discovery import (
+            discover_lmstudio, discover_ollama,
+        )
+        disc = (discover_ollama() if provider == "ollama"
+                else discover_lmstudio())
+        if not disc["online"]:
+            ctx.console.print(
+                f"[red]{provider} isn't running[/] at {disc['endpoint']} — "
+                "start the server first."
+            )
+            return SlashResult()
+        avail = [m["name"] for m in disc["models"]]
+        if not wanted:
+            if len(avail) == 1:
+                wanted = avail[0]
+            else:
+                ctx.console.print(
+                    f"[yellow]Pick a model:[/] /model use {target} <name>")
+                for n in avail:
+                    ctx.console.print(f"  - {n}")
+                return SlashResult()
+        elif avail and wanted not in avail:
+            ctx.console.print(
+                f"[dim]note: {wanted!r} isn't in {provider}'s list — "
+                "trying it anyway[/]")
+        cfg.external_model.enabled = True
+        cfg.external_model.provider = provider
+        cfg.external_model.base_url = (
+            "http://localhost:11434/v1" if provider == "ollama"
+            else "http://localhost:1234/v1"
+        )
+        cfg.external_model.model = wanted
+        summary = f"external · {provider} · {wanted}"
+    elif target in ("ollama-cloud", "ollamacloud", "cloud"):
+        if not wanted:
+            ctx.console.print(
+                "[yellow]Pick a model:[/] "
+                "[bold]/model use ollama-cloud <model>[/]\n"
+                "[dim]e.g. /model use ollama-cloud qwen3.5:397b — browse "
+                "the cloud catalog at ollama.com/library.[/]")
+            return SlashResult()
+        cfg.external_model.enabled = True
+        cfg.external_model.provider = "ollama-cloud"
+        cfg.external_model.base_url = "https://ollama.com/v1"
+        cfg.external_model.model = wanted
+        # The cloud endpoint needs a real API key — make sure one is on
+        # hand (prompting + storing it if not) before we reboot onto it.
+        if not _ensure_cloud_key(ctx, cfg):
+            return SlashResult()
+        summary = f"external · ollama-cloud · {wanted}"
     else:
-        ctx.console.print(f"[bold]Active brain:[/] local · llama-cpp")
-        ctx.console.print(f"[bold]Model:[/] {cfg.model.model_path}")
-        if ext is not None and ext.enabled:
-            ctx.console.print(
-                "[yellow]Note:[/] external_model is enabled in config but "
-                "the external endpoint was unreachable at boot — running local."
-            )
-        else:
-            ctx.console.print(
-                "[dim]To use an external model (LM Studio / Claude), set "
-                "external_model in config.yaml — see docs/external_models.md.[/]"
-            )
+        ctx.console.print(
+            f"[yellow]Unknown target {target!r}[/] — "
+            "use local / ollama / lmstudio / ollama-cloud.")
+        return SlashResult()
+
+    # Persist to config.yaml, then reboot so make_client rebuilds the brain.
+    from jaeger_os.core.instance import InstanceLayout
+    from jaeger_os.core.schemas import dump_yaml
+    name = Path(str(ctx.instance_dir)).name
+    try:
+        dump_yaml(
+            InstanceLayout(root=Path(str(ctx.instance_dir))).config_path, cfg)
+    except Exception as exc:  # noqa: BLE001
+        ctx.console.print(f"[red]Couldn't save config:[/] {exc}")
+        return SlashResult()
+    ctx.console.print(
+        f"[yellow]Switching brain → {summary}[/] [dim](rebooting…)[/]")
+    try:
+        ctx.tui.switch_instance(name)
+    except Exception as exc:  # noqa: BLE001
+        ctx.console.print(f"[red]Reboot failed:[/] {exc}")
+        return SlashResult()
+    ctx.console.print(f"[green]✓ Brain is now {summary}.[/]")
     return SlashResult()
 
 
@@ -304,12 +540,36 @@ def _plugins(ctx: SlashContext, args: str) -> SlashResult:  # noqa: ARG001
 _GOAL_CLEAR_ALIASES = {"clear", "stop", "off", "reset", "none", "cancel"}
 
 
+# A goal that reads like "build/make/create … a skill/tool" — those want
+# Deep Think (autonomous skill authoring with the coder model), not the
+# realtime goal loop.
+_SKILL_DEV_RE = re.compile(
+    r"\b(make|build|create|write|develop|implement|add)\b.{0,40}\b"
+    r"(skill|tool|plugin|capability|ability|integration)\b",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def _looks_like_skill_dev(condition: str) -> bool:
+    """True when a goal is in-depth skill development → route to Deep Think."""
+    return bool(_SKILL_DEV_RE.search(condition or ""))
+
+
+def _goal_title(text: str, limit: int = 70) -> str:
+    """A short one-line title for a board card built from a goal."""
+    first = next((ln.strip() for ln in (text or "").splitlines() if ln.strip()),
+                 "goal")
+    return first[:limit].strip() or "goal"
+
+
 def _goal(ctx: SlashContext, args: str) -> SlashResult:
     """``/goal``              show active goal status + most recent eval reason
-       ``/goal <condition>``  set a new completion condition
+       ``/goal <condition>``  set a goal — clarifies, then asks whether to
+                              start now, queue on the board, or hand it to
+                              Deep Think (skill-development goals)
        ``/goal clear``        clear the active goal (aliases: stop, off, reset, none, cancel)
     """
-    from jaeger_os.main import clear_goal, get_goal, set_goal
+    from jaeger_os.main import clarify_goal, clear_goal, get_goal, set_goal
 
     body = args.strip()
 
@@ -349,22 +609,122 @@ def _goal(ctx: SlashContext, args: str) -> SlashResult:
         ctx.console.print(table)
         return SlashResult()
 
-    # ── Set path ──
+    # ── Set path: clarify → choose disposition → act ──
     if len(body) > 4000:
         ctx.console.print(
             f"[red]Goal condition too long ({len(body)} chars; max 4000).[/]"
         )
         return SlashResult()
-    goal = set_goal(body)
+
+    client = getattr(ctx.tui, "_client", None) if ctx.tui is not None else None
+
+    # 1. Clarify — ask only genuinely-necessary follow-ups.
+    questions: list[str] = []
+    if client is not None:
+        with ctx.console.status("[dim]considering what to ask…[/]",
+                                spinner="dots"):
+            questions = clarify_goal(client, body)
+    answers: list[str] = []
+    for q in questions:
+        try:
+            a = ctx.console.input(f"  [cyan]?[/] {q}\n    ").strip()
+        except (EOFError, KeyboardInterrupt):
+            a = ""
+        if a:
+            answers.append(f"{q}  →  {a}")
+    condition = body
+    if answers:
+        condition = body + "\n\nClarifications:\n" + "\n".join(
+            f"- {a}" for a in answers
+        )
+
+    # 2. Disposition — start now, queue on the board, or hand to Deep Think.
+    skill_dev = _looks_like_skill_dev(body)
+    if skill_dev:
+        ctx.console.print(
+            "\n[bold]How should I take this on?[/] "
+            "[dim](looks like skill development)[/]\n"
+            "  [bold]d[/] — Deep Think: autonomous skill build "
+            "[green](recommended)[/]\n"
+            "  [bold]s[/] — Start now: work it as a goal loop this session\n"
+            "  [bold]b[/] — Board: queue it on the kanban board\n"
+            "  [bold]c[/] — Cancel"
+        )
+        default = "d"
+    else:
+        ctx.console.print(
+            "\n[bold]How should I take this on?[/]\n"
+            "  [bold]s[/] — Start now: work it as a goal loop this session "
+            "[green](recommended)[/]\n"
+            "  [bold]b[/] — Board: queue it on the kanban board\n"
+            "  [bold]d[/] — Deep Think: autonomous skill-development mode\n"
+            "  [bold]c[/] — Cancel"
+        )
+        default = "s"
+    try:
+        choice = (ctx.console.input(f"  choice [{default}]: ").strip().lower()
+                  or default)[:1]
+    except (EOFError, KeyboardInterrupt):
+        choice = "c"
+
+    # 3. Act.
+    if choice == "c":
+        ctx.console.print("[dim]Goal cancelled.[/]")
+        return SlashResult()
+
+    if choice == "b":
+        try:
+            pri = (ctx.console.input(
+                "  priority — high / med / low [med]: ").strip().lower()
+                or "med")
+        except (EOFError, KeyboardInterrupt):
+            pri = "med"
+        if pri not in ("high", "med", "low"):
+            pri = "med"
+        try:
+            card = _board_for_ctx(ctx).add(
+                _goal_title(body), column="ready", description=condition,
+                source="goal", created_by="user", priority=pri,
+            )
+        except Exception as exc:  # noqa: BLE001
+            ctx.console.print(f"[red]Couldn't add to the board:[/] {exc}")
+            return SlashResult()
+        ctx.console.print(
+            f"[green]Queued on the board[/] [{card.id}] "
+            f"[dim]({pri} priority, 'ready' column)[/] — see [bold]/board[/]."
+        )
+        return SlashResult()
+
+    if choice == "d":
+        try:
+            task = _deep_think_queue(ctx).add(condition, source="user")
+        except Exception as exc:  # noqa: BLE001
+            ctx.console.print(f"[red]Couldn't queue for Deep Think:[/] {exc}")
+            return SlashResult()
+        ctx.console.print(
+            f"[green]Queued for Deep Think[/] [{task.id}] {task.description}"
+        )
+        try:
+            now = ctx.console.input(
+                "  start Deep Think now? [y/N]: ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            now = ""
+        if now.startswith("y"):
+            return SlashResult(extras={"deep_think_start": True})
+        ctx.console.print(
+            "[dim]Run [bold]/deepthink start[/] when you're ready.[/]"
+        )
+        return SlashResult()
+
+    # choice == "s" (and the fallback) — start the goal loop now.
+    goal = set_goal(condition)
     ctx.console.print(
-        f"[green]Goal set:[/] {goal.condition!r}\n"
-        f"[dim]The TUI will run an evaluator after each turn until the "
-        f"condition is met or {goal.max_iterations} turns elapse. Type "
-        f"[bold]/goal clear[/] to stop early.[/]"
+        f"[green]Goal set:[/] {_goal_title(goal.condition)!r}\n"
+        f"[dim]I'll run an evaluator after each turn until it's met or "
+        f"{goal.max_iterations} turns elapse. [bold]/goal clear[/] stops it.[/]"
     )
-    # Return a special marker the REPL reads to fire the FIRST turn
-    # immediately using the condition itself as the prompt (matches
-    # Claude Code's behavior: "Setting a goal starts a turn immediately").
+    # The marker the REPL reads to fire the FIRST turn immediately, using
+    # the condition itself as the prompt.
     return SlashResult(message="", quit=False, extras={"goal_just_set": True})
 
 
@@ -667,12 +1027,405 @@ def _factoryreset(ctx: SlashContext, args: str) -> SlashResult:  # noqa: ARG001
     )
 
 
+# ── Voice ────────────────────────────────────────────────────────────
+
+
+_VOICE_FEATURES = {
+    "wake": "wake_word", "wakeword": "wake_word", "wake-word": "wake_word",
+    "followup": "follow_up", "follow-up": "follow_up", "follow": "follow_up",
+    "bargein": "barge_in", "barge-in": "barge_in", "barge": "barge_in",
+    "mic": "enabled", "enabled": "enabled",
+}
+_VOICE_ON_WORDS = {"on", "true", "yes", "1", "enable", "enabled"}
+
+
+def _voice(ctx: SlashContext, args: str) -> SlashResult:
+    """Show or change voice settings.
+
+    `/voice` alone prints the current settings. `/voice on|off` turns
+    the always-on mic on or off. `/voice wake|followup|bargein on|off`
+    toggles that feature. Every change persists to config.yaml and is
+    applied live."""
+    tui = ctx.tui
+    if tui is None:
+        ctx.console.print("[yellow]Voice settings need the TUI.[/]")
+        return SlashResult()
+    parts = args.split()
+    if not parts:
+        ctx.console.print(tui.voice_status_text())
+        return SlashResult()
+
+    word = parts[0].lower()
+    if word in {"on", "off"}:
+        ctx.console.print(tui.apply_voice_setting("enabled", word == "on"))
+        return SlashResult()
+    if word in _VOICE_FEATURES and len(parts) >= 2:
+        on = parts[1].lower() in _VOICE_ON_WORDS
+        ctx.console.print(tui.apply_voice_setting(_VOICE_FEATURES[word], on))
+        return SlashResult()
+
+    ctx.console.print(
+        "[yellow]Usage:[/] /voice · /voice on│off · "
+        "/voice wake│followup│bargein on│off"
+    )
+    return SlashResult()
+
+
+# ── Session info / control ───────────────────────────────────────────
+
+
+def _status(ctx: SlashContext, args: str) -> SlashResult:  # noqa: ARG001
+    """Show session info — model, instance, uptime, context, mic."""
+    import time as _time
+    tui = ctx.tui
+    if tui is None:
+        ctx.console.print("[yellow]/status needs the TUI.[/]")
+        return SlashResult()
+    up = _time.perf_counter() - getattr(tui, "_started_at", _time.perf_counter())
+    hrs, mins = int(up // 3600), int((up % 3600) // 60)
+    mic = "on" if (getattr(tui, "_voice", None) is not None
+                   and tui._voice.running) else "off"
+    table = Table(show_header=False, box=None)
+    table.add_column(style="bold cyan")
+    table.add_column()
+    table.add_row("Model", str(getattr(tui, "model_name", "?")))
+    table.add_row("Instance", Path(str(ctx.instance_dir)).name)
+    table.add_row("Session", str(getattr(tui, "session_id", "?")))
+    table.add_row("Uptime", f"{hrs}h {mins:02d}m")
+    table.add_row("Context", f"{getattr(tui, '_context_tokens', 0):,}/"
+                             f"{getattr(tui, '_context_max', 0):,}")
+    table.add_row("Mic", mic)
+    ctx.console.print(table)
+    return SlashResult()
+
+
+def _statusbar(ctx: SlashContext, args: str) -> SlashResult:  # noqa: ARG001
+    """Toggle the bottom status bar under the input line."""
+    tui = ctx.tui
+    if tui is None:
+        ctx.console.print("[yellow]/statusbar needs the TUI.[/]")
+        return SlashResult()
+    tui._statusbar_on = not getattr(tui, "_statusbar_on", True)
+    ctx.console.print(
+        f"[dim]Status bar {'shown' if tui._statusbar_on else 'hidden'}.[/]"
+    )
+    return SlashResult()
+
+
+def _busy(ctx: SlashContext, args: str) -> SlashResult:
+    """Show or set what Enter does while the agent is mid-turn."""
+    tui = ctx.tui
+    mode = args.strip().lower()
+    if not mode:
+        cur = getattr(tui, "_busy_mode", "interrupt") if tui else "interrupt"
+        ctx.console.print(
+            f"[bold]Busy-input mode[/] — currently [cyan]{cur}[/]\n"
+            "  [dim]What a typed message does while the agent is working:[/]\n"
+            "  [bold]interrupt[/]  stop the running turn, run the new one now\n"
+            "  [bold]queue[/]      run the new message after the current turn\n"
+            "  [bold]steer[/]      run the new message as the very next turn\n"
+            "  [dim]change with[/] [bold]/busy interrupt│queue│steer[/]"
+        )
+        return SlashResult()
+    if tui is None or not hasattr(tui, "set_busy_mode"):
+        return SlashResult(message="[yellow]/busy needs the TUI.[/]")
+    if tui.set_busy_mode(mode):
+        return SlashResult(message=f"[green]busy-input mode[/] → {mode}")
+    return SlashResult(
+        message=f"[yellow]Unknown mode '{mode}'.[/] "
+                "Use interrupt, queue, or steer."
+    )
+
+
+def _steer(ctx: SlashContext, args: str) -> SlashResult:
+    """Send a message that steers the running turn (or runs now if idle)."""
+    text = args.strip()
+    if not text:
+        return SlashResult(message="[yellow]Usage:[/] /steer <message>")
+    tui = ctx.tui
+    if tui is None or not hasattr(tui, "_submit_turn"):
+        return SlashResult(message="[yellow]/steer needs the TUI.[/]")
+    running = getattr(tui, "_turn_running", None)
+    if running is not None and running.is_set():
+        tui._submit_steer(text)
+    else:
+        tui._submit_turn("text", text)
+    return SlashResult()
+
+
+def _stop(ctx: SlashContext, args: str) -> SlashResult:  # noqa: ARG001
+    """Stop every running background process."""
+    try:
+        from jaeger_os.core import tools as _jt
+        listing = _jt.list_background()
+    except Exception as exc:  # noqa: BLE001
+        ctx.console.print(f"[red]Couldn't list background processes:[/] {exc}")
+        return SlashResult()
+    procs: list = []
+    if isinstance(listing, dict):
+        for key in ("processes", "running", "background", "items"):
+            if isinstance(listing.get(key), list):
+                procs = listing[key]
+                break
+    if not procs:
+        ctx.console.print("[dim]No background processes running.[/]")
+        return SlashResult()
+    from jaeger_os.core import tools as _jt
+    stopped = 0
+    for p in procs:
+        pid = ((p.get("id") or p.get("process_id") or p.get("pid")
+                or p.get("name")) if isinstance(p, dict) else p)
+        if not pid:
+            continue
+        try:
+            _jt.stop_background(str(pid))
+            stopped += 1
+        except Exception:  # noqa: BLE001
+            pass
+    ctx.console.print(f"[green]Stopped {stopped} background process(es).[/]")
+    return SlashResult()
+
+
+def _save(ctx: SlashContext, args: str) -> SlashResult:  # noqa: ARG001
+    """Save the current conversation to a markdown file in the instance."""
+    import time as _time
+    try:
+        from jaeger_os.main import _DEFAULT_SESSION_KEY, _get_session_history
+        history = _get_session_history(_DEFAULT_SESSION_KEY)
+    except Exception as exc:  # noqa: BLE001
+        ctx.console.print(f"[red]Couldn't read the conversation:[/] {exc}")
+        return SlashResult()
+    speaker = str(getattr(ctx.tui, "model_name", "") or "Assistant")
+    lines: list[str] = []
+    for msg in history or []:
+        for part in getattr(msg, "parts", []):
+            pk = getattr(part, "part_kind", None)
+            content = getattr(part, "content", None)
+            if pk == "user-prompt" and content:
+                lines.append(f"**User:** {content}")
+            elif pk == "text" and content:
+                lines.append(f"**{speaker}:** {content}")
+    if not lines:
+        ctx.console.print("[dim]Nothing to save — the conversation is empty.[/]")
+        return SlashResult()
+    out_dir = Path(str(ctx.instance_dir)) / "logs"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    stamp = _time.strftime("%Y%m%d_%H%M%S")
+    path = out_dir / f"conversation_{stamp}.md"
+    try:
+        path.write_text(
+            f"# Conversation — {stamp}\n\n" + "\n\n".join(lines) + "\n",
+            encoding="utf-8",
+        )
+    except Exception as exc:  # noqa: BLE001
+        ctx.console.print(f"[red]Couldn't save:[/] {exc}")
+        return SlashResult()
+    ctx.console.print(f"[green]Saved[/] [dim]{len(lines)} turns →[/] {path}")
+    return SlashResult()
+
+
+# ── Conversation commands ───────────────────────────────────────────
+
+
+def _copy_to_clipboard(text: str) -> bool:
+    """Best-effort copy to the OS clipboard. True on success."""
+    import subprocess
+    import sys as _sys
+    if _sys.platform == "darwin":
+        cmds = [["pbcopy"]]
+    elif _sys.platform.startswith("win"):
+        cmds = [["clip"]]
+    else:
+        cmds = [["wl-copy"], ["xclip", "-selection", "clipboard"]]
+    for cmd in cmds:
+        try:
+            subprocess.run(cmd, input=text.encode("utf-8"),
+                           check=True, timeout=5)
+            return True
+        except Exception:  # noqa: BLE001
+            continue
+    return False
+
+
+def _new(ctx: SlashContext, args: str) -> SlashResult:  # noqa: ARG001
+    """Start a fresh session — clear the in-process conversation history
+    (episodic memory on disk is untouched)."""
+    from jaeger_os.main import reset_session
+    dropped = reset_session()
+    tui = ctx.tui
+    if tui is not None:
+        from .status import make_session_id
+        tui.session_id = make_session_id()
+        tui._turn_count = 0
+        tui._context_tokens = 0
+        tui._last_answer = ""
+    return SlashResult(
+        message=f"[green]✦ new session[/] — cleared {dropped} message(s). "
+                "[dim]Memory on disk is kept.[/]"
+    )
+
+
+def _history(ctx: SlashContext, args: str) -> SlashResult:  # noqa: ARG001
+    """Show the recent conversation history inline."""
+    from jaeger_os.main import _DEFAULT_SESSION_KEY, _get_session_history
+    try:
+        history = _get_session_history(_DEFAULT_SESSION_KEY)
+    except Exception as exc:  # noqa: BLE001
+        return SlashResult(message=f"[red]Couldn't read history:[/] {exc}")
+    speaker = str(getattr(ctx.tui, "model_name", "") or "agent")
+    rows: list[tuple[str, str]] = []
+    for msg in history or []:
+        for part in getattr(msg, "parts", []):
+            pk = getattr(part, "part_kind", None)
+            content = getattr(part, "content", None)
+            if pk == "user-prompt" and content:
+                rows.append(("you", str(content)))
+            elif pk == "text" and content:
+                rows.append((speaker, str(content)))
+    if not rows:
+        return SlashResult(message="[dim]No conversation history yet.[/]")
+    ctx.console.print(f"[bold]Conversation[/] [dim]— last "
+                      f"{min(len(rows), 16)} of {len(rows)} message(s)[/]")
+    for who, text in rows[-16:]:
+        one = " ".join(text.split())
+        clipped = one[:160] + ("…" if len(one) > 160 else "")
+        tag_style = "bold cyan" if who == "you" else ACCENT_BOLD
+        line = Text("  ")
+        line.append(f"{who}: ", style=tag_style)
+        line.append(clipped)
+        ctx.console.print(line)
+    return SlashResult()
+
+
+def _copy(ctx: SlashContext, args: str) -> SlashResult:  # noqa: ARG001
+    """Copy the agent's most recent reply to the system clipboard."""
+    text = str(getattr(ctx.tui, "_last_answer", "") or "")
+    if not text:
+        return SlashResult(message="[yellow]Nothing to copy yet.[/]")
+    if _copy_to_clipboard(text):
+        return SlashResult(
+            message=f"[green]✓ copied[/] [dim]{len(text)} chars to the "
+                    "clipboard.[/]")
+    return SlashResult(
+        message="[yellow]Couldn't reach a clipboard tool[/] "
+                "[dim](pbcopy / xclip / wl-copy).[/]")
+
+
+def _undo(ctx: SlashContext, args: str) -> SlashResult:  # noqa: ARG001
+    """Drop the last user→assistant exchange from the conversation."""
+    from jaeger_os.main import pop_last_exchange
+    dropped = pop_last_exchange()
+    if dropped is None:
+        return SlashResult(message="[dim]Nothing to undo.[/]")
+    one = " ".join(dropped.split())
+    return SlashResult(
+        message=f"[green]↶ undone[/] [dim]— removed: {one[:70]}[/]")
+
+
+def _retry(ctx: SlashContext, args: str) -> SlashResult:  # noqa: ARG001
+    """Re-run the last user message — drops the last exchange, re-sends."""
+    tui = ctx.tui
+    if tui is None or not hasattr(tui, "_submit_turn"):
+        return SlashResult(message="[yellow]/retry needs the TUI.[/]")
+    from jaeger_os.main import pop_last_exchange
+    text = pop_last_exchange()
+    if text is None:
+        return SlashResult(message="[dim]Nothing to retry.[/]")
+    one = " ".join(text.split())
+    ctx.console.print(f"[dim]↻ retrying:[/] {one[:80]}")
+    tui._submit_turn("text", text)
+    return SlashResult()
+
+
+def _verbose(ctx: SlashContext, args: str) -> SlashResult:  # noqa: ARG001
+    """Toggle whether the ┊ tool-activity lines are shown."""
+    from jaeger_os.main import _pipeline
+    new = not _pipeline.get("show_tool_activity", True)
+    _pipeline["show_tool_activity"] = new
+    return SlashResult(
+        message=f"[green]tool activity[/] → {'shown' if new else 'hidden'}")
+
+
+def _usage(ctx: SlashContext, args: str) -> SlashResult:  # noqa: ARG001
+    """Show this session's usage — turns, timing, context estimate."""
+    from jaeger_os.main import _pipeline
+    tui = ctx.tui
+    model = str(getattr(tui, "model_name", "")
+                or getattr(_pipeline.get("config", None), "instance_name", "?"))
+    turns = int(getattr(tui, "_turn_count", 0) or 0)
+    last_s = float(getattr(tui, "_last_turn_s", 0.0) or 0.0)
+    tok = int(getattr(tui, "_context_tokens", 0) or 0)
+    mx = int(getattr(tui, "_context_max", 0) or 0)
+    pct = int(tok / mx * 100) if mx else 0
+    ctx.console.print("[bold]Session usage[/]")
+    ctx.console.print(f"  model        [cyan]{model}[/]")
+    ctx.console.print(f"  turns        {turns}")
+    ctx.console.print(f"  last turn    {last_s:.1f}s")
+    ctx.console.print(
+        f"  context      ~{tok:,} / {mx:,} tokens ({pct}%) "
+        "[dim](estimate)[/]")
+    return SlashResult()
+
+
+def _config(ctx: SlashContext, args: str) -> SlashResult:  # noqa: ARG001
+    """Show the booted instance's configuration (read-only)."""
+    from jaeger_os.main import _pipeline
+    cfg = _pipeline.get("config")
+    if cfg is None:
+        return SlashResult(message="[yellow]No active config.[/]")
+    m, ext = cfg.model, cfg.external_model
+    perms = getattr(cfg, "permissions", None)
+    brain = (f"external · {ext.provider} · {ext.model}"
+             if getattr(ext, "enabled", False)
+             else f"local · {m.backend} · {m.model_path}")
+    ctx.console.print(f"[bold]Config[/] [dim]— instance "
+                      f"{cfg.instance_name}[/]")
+    ctx.console.print(f"  brain        [cyan]{brain}[/]")
+    ctx.console.print(f"  context      {m.ctx} tokens")
+    ctx.console.print(f"  permissions  {getattr(perms, 'mode', 'confirm')}")
+    ctx.console.print(
+        f"  busy input   {getattr(cfg.display, 'busy_input_mode', 'interrupt')}")
+    ctx.console.print(
+        f"  voice        {'on' if cfg.voice.enabled else 'off'}  "
+        f"[dim]wake={cfg.voice.wake_word} "
+        f"barge_in={cfg.voice.barge_in}[/]")
+    ctx.console.print(
+        f"  deep think   idle {cfg.deep_think.auto_idle_minutes}m  "
+        f"[dim]coder={cfg.deep_think.coder_model}[/]")
+    ctx.console.print("  [dim]edit with /model, /voice, /busy — or "
+                      "config.yaml + /reboot.[/]")
+    return SlashResult()
+
+
+def _skills(ctx: SlashContext, args: str) -> SlashResult:  # noqa: ARG001
+    """List the skills currently loaded — each skill is a tool bundle."""
+    try:
+        from jaeger_os.core import toolsets as _ts
+        summaries = dict(_ts._SKILL_SUMMARY)
+        members = dict(_ts._SKILL_TOOLSETS)
+    except Exception as exc:  # noqa: BLE001
+        ctx.console.print(f"[red]Couldn't read skills:[/] {exc}")
+        return SlashResult()
+    if not summaries:
+        ctx.console.print("[dim]No skills loaded.[/]")
+        return SlashResult()
+    table = Table(show_header=True, header_style="bold cyan")
+    table.add_column("Skill")
+    table.add_column("Tools")
+    table.add_column("Summary")
+    for name in sorted(summaries):
+        table.add_row(name, str(len(members.get(name, ()))), summaries[name])
+    ctx.console.print(table)
+    return SlashResult()
+
+
 # ── Registry ─────────────────────────────────────────────────────────
 
 
 REGISTRY: tuple[SlashCommand, ...] = (
     SlashCommand("help",      "show this command list", _help),
     SlashCommand("tools",     "list available agent tools by category", _tools),
+    SlashCommand("skills",    "list the skills currently loaded", _skills),
     SlashCommand("facts",     "list stored facts (memory)", _facts),
     SlashCommand("instance",  "show active instance; `/instance <name>` to hot-switch", _instance),
     SlashCommand("instances", "list every available instance", _instances),
@@ -683,10 +1436,25 @@ REGISTRY: tuple[SlashCommand, ...] = (
     SlashCommand("goal",      "show/set/clear an autonomous completion condition (Claude-Code-style)", _goal),
     SlashCommand("deepthink", "autonomous skill-development mode: add/list/approve/start", _deepthink),
     SlashCommand("board",     "kanban task board: show/add/approve/done/move", _board),
+    SlashCommand("voice",     "show/change voice settings (mic, wake word, follow-up, barge-in)", _voice),
+    SlashCommand("status",    "show session info — model, instance, uptime, context, mic", _status),
+    SlashCommand("statusbar", "toggle the bottom status bar", _statusbar),
+    SlashCommand("busy",      "set what Enter does mid-turn: interrupt│queue│steer", _busy),
+    SlashCommand("steer",     "`/steer <msg>` — steer the running turn (or run it now)", _steer),
+    SlashCommand("usage",     "session usage — turns, timing, context estimate", _usage),
+    SlashCommand("config",    "show the booted instance's configuration", _config),
+    SlashCommand("verbose",   "toggle the ┊ tool-activity lines on/off", _verbose),
+    SlashCommand("new",       "start a fresh session — clear the conversation", _new),
+    SlashCommand("history",   "show the recent conversation history inline", _history),
+    SlashCommand("copy",      "copy the agent's last reply to the clipboard", _copy),
+    SlashCommand("undo",      "drop the last user→assistant exchange", _undo),
+    SlashCommand("retry",     "re-run the last user message", _retry),
+    SlashCommand("stop",      "stop all running background processes", _stop),
+    SlashCommand("save",      "save the current conversation to a file", _save),
     SlashCommand("reboot",    "tear down + re-boot the pipeline (reload model/skills/config)", _reboot),
     SlashCommand("shutdown",  "shut the Jaeger down cleanly", _shutdown),
     SlashCommand("factoryreset", "erase the instance → next launch runs first-time setup", _factoryreset),
-    SlashCommand("reset",     "(placeholder) reset session state", _reset),
+    SlashCommand("reset",     "alias for /new — clear the conversation", _reset),
     SlashCommand("quit",      "exit the TUI", _quit),
 )
 _BY_NAME: dict[str, SlashCommand] = {c.name: c for c in REGISTRY}

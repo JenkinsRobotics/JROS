@@ -50,7 +50,7 @@ from .files import (
 from .time_and_math import calculate, get_time, system_status
 
 # Memory
-from .memory import forget, list_facts, recall, remember, search_memory
+from .memory import forget, list_facts, memory, recall, remember, search_memory
 
 # Scheduling
 from .scheduling import cancel_schedule, list_schedules, schedule_prompt
@@ -109,10 +109,19 @@ from .background import (
 from .deepthink_tools import list_deep_think_queue, propose_deep_think_task
 
 # Kanban task board
-from .board import board_add, board_move, board_update, board_view
+from .board import board_add, board_move, board_update, board_view, kanban
+
+# Browser automation (Playwright) — one consolidated browser() tool
+from .browser import browser
+
+# Playbook skills — the skill() discover/read tool
+from .skills import skill
 
 # In-session task list (planning scratchpad)
 from .todo import reset_todos, todo
+
+# Self-update — the agent editing its own identity.yaml / soul.md
+from .identity_tools import set_name, update_soul
 
 
 __all__ = [
@@ -125,7 +134,7 @@ __all__ = [
     # time_and_math
     "get_time", "calculate", "system_status",
     # memory
-    "remember", "recall", "forget", "list_facts", "search_memory",
+    "remember", "recall", "forget", "list_facts", "search_memory", "memory",
     # scheduling
     "schedule_prompt", "list_schedules", "cancel_schedule",
     # web
@@ -159,7 +168,13 @@ __all__ = [
     # deep think
     "propose_deep_think_task", "list_deep_think_queue",
     # kanban board
-    "board_view", "board_add", "board_move", "board_update",
+    "board_view", "board_add", "board_move", "board_update", "kanban",
+    # browser automation
+    "browser",
+    # playbook skills
+    "skill",
     # in-session task list
     "todo", "reset_todos",
+    # self-update (own identity / soul)
+    "set_name", "update_soul",
 ]

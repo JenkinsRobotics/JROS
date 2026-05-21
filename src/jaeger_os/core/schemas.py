@@ -78,6 +78,11 @@ class DisplayConfig(BaseModel):
     show_latency: bool = False
     show_tool_activity: bool = True
     show_help_on_start: bool = True
+    # What pressing Enter does while the agent is mid-turn (hermes parity):
+    #   "interrupt" — cancel the running turn, run the new message now
+    #   "queue"     — run the new message after the current turn finishes
+    #   "steer"     — inject the message into the running turn as guidance
+    busy_input_mode: str = "interrupt"
 
 
 class RetentionConfig(BaseModel):
@@ -125,15 +130,66 @@ class DeepThinkConfig(BaseModel):
     )
 
 
+class VoiceConfig(BaseModel):
+    """Always-on voice settings.
+
+    A Jaeger is embodied — like a person, it always listens. The TUI
+    keeps the mic live for the whole session, so the user can talk or
+    type at any moment. Every field is tunable live from the TUI with
+    ``/voice`` and persisted back to config.yaml.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+    enabled: bool = Field(
+        True,
+        description="Mic live from TUI boot. Off = text-only TUI.",
+    )
+    wake_word: bool = Field(
+        True,
+        description=(
+            "Require a wake phrase ('hey <name>') to address the agent. "
+            "Off = every spoken utterance is sent straight to the agent."
+        ),
+    )
+    follow_up: bool = Field(
+        True,
+        description=(
+            "After a reply, open a short window where the user can speak "
+            "again without re-saying the wake word."
+        ),
+    )
+    barge_in: bool = Field(
+        True,
+        description=(
+            "Allow interrupting the agent mid-sentence by speaking. Uses "
+            "echo cancellation (speexdsp) so the open mic doesn't hear the "
+            "agent itself; falls back to mic-pause when speexdsp is absent."
+        ),
+    )
+    follow_up_seconds: float = Field(
+        15.0, ge=2.0, le=120.0,
+        description="Length of the no-wake-word follow-up window.",
+    )
+
+
 class ExternalModelConfig(BaseModel):
     """Opt-in external-model pipeline. Jaeger is local-first — this is
     OFF by default. When ``enabled``, the agent's brain runs on an
     external provider instead of the in-process llama-cpp model.
 
     Providers:
-      • ``lmstudio``  — a local LM Studio server (OpenAI-compatible HTTP)
-      • ``openai``    — any OpenAI-compatible cloud / self-hosted endpoint
-      • ``anthropic`` — Claude via the Anthropic API
+      • ``lmstudio``     — a local LM Studio server (OpenAI-compatible HTTP)
+      • ``ollama``       — a local Ollama server (OpenAI-compatible HTTP)
+      • ``ollama-cloud`` — Ollama Cloud (https://ollama.com/v1), an
+                           OpenAI-compatible cloud endpoint; needs a key
+      • ``openai``       — any OpenAI-compatible cloud / self-hosted endpoint
+      • ``anthropic``    — Claude via the Anthropic API
+
+    ``lmstudio`` and ``ollama`` are both still on-device — a separate
+    local server, used to A/B against the in-process model when
+    troubleshooting whether the local llama-cpp model is at fault.
+    ``ollama-cloud`` and ``openai`` are true cloud brains (the agent
+    phones out) — off by default, like the rest of this block.
 
     The API key is NEVER stored in this file. It is read from the
     instance's credentials/ store by the name in ``api_key_credential``
@@ -143,10 +199,13 @@ class ExternalModelConfig(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
     enabled: bool = False
-    provider: Literal["lmstudio", "openai", "anthropic"] = "lmstudio"
+    provider: Literal[
+        "lmstudio", "ollama", "ollama-cloud", "openai", "anthropic",
+    ] = "lmstudio"
     base_url: str = Field(
         "http://localhost:1234/v1",
-        description="OpenAI-compatible endpoint (lmstudio / openai). Ignored for anthropic.",
+        description=("OpenAI-compatible endpoint (lmstudio / ollama / openai). "
+                     "LM Studio: :1234/v1 · Ollama: :11434/v1. Ignored for anthropic."),
     )
     model: str = Field(
         "local-model",
@@ -207,6 +266,7 @@ class Config(BaseModel):
     skills: SkillsConfig = Field(default_factory=SkillsConfig)
     retention: RetentionConfig = Field(default_factory=RetentionConfig)
     deep_think: DeepThinkConfig = Field(default_factory=DeepThinkConfig)
+    voice: VoiceConfig = Field(default_factory=VoiceConfig)
     external_model: ExternalModelConfig = Field(default_factory=ExternalModelConfig)
     warmup: WarmupConfig = Field(default_factory=WarmupConfig)
     permissions: PermissionsConfig = Field(default_factory=PermissionsConfig)

@@ -72,6 +72,32 @@ def test_build_lmstudio_model_no_key_needed():
     assert type(model).__name__ == "OpenAIChatModel"
 
 
+def test_build_ollama_cloud_requires_key():
+    """Ollama Cloud is a real cloud endpoint — no placeholder key; an
+    empty key must fail loud rather than silently mis-authenticate."""
+    ext = ExternalModelConfig(
+        enabled=True, provider="ollama-cloud",
+        base_url="https://ollama.com/v1", model="qwen3.5:397b",
+    )
+    with pytest.raises(ExternalModelError):
+        build_external_model(ext, api_key="")
+
+
+def test_build_ollama_cloud_with_key():
+    ext = ExternalModelConfig(
+        enabled=True, provider="ollama-cloud",
+        base_url="https://ollama.com/v1", model="qwen3.5:397b",
+    )
+    model = build_external_model(ext, api_key="fake-key")
+    assert type(model).__name__ == "OpenAIChatModel"
+
+
+def test_resolve_ollama_cloud_key_from_conventional_env(monkeypatch):
+    ext = ExternalModelConfig(provider="ollama-cloud", api_key_env="")
+    monkeypatch.setenv("OLLAMA_API_KEY", "ollama-cloud-key")
+    assert resolve_api_key(ext, layout=None) == "ollama-cloud-key"
+
+
 def test_build_anthropic_requires_key():
     ext = ExternalModelConfig(enabled=True, provider="anthropic", model="claude-x")
     with pytest.raises(ExternalModelError):

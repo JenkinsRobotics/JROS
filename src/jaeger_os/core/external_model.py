@@ -37,9 +37,20 @@ from typing import Any
 from .schemas import ExternalModelConfig
 
 
-# OpenAI-compatible providers (lmstudio, openai) all speak the same
-# /chat/completions wire format; only anthropic is its own shape.
-_OPENAI_COMPATIBLE = {"lmstudio", "openai"}
+# OpenAI-compatible providers all speak the same /chat/completions wire
+# format; only anthropic is its own shape. ``ollama-cloud`` is Ollama's
+# hosted endpoint (https://ollama.com/v1) — same protocol as local
+# ollama, but a real API key is required.
+_OPENAI_COMPATIBLE = {"lmstudio", "ollama", "ollama-cloud", "openai"}
+
+# The conventional environment variable each provider's key lives in,
+# checked last by :func:`resolve_api_key`.
+_CONVENTIONAL_ENV = {
+    "openai": "OPENAI_API_KEY",
+    "lmstudio": "OPENAI_API_KEY",
+    "ollama-cloud": "OLLAMA_API_KEY",
+    "anthropic": "ANTHROPIC_API_KEY",
+}
 
 
 @dataclass
@@ -81,11 +92,7 @@ def resolve_api_key(ext: ExternalModelConfig, layout: Any | None) -> str:
         val = os.environ.get(ext.api_key_env, "")
         if val:
             return val
-    conventional = {
-        "openai": "OPENAI_API_KEY",
-        "lmstudio": "OPENAI_API_KEY",
-        "anthropic": "ANTHROPIC_API_KEY",
-    }.get(ext.provider, "")
+    conventional = _CONVENTIONAL_ENV.get(ext.provider, "")
     return os.environ.get(conventional, "") if conventional else ""
 
 
@@ -104,13 +111,19 @@ def build_external_model(ext: ExternalModelConfig, api_key: str) -> Any:
         from pydantic_ai.models.openai import OpenAIChatModel
         from pydantic_ai.providers.openai import OpenAIProvider
 
-        # LM Studio rejects an empty key; any non-empty placeholder works.
-        key = api_key or ("lm-studio" if ext.provider == "lmstudio" else "")
+        # Local servers (LM Studio, local Ollama) need no real key but
+        # reject an empty one — any non-empty placeholder works. True
+        # cloud endpoints ('ollama-cloud', 'openai') genuinely require a
+        # key and are never placeholdered.
+        _placeholder = {"lmstudio": "lm-studio", "ollama": "ollama"}
+        key = api_key or _placeholder.get(ext.provider, "")
         if not key:
+            env = ext.api_key_env or _CONVENTIONAL_ENV.get(
+                ext.provider, "OPENAI_API_KEY")
             raise ExternalModelError(
                 f"provider {ext.provider!r} needs an API key — set the "
-                f"{ext.api_key_credential!r} credential or the "
-                f"{ext.api_key_env or 'OPENAI_API_KEY'} env var."
+                f"{ext.api_key_credential!r} credential or the {env} "
+                f"env var."
             )
         provider = OpenAIProvider(base_url=ext.base_url, api_key=key)
         return OpenAIChatModel(ext.model, provider=provider)

@@ -133,3 +133,49 @@ def board_update(
         return {"ok": False, "error": "nothing to update"}
     board.update(card_id, **fields)
     return {"ok": True, "card_id": card_id, "updated": sorted(fields)}
+
+
+# ---------------------------------------------------------------------------
+# Consolidated kanban tool — one tool, every board operation
+# ---------------------------------------------------------------------------
+def kanban(action: str, card_id: str = "", title: str = "",
+           description: str = "", column: str = "", tag: str = "",
+           priority: str = "", note: str = "") -> dict[str, Any]:
+    """The kanban task board — ONE tool, action-dispatch. ``action``:
+
+      - ``view``     — read the board (optional ``column`` / ``tag`` filter)
+      - ``add``      — add a card: ``title`` (+ ``description`` / ``priority``
+        low|med|high / ``tag``)
+      - ``move``     — move card ``card_id`` to ``column``
+      - ``update``   — edit / log on card ``card_id`` (``note`` appends a
+        progress line)
+      - ``complete`` — mark card ``card_id`` done
+      - ``block``    — mark card ``card_id`` blocked (needs the user)
+      - ``unblock``  — move a blocked card back to ready
+
+    Columns: backlog / ready / in_progress / blocked / done. Lay a
+    multi-step task out as cards so you and the user can track it."""
+    act = (action or "").strip().lower()
+    if act in ("view", "show", "list", "read"):
+        return board_view(column=column, tag=tag)
+    if act in ("add", "create", "new"):
+        return board_add(title=title, description=description,
+                         tags=[tag.strip()] if tag.strip() else None,
+                         priority=priority or "med")
+    if act == "move":
+        if not column:
+            return {"ok": False, "error": "move needs a target column"}
+        return board_move(card_id=card_id, column=column)
+    if act in ("update", "comment", "log", "edit"):
+        return board_update(card_id=card_id, title=title,
+                            description=description, priority=priority,
+                            add_tag=tag, note=note)
+    if act in ("complete", "done", "finish"):
+        return board_move(card_id=card_id, column="done")
+    if act == "block":
+        return board_move(card_id=card_id, column="blocked")
+    if act in ("unblock", "resume"):
+        return board_move(card_id=card_id, column="ready")
+    return {"ok": False,
+            "error": f"unknown kanban action {action!r} — use one of: "
+                     "view, add, move, update, complete, block, unblock"}

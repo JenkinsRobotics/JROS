@@ -25,9 +25,13 @@ from ..permissions import PermissionTier, requires_tier
 def run_python(code: str, timeout_s: float = 10.0) -> dict[str, Any]:
     """Execute Python code in a fresh, isolated subprocess.
 
-    Sandboxing rules — all enforced by the subprocess boundary:
-      - Fresh `python -I` (isolated) with no inherited site-packages.
-      - cwd is a fresh tempdir, not the workspace.
+    Runtime rules — enforced by the subprocess boundary:
+      - Fresh subprocess (`python -s -E`): no user site-packages, no
+        inherited environment.
+      - cwd AND sys.path[0] are the instance ``skills/`` workspace, so
+        code can both ``open()`` and ``import`` the files ``write_file``
+        just created. "Write a file then run it" is the core code
+        workflow and depends on this.
       - 10s default timeout (overridable).
       - 200 KB cap on captured stdout/stderr.
 
@@ -39,12 +43,29 @@ def run_python(code: str, timeout_s: float = 10.0) -> dict[str, Any]:
     MAX = 200_000
     started = time.perf_counter()
     timed_out = False
+    # Run inside the agent's skills/ workspace so generated code sees the
+    # files it just wrote. Falls back to the scratch dir when no instance
+    # is bound (standalone tests).
+    workdir = None
+    try:
+        from ._common import _require_layout
+        workdir = _require_layout().skills_dir
+        workdir.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        workdir = None
     with tempfile.TemporaryDirectory(prefix="jaeger_run_") as scratch:
+        run_dir = str(workdir) if workdir is not None else scratch
+        # Execute as a real script file inside the workspace: that puts
+        # the workspace on sys.path[0] (so `import sibling` works even
+        # under `-I` isolation) and gives tracebacks true line numbers.
+        script = os.path.join(run_dir, f".jaeger_run_{os.urandom(4).hex()}.py")
         try:
+            with open(script, "w", encoding="utf-8") as fh:
+                fh.write(cleaned)
             proc = subprocess.run(
-                [sys.executable, "-I", "-c", cleaned],
+                [sys.executable, "-s", "-E", script],
                 capture_output=True, text=True, timeout=timeout_s,
-                cwd=scratch,
+                cwd=run_dir,
                 env={"PATH": os.environ.get("PATH", ""), "HOME": scratch},
             )
             stdout, stderr, exit_code = proc.stdout, proc.stderr, proc.returncode
@@ -53,6 +74,11 @@ def run_python(code: str, timeout_s: float = 10.0) -> dict[str, Any]:
             exit_code = -1
             stdout = (exc.stdout.decode() if isinstance(exc.stdout, bytes) else (exc.stdout or "")) or ""
             stderr = (exc.stderr.decode() if isinstance(exc.stderr, bytes) else (exc.stderr or "")) or ""
+        finally:
+            try:
+                os.unlink(script)
+            except OSError:
+                pass
     elapsed = time.perf_counter() - started
     return {
         "ok": exit_code == 0 and not timed_out,

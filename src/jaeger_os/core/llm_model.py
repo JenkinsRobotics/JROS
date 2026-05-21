@@ -769,14 +769,14 @@ class LlamaCppModel(Model):
         # routes over a small surface, not all ~60 schemas at once. Cache
         # by (list id, active toolsets) — the active set only ever grows,
         # so this rebuilds at most once per toolset widening.
-        from .toolsets import active_toolset_names, tool_visible
+        from .toolsets import active_toolset_names, model_visible
         active = frozenset(active_toolset_names())
         key = (id(function_tools) if function_tools else 0, active)
         if key == self._openai_tools_cache_key and self._openai_tools_cache_value is not None:
             return self._openai_tools_cache_value
         result: list[dict[str, Any]] = []
         for t in function_tools or []:
-            if not tool_visible(getattr(t, "name", "")):
+            if not model_visible(getattr(t, "name", "")):
                 continue
             schema = getattr(t, "parameters_json_schema", None) or {"type": "object", "properties": {}}
             result.append({

@@ -45,11 +45,56 @@ def _scoping_enabled() -> bool:
 CORE: frozenset[str] = frozenset({
     "get_time", "calculate", "system_status",
     "remember", "recall", "forget", "list_facts", "search_memory",
+    "set_name", "update_soul",
     "web_search", "web_extract", "get_weather",
     "read_file", "write_file",
     "help_me", "clarify",
     "todo", "load_toolset",
 })
+
+
+# ── Lean surface (hermes-style) ──────────────────────────────────────
+# A local model routes far better over ~20 curated tools than ~60. This
+# is the surface the model sees every turn; everything else stays
+# REGISTERED (callable / importable) but off the model's view. The set
+# mirrors hermes's default tools, consolidated (memory is one tool, not
+# five). JAEGER_FULL_TOOLS=1 exposes the whole surface (debug/power use).
+LEAN_CORE: frozenset[str] = frozenset({
+    "execute_code", "terminal",
+    "read_file", "write_file", "patch", "search_files", "list_skill_dir",
+    "web_search", "web_extract",
+    "memory",
+    "todo", "clarify", "delegate_task", "kanban", "skill",
+    "computer_use", "browser",
+    "vision_analyze", "image_generate", "text_to_speech",
+})
+
+
+def _lean_surface() -> bool:
+    """The model sees only LEAN_CORE by default — the hermes-sized
+    surface. ``JAEGER_FULL_TOOLS=1`` turns it off (every tool visible)."""
+    return os.environ.get("JAEGER_FULL_TOOLS", "0").strip().lower() not in (
+        "1", "true", "yes", "on",
+    )
+
+
+def model_visible(name: str) -> bool:
+    """Whether tool ``name`` is exposed to the model this turn.
+
+    Lean surface on (default) ⇒ LEAN_CORE **plus every skill-registered
+    tool** — a loaded skill is a deliberately-chosen curated bundle, so
+    all of its tools show (the lean filter only trims the raw builtin
+    surface). Lean off ⇒ every registered tool."""
+    if not _lean_surface():
+        return True
+    if name in LEAN_CORE:
+        return True
+    if name in _MCP_TOOLS:
+        return True
+    for members in _SKILL_TOOLSETS.values():
+        if name in members:
+            return True
+    return False
 
 # Built-in tool classes — loaded on demand via load_toolset(name).
 TOOLSETS: dict[str, frozenset[str]] = {
@@ -103,6 +148,16 @@ TOOLSET_SUMMARY: dict[str, str] = {
 # its own toolset; the loader records exactly what tools it registered.
 _SKILL_TOOLSETS: dict[str, frozenset[str]] = {}
 _SKILL_SUMMARY: dict[str, str] = {}
+
+# MCP tools — re-exported from configured MCP servers at startup. Like a
+# skill, a configured MCP server is deliberately loaded, so its tools
+# are never lean-filtered out of the model's view.
+_MCP_TOOLS: set[str] = set()
+
+
+def register_mcp_tools(names: list[str]) -> None:
+    """Record MCP tool names so the lean surface keeps them visible."""
+    _MCP_TOOLS.update(n for n in (names or []) if n)
 
 # Active extended toolsets for the session. Core is always implicitly on.
 _active: set[str] = set()

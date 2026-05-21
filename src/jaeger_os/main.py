@@ -151,12 +151,21 @@ def _format_tool_result_as_answer(name: str, result: Any) -> str:
         facts = result.get("facts") or {}
         if not facts:
             return "No facts saved yet."
+        by_cat = result.get("by_category") or {}
+        if by_cat:
+            return " | ".join(
+                f"[{cat}] " + ", ".join(f"{k}: {v}" for k, v in kv.items())
+                for cat, kv in by_cat.items()
+            )
         return "; ".join(f"{k}: {v}" for k, v in facts.items())
     if name == "recall":
         return str(result.get("value", "")) if result.get("found") else f"No value for {result.get('key')!r}."
     if name == "remember":
-        return (f"Got it — remembered {result.get('key')!r}." if result.get("remembered")
-                else "Couldn't save that.")
+        if not result.get("remembered"):
+            return "Couldn't save that."
+        cat = result.get("category")
+        suffix = f" under {cat}" if cat and cat != "general" else ""
+        return f"Got it — remembered {result.get('key')!r}{suffix}."
     if name == "forget":
         return (f"Forgot {result.get('key')!r}." if result.get("forgotten")
                 else f"No saved value under {result.get('key')!r}.")
@@ -421,6 +430,74 @@ def clear_goal() -> "GoalState | None":
     return prior
 
 
+_GOAL_CLARIFY_DIRECTIVE = (
+    "A user just set this goal:\n---\n{condition}\n---\n\n"
+    "List up to THREE short clarifying questions whose answers would "
+    "genuinely change how you approach it — scope, missing specifics, or "
+    "what 'done' means. Ask only what is truly necessary; a well-specified "
+    "goal needs none.\n\n"
+    "Output ONLY the questions, one per line, no numbering. If the goal is "
+    "already clear enough to start, output exactly: NONE"
+)
+
+
+def clarify_goal(client: Any, condition: str) -> list[str]:
+    """Ask the model for up to 3 clarifying questions about a goal.
+
+    Returns ``[]`` when the goal is already clear or on any failure — a
+    caller treats an empty list as 'nothing to ask, proceed'."""
+    if client is None or not hasattr(client, "chat"):
+        return []
+
+    def _ask() -> str:
+        result = client.chat(
+            [
+                {"role": "system",
+                 "content": "You scope tasks crisply and briefly."},
+                {"role": "user",
+                 "content": _GOAL_CLARIFY_DIRECTIVE.format(condition=condition)},
+            ],
+            max_tokens=200, temperature=0.3, top_p=0.9, stream=False,
+        )
+        return (getattr(result, "text", None) or "").strip()
+
+    lock = _pipeline.get("llm_lock")
+    try:
+        if lock is not None:
+            with lock:
+                text = _ask()
+        else:
+            text = _ask()
+    except Exception:
+        return []
+    if not text or text.upper().startswith("NONE"):
+        return []
+    questions: list[str] = []
+    for line in text.splitlines():
+        q = line.strip().lstrip("0123456789.)-•* ").strip()
+        if q and "?" in q and q.upper() != "NONE":
+            questions.append(q)
+    return questions[:3]
+
+
+def refresh_identity() -> None:
+    """Rebuild the system prompt from identity.yaml / soul.md and drop the
+    cached agent, so a self-update (``set_name`` / ``update_soul``) is live
+    on the next turn. Best-effort — a failure just defers the change to the
+    next reboot."""
+    layout = _pipeline.get("layout")
+    if layout is None:
+        return
+    try:
+        _pipeline["system_prompt"] = prompt_module.build_system_prompt(layout)
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        _agent_cache.clear()
+    except Exception:  # noqa: BLE001
+        pass
+
+
 _GOAL_EVAL_DIRECTIVE = (
     "You are evaluating whether a session goal has been achieved. The goal:\n"
     "---\n{condition}\n---\n\n"
@@ -574,6 +651,44 @@ def _get_session_history(session_key: str) -> list[Any]:
     return history
 
 
+def reset_session(session_key: str = _DEFAULT_SESSION_KEY) -> int:
+    """Clear a session's in-process conversation history (the ``/new``
+    command). Returns the number of messages dropped. Episodic memory
+    on disk is untouched — only the live context window is reset; the
+    session stays marked loaded so old turns are not re-resumed."""
+    history = _session_histories.get(session_key)
+    dropped = len(history) if history else 0
+    if history is not None:
+        history.clear()
+    _session_loaded.add(session_key)
+    _session_state.pop(session_key, None)
+    return dropped
+
+
+def pop_last_exchange(session_key: str = _DEFAULT_SESSION_KEY) -> str | None:
+    """Drop the most recent user→assistant exchange from a session's
+    history (``/undo`` / ``/retry``). Returns the user text of that
+    exchange so ``/retry`` can re-send it, or ``None`` when there is
+    nothing to drop."""
+    history = _session_histories.get(session_key)
+    if not history:
+        return None
+    cut = None
+    user_text: str | None = None
+    for i in range(len(history) - 1, -1, -1):
+        for part in getattr(history[i], "parts", []):
+            if getattr(part, "part_kind", None) == "user-prompt":
+                cut = i
+                user_text = str(getattr(part, "content", "") or "")
+                break
+        if cut is not None:
+            break
+    if cut is None:
+        return None
+    del history[cut:]
+    return user_text
+
+
 def _session_context_block(session_key: str, user_text: str) -> str:
     """Return a compact context block for follow-up turns.
 
@@ -610,41 +725,51 @@ def _augment_with_session_context(session_key: str, user_text: str) -> str:
     return f"{block}\n\n{user_text}" if block else user_text
 
 
-def _iter_tool_returns(iter_out: dict[str, Any]) -> list[tuple[str, dict[str, Any], Any]]:
-    """Extract ordered ``(tool_name, args, result)`` triples from an iter result."""
+def _pair_tool_messages(msgs: list[Any]) -> list[tuple[str, dict[str, Any], Any]]:
+    """The one canonical message walk. Pairs each tool-call to its
+    tool-return across a pydantic-ai message list and returns ordered
+    ``(tool_name, args, return_content)`` triples. Every caller that
+    needs to inspect a turn's tool calls goes through this."""
     triples: list[tuple[str, dict[str, Any], Any]] = []
-    if iter_out.get("skipped"):
-        fd = iter_out.get("first_decision") or {}
-        name = fd.get("tool")
-        if name:
-            args = fd.get("args") if isinstance(fd.get("args"), dict) else {}
-            triples.append((name, args, iter_out.get("skipped_result")))
-        return triples
-    result = iter_out.get("result")
-    if result is None:
-        return triples
-    try:
-        msgs = list(result.all_messages()) if hasattr(result, "all_messages") else []
-    except Exception:
-        return triples
     pending: dict[str, dict[str, Any]] = {}
     for msg in msgs:
         kind = getattr(msg, "kind", None)
         if kind == "response":
-            for part in msg.parts:
+            for part in getattr(msg, "parts", []):
                 if getattr(part, "part_kind", None) == "tool-call":
                     pending[part.tool_call_id] = {
                         "name": part.tool_name,
                         "args": part.args if isinstance(part.args, dict) else {},
                     }
         elif kind == "request":
-            for part in msg.parts:
+            for part in getattr(msg, "parts", []):
                 if getattr(part, "part_kind", None) != "tool-return":
                     continue
                 call = pending.pop(getattr(part, "tool_call_id", None), None) or {}
-                name = call.get("name") or getattr(part, "tool_name", "")
-                triples.append((name, call.get("args") or {}, getattr(part, "content", None)))
+                name = call.get("name") or getattr(part, "tool_name", "") or ""
+                triples.append((name, call.get("args") or {},
+                                getattr(part, "content", None)))
     return triples
+
+
+def _iter_tool_returns(iter_out: dict[str, Any]) -> list[tuple[str, dict[str, Any], Any]]:
+    """Ordered ``(tool_name, args, result)`` triples from an iter result —
+    handles both the skip-final and full-iter shapes."""
+    if iter_out.get("skipped"):
+        fd = iter_out.get("first_decision") or {}
+        name = fd.get("tool")
+        if not name:
+            return []
+        args = fd.get("args") if isinstance(fd.get("args"), dict) else {}
+        return [(name, args, iter_out.get("skipped_result"))]
+    result = iter_out.get("result")
+    if result is None:
+        return []
+    try:
+        msgs = list(result.all_messages()) if hasattr(result, "all_messages") else []
+    except Exception:
+        return []
+    return _pair_tool_messages(msgs)
 
 
 def _update_session_state_from_iter(session_key: str, iter_out: dict[str, Any]) -> None:
@@ -790,14 +915,19 @@ def _register_builtins(agent: Agent[None, str], client: Any) -> None:
         return t.search_files(query=query, path=path, max_results=max_results)
 
     @agent.tool_plain
-    def remember(key: str, value: str) -> dict:
+    def remember(key: str, value: str, category: str = "") -> dict:
         """MANDATORY when the user states a preference, identity fact,
         plan, or anything they might recall later. Call this proactively
         — do not just acknowledge "OK, I'll remember" in text. Pick a
-        descriptive snake_case key. Examples of inputs that require this
-        tool: "remember that my favorite color is teal", "I drive a
-        Mazda", "my name is Sam", "I'll be in Tokyo next week"."""
-        return t.remember(key=key, value=value)
+        descriptive snake_case key.
+
+        Set `category` to keep memory organised — a short label like
+        `contacts`, `preferences`, `projects`, `schedule`; omit it for a
+        miscellaneous fact. Examples: "my favorite color is teal"
+        (preferences), "Sara's number is 555-0142" (contacts), "I'll be
+        in Tokyo next week" (schedule). For YOUR OWN name use set_name,
+        not this."""
+        return t.remember(key=key, value=value, category=category)
 
     @agent.tool_plain
     @requires_tier(PermissionTier.READ_ONLY, skill="memory", operation="recall",
@@ -818,6 +948,22 @@ def _register_builtins(agent: Agent[None, str], client: Any) -> None:
         return t.forget(key=key)
 
     @agent.tool_plain
+    def set_name(name: str) -> dict:
+        """Change your OWN name. Use when the user renames you ("your
+        name is …", "I'll call you …", "rename yourself"). Writes your
+        real identity (identity.yaml). Do NOT use remember() for your own
+        name — remember() is for facts about the USER."""
+        return t.set_name(name=name)
+
+    @agent.tool_plain
+    def update_soul(content: str) -> dict:
+        """Rewrite your soul.md — who you are: character, values, voice,
+        self-narrative. Your current soul is in your system prompt; read
+        it, revise it, and pass the COMPLETE new text. Personality and
+        durable facts about YOURSELF go here, not in remember()."""
+        return t.update_soul(content=content)
+
+    @agent.tool_plain
     @requires_tier(PermissionTier.READ_ONLY, skill="memory", operation="list_facts",
                    summary="list every stored fact")
     def list_facts() -> dict:
@@ -825,6 +971,25 @@ def _register_builtins(agent: Agent[None, str], client: Any) -> None:
         "what have I told you?" questions. Returns the full k/v store.
         Use this before falling back to free-text 'I don't know'."""
         return t.list_facts()
+
+    @agent.tool_plain
+    def memory(action: str, key: str = "", value: str = "",
+               query: str = "", category: str = "") -> dict:
+        """The agent's memory — ONE tool for everything it must recall
+        across turns and sessions. `action` selects the operation:
+          • remember — store a fact (`key` + `value`, optional
+            `category` like 'contacts'/'preferences'/'projects').
+            MANDATORY whenever the user shares a preference, identity
+            fact, or plan.
+          • recall — look a fact up by `key`. Call BEFORE answering
+            "what did I tell you…" / "do you remember…" questions.
+          • forget — delete a fact by `key`.
+          • list — every stored fact, grouped by category.
+          • search — semantic search over past conversation (`query`).
+        Acknowledging "I'll remember" in text without calling this is
+        forbidden — it lies."""
+        return t.memory(action=action, key=key, value=value,
+                        query=query, category=category)
 
     @agent.tool_plain
     def schedule_prompt(cron_expr: str, prompt: str, name: str | None = None) -> dict:
@@ -863,21 +1028,23 @@ def _register_builtins(agent: Agent[None, str], client: Any) -> None:
         return t.get_weather(location=location)
 
     @agent.tool_plain
-    def run_python(code: str, timeout_s: float = 10.0) -> dict:
-        """Execute Python in a sandboxed subprocess (10s default timeout).
-        Isolated (`python -I`) — does NOT see packages installed via
-        install_package. For code that needs installed libraries, use
-        run_in_venv instead."""
+    def execute_code(code: str, timeout_s: float = 10.0) -> dict:
+        """Run Python code and return its output. Reach for this for
+        ANYTHING computational: arithmetic, the current date/time
+        (`from datetime import datetime; print(datetime.now())`), string
+        work, quick logic — and to run files you wrote with write_file
+        (code runs IN the skills/ workspace, so `import name` and
+        `open('file')` see them). 10s default timeout. Isolated from
+        packages installed via install_package."""
         return t.run_python(code=code, timeout_s=timeout_s)
 
     @agent.tool_plain
     def terminal(command: str, timeout_s: float = 60.0) -> dict:
         """Run a non-Python command-line program — git, npm, brew,
-        ffmpeg. For Python code use run_python (stdlib) or run_in_venv
-        (installed packages); for files use write_file / read_file /
-        list_skill_dir. PRIVILEGED-tier: each call prompts the user, so
-        reach for it only when the task genuinely needs a shell
-        program."""
+        ffmpeg. For Python code use execute_code; for files use
+        write_file / read_file / list_skill_dir. PRIVILEGED-tier: each
+        call prompts the user, so reach for it only when the task
+        genuinely needs a shell program."""
         return t.run_shell(command=command, timeout_s=timeout_s)
 
     @agent.tool_plain
@@ -953,6 +1120,54 @@ def _register_builtins(agent: Agent[None, str], client: Any) -> None:
     def list_deep_think_queue() -> dict:
         """Read the Deep Think task queue with status counts. Read-only."""
         return t.list_deep_think_queue()
+
+    @agent.tool_plain
+    def kanban(action: str, card_id: str = "", title: str = "",
+               description: str = "", column: str = "", tag: str = "",
+               priority: str = "", note: str = "") -> dict:
+        """The kanban task board — ONE tool. `action` selects the op:
+          • view — read the board (optional `column`/`tag` filter)
+          • add — add a card (`title`, optional `description`/`priority`
+            low|med|high/`tag`)
+          • move — move card `card_id` to `column`
+          • update — edit / log on `card_id` (`note` appends a line)
+          • complete — mark `card_id` done
+          • block / unblock — mark `card_id` blocked, or send it back
+        Columns: backlog / ready / in_progress / blocked / done. Lay a
+        multi-step task out as cards so you and the user can track it."""
+        return t.kanban(action=action, card_id=card_id, title=title,
+                        description=description, column=column, tag=tag,
+                        priority=priority, note=note)
+
+    @agent.tool_plain
+    def browser(action: str, url: str = "", element: int = 0,
+                text: str = "", direction: str = "down",
+                key: str = "Enter") -> dict:
+        """Drive a real web browser — ONE tool. `action` selects the op:
+          • open — load a URL (`url`); returns the page's elements
+          • snapshot — re-list the current page's interactive elements
+          • click — click element `element` (index from a snapshot)
+          • type — type `text` into element `element`
+          • scroll — scroll the page (`direction` up/down)
+          • back — go back · press — press `key` · close — close it
+        Every action returns the page's interactive elements, each with
+        an `index`. Workflow: open a page, read the elements, click/type
+        by index. The browser stays open across calls. Use this for the
+        live web — searching visually, playing a video, filling a form."""
+        return t.browser(action=action, url=url, element=element,
+                         text=text, direction=direction, key=key)
+
+    @agent.tool_plain
+    def skill(action: str, name: str = "", query: str = "") -> dict:
+        """Discover and read playbook skills — experienced procedures for
+        a task (instructions + often runnable shell/Python). `action`:
+          • list — every available skill (name · category · summary)
+          • search — skills matching `query`; use this FIRST when a task
+            might have a skill ("inspect a codebase", "search arxiv")
+          • view — the full instructions of skill `name`; read them, then
+            carry them out with your normal tools (terminal, execute_code).
+        On-demand — skills are NOT all in your prompt; find what you need."""
+        return t.skill(action=action, name=name, query=query)
 
     @agent.tool_plain
     def board_view(column: str = "", tag: str = "") -> dict:
@@ -1428,6 +1643,13 @@ def _build_mcp_tools(specs: list[Any]) -> list[Any]:
                 json_schema=schema,
             )
         )
+    # Keep MCP tools out of the lean-surface filter — a configured MCP
+    # server is deliberately loaded, so all its tools stay visible.
+    try:
+        from .toolsets import register_mcp_tools
+        register_mcp_tools([s.qualified_name for s in specs])
+    except Exception:  # noqa: BLE001
+        pass
     return tools_list
 
 
@@ -1626,7 +1848,7 @@ def _semantic_failure_signature(tool_name: str, args: Any, content: Any) -> str 
             args.get("path") or args.get("file") or args.get("name")
             or content.get("path") or content.get("file") or ""
         )
-        if not target and tool_name == "run_python":
+        if not target and tool_name in ("execute_code", "run_python"):
             code = str(args.get("code") or "")
             target = f"code:{hash(code) & 0xffff:x}" if code else ""
     else:
@@ -1652,6 +1874,41 @@ def _loop_halt_reason(tool_calls_made: int,
     return None
 
 
+def _tool_arg_detail(args: Any) -> str:
+    """A short human-readable detail for a tool call — the first
+    argument value, truncated. Feeds the TUI's live ``┊`` activity line
+    (e.g. ``┊ 🔧 skill  view``)."""
+    val: Any = ""
+    if isinstance(args, dict) and args:
+        val = next(iter(args.values()))
+    elif isinstance(args, str):
+        val = args
+    s = str(val).replace("\n", " ").strip()
+    return s[:40] + ("…" if len(s) > 40 else "")
+
+
+def begin_turn_cancel_scope() -> "threading.Event":
+    """Open a fresh cancellation scope for one turn and return its Event.
+
+    Set the Event from any thread — the REPL on Ctrl-C, or the voice
+    layer when the user speaks — to ask the in-flight turn to stop. The
+    agent loop (:func:`_run_via_iter`) checks it between steps and halts
+    gracefully. Cleared here so a stale cancel can't kill the next turn."""
+    ev = _pipeline.get("cancel_event")
+    if ev is None:
+        ev = threading.Event()
+        _pipeline["cancel_event"] = ev
+    ev.clear()
+    return ev
+
+
+def request_turn_cancel() -> None:
+    """Ask the in-flight turn to stop. No-op when no turn scope is open."""
+    ev = _pipeline.get("cancel_event")
+    if ev is not None:
+        ev.set()
+
+
 async def _run_via_iter(
     agent: Agent,
     user_text: str,
@@ -1672,9 +1929,29 @@ async def _run_via_iter(
     failure_signatures: dict[str, int] = {}
     pending_tool_calls: dict[str, dict[str, Any]] = {}
     halt_reason: str | None = None
+    interrupted = False
+    # User-interrupt scope — a threading.Event the TUI sets (Ctrl-C, or
+    # the user speaking mid-turn) to stop the turn. None for non-TUI
+    # callers, which simply never get interrupted.
+    cancel_event = _pipeline.get("cancel_event")
+    # Live tool-progress — the TUI registers this so it can render the
+    # ``┊`` activity lines + the toolbar spinner as the turn runs.
+    _tool_cb = _pipeline.get("tool_event_cb")
+
+    def _emit_tool(phase: str, name: str, detail: str = "",
+                   elapsed: float = 0.0) -> None:
+        if _tool_cb is not None:
+            try:
+                _tool_cb(phase, name, detail, elapsed)
+            except Exception:  # noqa: BLE001 — UI callback must never break a turn
+                pass
 
     async with agent.iter(user_text, message_history=message_history or None) as run:
         async for node in run:
+            if cancel_event is not None and cancel_event.is_set():
+                interrupted = True
+                halt_reason = "the turn was interrupted"
+                break
             if isinstance(node, CallToolsNode):
                 tool_parts = [p for p in node.model_response.parts if hasattr(p, "tool_call_id")]
                 if first_decision is None and tool_parts:
@@ -1695,7 +1972,9 @@ async def _run_via_iter(
                     pending_tool_calls[getattr(tp, "tool_call_id", "")] = {
                         "name": tp.tool_name,
                         "args": tp.args,
+                        "started": time.perf_counter(),
                     }
+                    _emit_tool("start", tp.tool_name, _tool_arg_detail(tp.args))
                 halt_reason = _loop_halt_reason(
                     tool_calls_made, call_signatures, failure_signatures,
                 )
@@ -1706,6 +1985,14 @@ async def _run_via_iter(
                     if isinstance(p, ToolReturnPart):
                         call = pending_tool_calls.pop(
                             getattr(p, "tool_call_id", ""), {},
+                        )
+                        _started = call.get("started", 0.0)
+                        _emit_tool(
+                            "done",
+                            call.get("name") or getattr(p, "tool_name", ""),
+                            "",
+                            (time.perf_counter() - _started)
+                            if _started else 0.0,
                         )
                         fail_sig = _semantic_failure_signature(
                             call.get("name") or getattr(p, "tool_name", ""),
@@ -1732,11 +2019,15 @@ async def _run_via_iter(
     # P4 loop backstop — the turn was stopped mid-flight. Return a graceful
     # skip-final-shaped dict so every caller handles it without changes.
     if halt_reason:
-        text = (
-            f"I stopped this turn early — I {halt_reason} without making "
-            "progress, so I was stuck in a loop rather than getting closer "
-            "to an answer. Tell me how you'd like to proceed."
-        )
+        if interrupted:
+            text = ("Okay — I stopped there. What would you like me to "
+                    "do instead?")
+        else:
+            text = (
+                f"I stopped this turn early — I {halt_reason} without making "
+                "progress, so I was stuck in a loop rather than getting "
+                "closer to an answer. Tell me how you'd like to proceed."
+            )
         skipped_msgs = [
             ModelRequest(parts=[UserPromptPart(content=user_text)]),
             ModelResponse(
@@ -1793,34 +2084,24 @@ async def _run_via_iter(
 
 
 def _walk_new_messages(result: Any) -> tuple[list[str], dict[str, Any] | None]:
-    out: list[str] = []
-    first_decision: dict[str, Any] | None = None
-    pending_calls: dict[str, dict[str, Any]] = {}
+    """Tool-activity display lines + the first tool decision, from THIS
+    turn's new messages. Shares the canonical walk (`_pair_tool_messages`)."""
     try:
-        msgs = list(result.new_messages()) if hasattr(result, "new_messages") else list(result.all_messages())
+        msgs = (list(result.new_messages()) if hasattr(result, "new_messages")
+                else list(result.all_messages()))
     except Exception:
-        return out, None
-    for msg in msgs:
-        kind = getattr(msg, "kind", None)
-        if kind == "response":
-            for part in msg.parts:
-                if getattr(part, "part_kind", None) == "tool-call":
-                    pending_calls[part.tool_call_id] = {"name": part.tool_name, "args": part.args}
-                    if first_decision is None:
-                        first_decision = {"tool": part.tool_name, "args": part.args}
-        elif kind == "request":
-            for part in msg.parts:
-                if getattr(part, "part_kind", None) != "tool-return":
-                    continue
-                call = pending_calls.pop(getattr(part, "tool_call_id", None), None)
-                name = (call or {}).get("name") or part.tool_name
-                args = (call or {}).get("args") or {}
-                args_repr = ""
-                if isinstance(args, dict) and args:
-                    args_repr = ", ".join(f"{k}={v!r}" for k, v in list(args.items())[:2])
-                    if len(args_repr) > 60:
-                        args_repr = args_repr[:57] + "..."
-                out.append(f"  ▸ {name}({args_repr})")
+        return [], None
+    triples = _pair_tool_messages(msgs)
+    out: list[str] = []
+    for name, args, _content in triples:
+        args_repr = ""
+        if isinstance(args, dict) and args:
+            args_repr = ", ".join(f"{k}={v!r}" for k, v in list(args.items())[:2])
+            if len(args_repr) > 60:
+                args_repr = args_repr[:57] + "..."
+        out.append(f"  ▸ {name}({args_repr})")
+    first_decision = ({"tool": triples[0][0], "args": triples[0][1]}
+                      if triples else None)
     return out, first_decision
 
 
@@ -1848,7 +2129,7 @@ _INLINE_THINK_KEYWORDS = frozenset({
     "code", "script", "python", "function", "class ",
     "implement", "build", "create a", "write a",
     "fix the", "debug", "refactor", "rewrite",
-    "test the", "test it", "run_python",
+    "test the", "test it", "execute_code",
 })
 
 
@@ -1913,9 +2194,9 @@ def _augment_with_thought(user_text: str, thought: str) -> str:
 # prompt promises the model ONE retry, not infinite.
 # ---------------------------------------------------------------------------
 _RETRY_PROMPT_TEMPLATE = (
-    "The previous `run_python` call failed. Stderr:\n```\n{stderr}\n```\n"
+    "The previous `execute_code` call failed. Stderr:\n```\n{stderr}\n```\n"
     "Read the file with `read_file`, fix the bug, write it back with "
-    "`write_file`, and re-run with `run_python`. Do not give up."
+    "`write_file`, and re-run with `execute_code`. Do not give up."
 )
 
 _SYNTAX_RETRY_PROMPT_TEMPLATE = (
@@ -1923,7 +2204,7 @@ _SYNTAX_RETRY_PROMPT_TEMPLATE = (
     "Path: `{path}`\n"
     "Syntax error:\n```\n{syntax_error}\n```\n"
     "Read the file with `read_file`, fix the syntax error using `patch` or "
-    "`write_file`, then run the file with `run_python` to verify it works."
+    "`write_file`, then run the file with `execute_code` to verify it works."
 )
 
 _EXECUTION_RETRY_PROMPT_TEMPLATE = (
@@ -1968,87 +2249,32 @@ def _needs_execution_retry(iter_out: dict[str, Any], user_text: str) -> bool:
 
 
 def _find_failed_run_python(iter_out: dict[str, Any]) -> dict[str, Any] | None:
-    """Return the ``run_python`` tool's result dict if it ran and failed
-    (``ok=False`` AND not ``timed_out``), else None. Walks both the
-    skip-final and full-iter shapes so it works regardless of which path
-    the turn took."""
-    # Skip-final: first_decision points at the tool, skipped_result holds
-    # the dict (added by the iter when present).
-    fd = iter_out.get("first_decision") or {}
-    if fd.get("tool") == "run_python":
-        skip_result = iter_out.get("skipped_result")
-        if isinstance(skip_result, dict):
-            return _run_python_failure_if_any(skip_result)
-    # Full-iter: walk the agent result's messages for run_python returns.
-    result = iter_out.get("result")
-    if result is None:
-        return None
-    try:
-        msgs = list(result.all_messages()) if hasattr(result, "all_messages") else []
-    except Exception:
-        return None
-    pending: dict[str, str] = {}
-    for msg in msgs:
-        kind = getattr(msg, "kind", None)
-        if kind == "response":
-            for part in msg.parts:
-                if getattr(part, "part_kind", None) == "tool-call":
-                    pending[part.tool_call_id] = part.tool_name
-        elif kind == "request":
-            for part in msg.parts:
-                if getattr(part, "part_kind", None) != "tool-return":
-                    continue
-                name = pending.pop(getattr(part, "tool_call_id", None), None) \
-                    or getattr(part, "tool_name", None)
-                if name != "run_python":
-                    continue
-                content = getattr(part, "content", None)
-                if isinstance(content, dict):
-                    failure = _run_python_failure_if_any(content)
-                    if failure is not None:
-                        return failure
+    """Return the ``execute_code`` tool's result dict if it ran and
+    failed (``ok=False`` AND not ``timed_out``), else None. Shares the
+    canonical walk so the skip-final and full-iter shapes are both
+    covered for free."""
+    for name, _args, content in _iter_tool_returns(iter_out):
+        if name in ("execute_code", "run_python") and isinstance(content, dict):
+            failure = _run_python_failure_if_any(content)
+            if failure is not None:
+                return failure
     return None
 
 
 def _find_failed_python_write(iter_out: dict[str, Any]) -> dict[str, Any] | None:
-    """Return a Python file-write result with ``syntax_ok=False``.
-
-    This catches the earlier, cheaper failure signal emitted by write_file /
-    append_file / patch before the model burns retries by trying to execute a
-    file that cannot compile.
-    """
-    result = iter_out.get("result")
-    msgs: list[Any] = []
-    if result is not None and hasattr(result, "all_messages"):
-        try:
-            msgs = list(result.all_messages())
-        except Exception:
-            msgs = []
-    elif iter_out.get("skipped_msgs"):
-        msgs = list(iter_out["skipped_msgs"])
-
-    pending: dict[str, str] = {}
-    for msg in msgs:
-        kind = getattr(msg, "kind", None)
-        if kind == "response":
-            for part in msg.parts:
-                if getattr(part, "part_kind", None) == "tool-call":
-                    pending[part.tool_call_id] = part.tool_name
-        elif kind == "request":
-            for part in msg.parts:
-                if getattr(part, "part_kind", None) != "tool-return":
-                    continue
-                name = pending.pop(getattr(part, "tool_call_id", None), None) \
-                    or getattr(part, "tool_name", None)
-                if name not in {"write_file", "append_file", "patch"}:
-                    continue
-                content = getattr(part, "content", None)
-                if isinstance(content, dict) and content.get("syntax_ok") is False:
-                    return {
-                        "tool": name,
-                        "path": content.get("path") or content.get("file") or "",
-                        "syntax_error": content.get("syntax_error") or "syntax error",
-                    }
+    """Return a Python file-write result with ``syntax_ok=False`` — the
+    earlier, cheaper failure signal from write_file / append_file / patch,
+    caught before the model burns a retry executing a file that can't
+    compile. Shares the canonical walk."""
+    for name, _args, content in _iter_tool_returns(iter_out):
+        if (name in ("write_file", "append_file", "patch")
+                and isinstance(content, dict)
+                and content.get("syntax_ok") is False):
+            return {
+                "tool": name,
+                "path": content.get("path") or content.get("file") or "",
+                "syntax_error": content.get("syntax_error") or "syntax error",
+            }
     return None
 
 
@@ -2241,16 +2467,21 @@ def _preflight_log() -> None:
         pass
 
 
-def run_command(client: Any, user_text: str, session_key: str | None = None) -> None:
-    key = session_key or _DEFAULT_SESSION_KEY
+def _run_turn(client: Any, user_text: str, *, session_key: str) -> dict[str, Any]:
+    """The unified agent turn — the one path every entry point shares.
+
+    Runs the loop, extracts the answer + tool activity, writes the log,
+    updates session memory, and returns a structured result dict.
+    ``run_command`` and ``run_for_voice`` are thin output adapters over
+    this — see them below. Never prints; never raises."""
+    key = session_key
     history = _get_session_history(key) if _pipeline["with_memory"] else None
     effective_text = (
         _augment_with_session_context(key, user_text)
         if _pipeline["with_memory"] else user_text
     )
     agent = _get_agent(client)
-    # LlamaCppModel carries per-call timing instrumentation; external
-    # models (OpenAIChatModel / AnthropicModel) don't — guard the calls.
+    # LlamaCppModel carries per-call timing; external models don't.
     model: Any = agent.model
     if hasattr(model, "reset_timings"):
         model.reset_timings()
@@ -2260,21 +2491,18 @@ def run_command(client: Any, user_text: str, session_key: str | None = None) -> 
         if lock is not None:
             with lock:
                 iter_out = asyncio.run(
-                    _run_with_fix_loop(agent, effective_text, history, client=client)
-                )
+                    _run_with_fix_loop(agent, effective_text, history, client=client))
         else:
             iter_out = asyncio.run(
-                _run_with_fix_loop(agent, effective_text, history, client=client)
-            )
-    except Exception as exc:
+                _run_with_fix_loop(agent, effective_text, history, client=client))
+    except Exception as exc:  # noqa: BLE001
         elapsed = time.perf_counter() - started
-        print(f"Jaeger agent failed: {exc}")
         report = LatencyReport(elapsed, 0, 0.0, 0.0, 0.0, 0.0, 0.0)
-        if _pipeline.get("show_latency"):
-            print_latency(report)
         write_log({"user": user_text, "session_key": key, "error": str(exc),
                    "latency": asdict(report)})
-        return
+        return {"text": "", "error": str(exc), "tool_activity": [],
+                "first_decision": None, "skipped_final": False,
+                "spoke_via_tool": False, "elapsed_s": elapsed, "report": report}
 
     elapsed = time.perf_counter() - started
     skipped = iter_out["skipped"]
@@ -2282,171 +2510,55 @@ def run_command(client: Any, user_text: str, session_key: str | None = None) -> 
     result = iter_out.get("result")
 
     if skipped:
-        answer = iter_out["skipped_text"]
+        answer = (iter_out["skipped_text"] or "").strip()
         if first_decision is not None:
             args = first_decision.get("args") or {}
-            args_repr = ", ".join(f"{k}={v!r}" for k, v in list(args.items())[:2]) if isinstance(args, dict) else ""
+            args_repr = (", ".join(f"{k}={v!r}" for k, v in list(args.items())[:2])
+                         if isinstance(args, dict) else "")
             tool_activity = [f"  ▸ {first_decision['tool']}({args_repr})"]
         else:
             tool_activity = []
     else:
-        answer = result.output if hasattr(result, "output") else str(result)
+        answer = ((result.output if hasattr(result, "output") else str(result))
+                  or "").strip()
         tool_activity, walked = _walk_new_messages(result)
         first_decision = first_decision or walked
 
     llm_times = list(getattr(model, "last_call_times", []))
     decision_total = sum(llm_times)
-    decision_first = llm_times[0] if llm_times else 0.0
-    final_last = llm_times[-1] if len(llm_times) >= 1 else 0.0
+    final_last = llm_times[-1] if len(llm_times) > 1 else 0.0
     report = LatencyReport(
         total=elapsed,
         tool_calls=len(tool_activity),
         decision=decision_total,
-        decision_ttft=decision_first,
+        decision_ttft=llm_times[0] if llm_times else 0.0,
         tool=max(0.0, elapsed - decision_total),
-        final=final_last if len(llm_times) > 1 else 0.0,
-        final_ttft=final_last if len(llm_times) > 1 else 0.0,
+        final=final_last,
+        final_ttft=final_last,
     )
 
-    if _pipeline.get("show_tool_activity", True):
-        for line in tool_activity:
-            print(line)
-    if answer:
-        print(answer)
-    if _pipeline.get("show_latency"):
-        print_latency(report)
-        if skipped:
-            print("  (final-LLM skipped — tool result returned directly)")
-
     write_log({
-        "user": user_text,
-        "session_key": key,
-        "answer": answer,
-        "tool_calls": len(tool_activity),
-        "tool_activity": tool_activity,
-        "decision": first_decision,
-        "skipped_final": skipped,
+        "user": user_text, "session_key": key, "answer": answer,
+        "tool_calls": len(tool_activity), "tool_activity": tool_activity,
+        "decision": first_decision, "skipped_final": skipped,
         "latency": asdict(report),
     })
 
     if _pipeline["with_memory"]:
         _update_session_state_from_iter(key, iter_out)
-
     if _pipeline["with_memory"] and history is not None:
         if skipped:
-            new_msgs = _sanitize_history_messages(
-                list(iter_out["skipped_msgs"]),
-                effective_text=effective_text,
-                original_text=user_text,
-            )
-            history.extend(new_msgs)
+            new_msgs: list[Any] = list(iter_out["skipped_msgs"])
         else:
             try:
-                new_msgs = result.new_messages() if hasattr(result, "new_messages") else result.all_messages()
-            except Exception:
+                new_msgs = list(result.new_messages()
+                                if hasattr(result, "new_messages")
+                                else result.all_messages())
+            except Exception:  # noqa: BLE001
                 new_msgs = []
-            new_msgs = _sanitize_history_messages(
-                list(new_msgs),
-                effective_text=effective_text,
-                original_text=user_text,
-            )
-            history.extend(new_msgs)
-        overflow = len(history) - _MAX_HISTORY_MESSAGES
-        if overflow > 0:
-            del history[:overflow]
-
-    runner = _pipeline["thinking_runner"]
-    if runner is not None:
-        runner.queue(user_text, run_id=os.environ.get("BENCH_RUN_ID"))
-
-
-# ---------------------------------------------------------------------------
-# Bridging API — for plugins/messaging_gateway.py and other entry points
-# that need a structured-dict return rather than print-to-stdout.
-# ---------------------------------------------------------------------------
-def run_for_voice(client: Any, user_text: str, session_key: str | None = None) -> dict[str, Any]:
-    """Same agent loop as `run_command`, but returns a dict instead of
-    printing. Mirrors python_pydantic_ai.run_for_voice. Messaging bridges
-    pass channel-specific session_keys ("telegram:12345", "discord:67890")
-    so each chat keeps its own context."""
-    key = session_key or "voice"
-    history = _get_session_history(key) if _pipeline["with_memory"] else None
-    effective_text = (
-        _augment_with_session_context(key, user_text)
-        if _pipeline["with_memory"] else user_text
-    )
-    agent = _get_agent(client)
-    model: Any = agent.model
-    if hasattr(model, "reset_timings"):
-        model.reset_timings()
-    lock = _pipeline["llm_lock"]
-    started = time.perf_counter()
-    try:
-        if lock is not None:
-            with lock:
-                iter_out = asyncio.run(
-                    _run_with_fix_loop(agent, effective_text, history, client=client)
-                )
-        else:
-            iter_out = asyncio.run(
-                _run_with_fix_loop(agent, effective_text, history, client=client)
-            )
-    except Exception as exc:
-        return {
-            "text": "", "error": str(exc), "tool_activity": [],
-            "spoke_via_tool": False,
-            "elapsed_s": time.perf_counter() - started,
-        }
-
-    elapsed = time.perf_counter() - started
-    skipped = iter_out["skipped"]
-    first_decision = iter_out["first_decision"]
-    result = iter_out.get("result")
-
-    if skipped:
-        text = iter_out["skipped_text"] or ""
-        if first_decision is not None:
-            args = first_decision.get("args") or {}
-            args_repr = ", ".join(f"{k}={v!r}" for k, v in list(args.items())[:2]) if isinstance(args, dict) else ""
-            tool_activity = [f"  ▸ {first_decision['tool']}({args_repr})"]
-        else:
-            tool_activity = []
-    else:
-        text = (result.output if hasattr(result, "output") else str(result)) or ""
-        text = text.strip()
-        tool_activity, walked = _walk_new_messages(result)
-        first_decision = first_decision or walked
-    spoke_via_tool = any("🔊" in line for line in tool_activity)
-
-    write_log({
-        "user": user_text, "session_key": key, "answer": text,
-        "tool_calls": len(tool_activity), "tool_activity": tool_activity,
-        "decision": first_decision, "skipped_final": skipped,
-        "latency": {"total": elapsed, "voice": True},
-    })
-
-    if _pipeline["with_memory"]:
-        _update_session_state_from_iter(key, iter_out)
-
-    if _pipeline["with_memory"] and history is not None:
-        if skipped:
-            new_msgs = _sanitize_history_messages(
-                list(iter_out["skipped_msgs"]),
-                effective_text=effective_text,
-                original_text=user_text,
-            )
-            history.extend(new_msgs)
-        else:
-            try:
-                new_msgs = result.new_messages() if hasattr(result, "new_messages") else result.all_messages()
-            except Exception:
-                new_msgs = []
-            new_msgs = _sanitize_history_messages(
-                list(new_msgs),
-                effective_text=effective_text,
-                original_text=user_text,
-            )
-            history.extend(new_msgs)
+        new_msgs = _sanitize_history_messages(
+            new_msgs, effective_text=effective_text, original_text=user_text)
+        history.extend(new_msgs)
         overflow = len(history) - _MAX_HISTORY_MESSAGES
         if overflow > 0:
             del history[:overflow]
@@ -2456,9 +2568,45 @@ def run_for_voice(client: Any, user_text: str, session_key: str | None = None) -
         runner.queue(user_text, run_id=os.environ.get("BENCH_RUN_ID"))
 
     return {
-        "text": text, "tool_activity": tool_activity,
-        "spoke_via_tool": spoke_via_tool, "elapsed_s": elapsed,
-        "skipped_final": skipped,
+        "text": answer, "error": None, "tool_activity": tool_activity,
+        "first_decision": first_decision, "skipped_final": skipped,
+        "spoke_via_tool": any("🔊" in line for line in tool_activity),
+        "elapsed_s": elapsed, "report": report,
+    }
+
+
+def run_command(client: Any, user_text: str, session_key: str | None = None) -> None:
+    """Run a turn and print the answer + tool activity to stdout.
+    Thin output adapter over :func:`_run_turn` — used by the one-shot
+    CLI, the cron runner, and the daemon."""
+    out = _run_turn(client, user_text,
+                    session_key=session_key or _DEFAULT_SESSION_KEY)
+    if out["error"]:
+        print(f"Jaeger agent failed: {out['error']}")
+        if _pipeline.get("show_latency"):
+            print_latency(out["report"])
+        return
+    if _pipeline.get("show_tool_activity", True):
+        for line in out["tool_activity"]:
+            print(line)
+    if out["text"]:
+        print(out["text"])
+    if _pipeline.get("show_latency"):
+        print_latency(out["report"])
+        if out["skipped_final"]:
+            print("  (final-LLM skipped — tool result returned directly)")
+
+
+def run_for_voice(client: Any, user_text: str, session_key: str | None = None) -> dict[str, Any]:
+    """Run a turn and return a structured dict instead of printing.
+    Thin output adapter over :func:`_run_turn` — used by the TUI voice
+    path and the messaging bridges (which pass channel-specific
+    session_keys like "telegram:12345" so each chat keeps its context)."""
+    out = _run_turn(client, user_text, session_key=session_key or "voice")
+    return {
+        "text": out["text"], "tool_activity": out["tool_activity"],
+        "spoke_via_tool": out["spoke_via_tool"], "elapsed_s": out["elapsed_s"],
+        "skipped_final": out["skipped_final"], "error": out["error"],
     }
 
 
@@ -2643,135 +2791,6 @@ def make_client(config: Any, layout: Any = None, *, warmup: bool = True) -> Any:
             print(f"[jaeger] external model error ({type(exc).__name__}: {exc}); "
                   "falling back to the local model.", flush=True)
     return LlamaCppPythonClient(config.model, warmup=warmup)
-
-
-# ---------------------------------------------------------------------------
-# CLI loop with slash commands + multi-line paste detection
-# ---------------------------------------------------------------------------
-HELP_BANNER = """\
-Commands (type at the You: prompt):
-  /help              show this help
-  /latency [on|off]  toggle the per-turn latency breakdown
-  /tools [on|off]    toggle the tool-activity lines under each reply
-  /setup             re-run the setup wizard (backs up the current instance)
-  /skills            list registered skills
-  /instances         list all instances (read-only; mutate via CLI flags)
-  /whoami            show the active instance + identity
-  /multi             enter multi-line mode (finish with a blank line)
-  /quit              exit (also: exit, quit, Ctrl-D)
-
-Pasting multiple lines is auto-detected — paste freely, the whole block
-is sent as one turn.
-"""
-
-
-def _print_help() -> None:
-    print(HELP_BANNER, end="", flush=True)
-
-
-def _read_user_input(prompt_text: str = "You: ") -> str | None:
-    try:
-        first = input(prompt_text)
-    except (EOFError, KeyboardInterrupt):
-        return None
-    if first.strip() == "/multi":
-        print("(multi-line mode — finish with a blank line)")
-        lines: list[str] = []
-        while True:
-            try:
-                line = input("... ")
-            except (EOFError, KeyboardInterrupt):
-                break
-            if line == "":
-                break
-            lines.append(line)
-        return "\n".join(lines).strip()
-    try:
-        extra: list[str] = []
-        while sys.stdin in select.select([sys.stdin], [], [], 0.03)[0]:
-            line = sys.stdin.readline()
-            if line == "":
-                break
-            extra.append(line.rstrip("\n"))
-        if extra:
-            return "\n".join([first, *extra]).strip()
-    except Exception:
-        pass
-    return first.strip()
-
-
-def _handle_slash(cmd: str, client: Any | None) -> bool:
-    parts = cmd.split()
-    head = parts[0].lower()
-    arg = parts[1].lower() if len(parts) > 1 else ""
-    if head in {"/quit", "/exit"}:
-        return False
-    if head == "/help":
-        _print_help()
-        return True
-    if head == "/latency":
-        _pipeline["show_latency"] = (arg == "on") if arg in {"on", "off"} else not _pipeline.get("show_latency")
-        print(f"  latency report → {'on' if _pipeline['show_latency'] else 'off'}")
-        return True
-    if head == "/tools":
-        _pipeline["show_tool_activity"] = (arg == "on") if arg in {"on", "off"} else not _pipeline.get("show_tool_activity")
-        print(f"  tool activity → {'on' if _pipeline['show_tool_activity'] else 'off'}")
-        return True
-    if head == "/skills":
-        from .core.skill_loader import discover_skills
-        for s in discover_skills(_pipeline["layout"]):
-            print(f"  {s.zone:8s}  {s.name}_v{s.version}  ({s.module_path})")
-        return True
-    if head == "/setup":
-        try:
-            new_layout = run_wizard(force=True, instance_name=_pipeline["config"].instance_name)
-            print(f"  setup complete — restart Jaeger to pick up changes at {new_layout.root}.")
-        except Exception as exc:
-            print(f"  /setup failed: {exc}")
-        return True
-    if head in {"/instances", "/list-instances"}:
-        # Read-only — mutation ops live on the CLI (--create/delete/clear)
-        # and require restart since we'd otherwise have to tear down the
-        # already-loaded LLM + instance lock.
-        _cli_list_instances()
-        return True
-    if head == "/whoami":
-        layout: InstanceLayout = _pipeline["layout"]
-        cfg = _pipeline.get("config")
-        print(f"  instance: {cfg.instance_name if cfg else '?'}")
-        print(f"  path:     {layout.root}")
-        try:
-            from .core.schemas import Identity, load_yaml
-            ident = load_yaml(layout.identity_path, Identity)
-            print(f"  identity: {ident.name!r} — {ident.role}")
-        except Exception as exc:
-            print(f"  identity: (unreadable: {exc})")
-        return True
-    print(f"  unknown command: {head} (try /help)")
-    return True
-
-
-def cli_loop(client: Any) -> int:
-    layout: InstanceLayout = _pipeline["layout"]
-    print(f"[jaeger] Instance: {layout.root}")
-    if _pipeline.get("show_help_on_start", True):
-        _print_help()
-    else:
-        print("Type /help for commands. /quit to stop.")
-    while True:
-        text = _read_user_input("You: ")
-        if text is None:
-            print()
-            return 0
-        if not text:
-            continue
-        if text.lower() in {"exit", "quit"}:
-            return 0
-        if text.startswith("/"):
-            if not _handle_slash(text, client):
-                return 0
-            continue
-        run_command(client, text)
 
 
 # ---------------------------------------------------------------------------
@@ -3264,6 +3283,12 @@ def boot_for_tui(
         install_policy(PermissionPolicy(confirmation=_confirmation_provider(config, layout)))
 
         client = make_client(config, layout, warmup=warmup)
+        # Skills that loop with the model — computer_use_v2's computer_do —
+        # read the live client from _pipeline["client"]. The full CLI path
+        # sets this in init_extensions, which the TUI deliberately does
+        # not run; without this line every computer_do call in the TUI
+        # fails with "no LLM client available for the loop".
+        _pipeline["client"] = client
         _get_agent(client)
         if warmup:
             prewarm(client)
@@ -3550,6 +3575,13 @@ def main() -> int:
             print(f"[jaeger] refuse-to-start: {exc}", file=sys.stderr, flush=True)
             return 2
 
+    # Interactive use (no one-shot prompt) → the TUI is the interface.
+    # Every exit-flag mode is already handled above and no instance lock
+    # is held yet, so this hand-off is clean: the TUI does its own boot.
+    if not " ".join(args.prompt).strip():
+        from .interfaces.tui.__main__ import main as tui_main
+        return tui_main()
+
     # Lock
     lock = InstanceLock(layout)
     try:
@@ -3651,10 +3683,10 @@ def main() -> int:
             _pipeline["llm_lock"] = prev_lock
 
         try:
-            if prompt:
-                run_command(client, prompt)
-                return 0
-            return cli_loop(client)
+            # `prompt` is guaranteed non-empty here — the no-prompt
+            # interactive case was routed to the TUI before the lock.
+            run_command(client, prompt)
+            return 0
         finally:
             if cron_runner is not None:
                 cron_runner.shutdown(wait=False)

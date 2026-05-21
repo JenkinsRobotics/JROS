@@ -48,7 +48,8 @@ dependencies = [
     "numpy>=1.26",             # embeddings + audio buffers
     "requests>=2.32",          # web tools + general HTTP
     "certifi>=2024.0",         # cert bundle
-    "rich>=13.0",              # the TUI
+    "rich>=13.0",              # the TUI — banner, panels, scrollback
+    "prompt-toolkit>=3.0",     # the TUI — input line, autocomplete, status bar
     "llama-cpp-python>=0.3",   # in-process local LLM (the default brain)
     "croniter>=2.0",           # scheduled prompts (cron_runner)
     "ddgs>=9.0",               # web_search default backend
@@ -64,6 +65,10 @@ dependencies = [
     "transformers>=4.40",
     "diffusers>=0.27",
     "pillow>=10.0",
+    # --- browser automation: the `browser` tool ---
+    # NOTE: after install, fetch the browser binary once:
+    #   playwright install chromium
+    "playwright>=1.40",
     # --- semantic episodic memory (search_memory) ---
     "sentence-transformers>=3.0",
     # --- external-model pipeline (LM Studio / OpenAI / Anthropic) ---

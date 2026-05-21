@@ -45,6 +45,10 @@ def _scan_gguf(root: pathlib.Path, source: str) -> list[dict[str, Any]]:
         return out
     try:
         for p in sorted(root.rglob("*.gguf")):
+            # mmproj-*.gguf are vision-projection companion files, not
+            # standalone brains — never offer them as a model.
+            if p.name.lower().startswith("mmproj"):
+                continue
             try:
                 size = p.stat().st_size
             except OSError:
@@ -97,8 +101,13 @@ def discover_ollama_disk() -> list[dict[str, Any]]:
     try:
         # manifests/<registry>/<namespace>/<model>/<tag-file>
         for tag_file in sorted(base.rglob("*")):
-            if tag_file.is_file():
-                models.append({"name": f"{tag_file.parent.name}:{tag_file.name}"})
+            if not tag_file.is_file():
+                continue
+            model, tag = tag_file.parent.name, tag_file.name
+            # Skip OS noise (.DS_Store, Thumbs.db) and hidden files.
+            if model.startswith(".") or tag.startswith("."):
+                continue
+            models.append({"name": f"{model}:{tag}"})
     except Exception:  # noqa: BLE001
         pass
     return models
@@ -144,10 +153,53 @@ def discover_lmstudio(base: str = LMSTUDIO_URL) -> dict[str, Any]:
     return {"online": True, "models": models, "endpoint": base}
 
 
-def discover_all() -> dict[str, Any]:
-    """The full picture: JROS registry + Ollama + LM Studio."""
+OLLAMA_CLOUD_URL = "https://ollama.com/v1"
+_CLOUD_TIMEOUT = 5.0
+
+
+def discover_ollama_cloud(api_key: str = "") -> dict[str, Any]:
+    """Ollama Cloud's model catalogue via the OpenAI-compatible
+    ``/v1/models`` endpoint. Needs the API key. Returns
+    ``{online, models, endpoint}`` — ``online: False`` (never an
+    exception) when there is no key or the endpoint can't be reached."""
+    if not api_key:
+        return {"online": False, "models": [], "endpoint": OLLAMA_CLOUD_URL,
+                "detail": "no api key"}
+    try:
+        import requests
+        resp = requests.get(
+            f"{OLLAMA_CLOUD_URL}/models",
+            headers={"Authorization": f"Bearer {api_key}"},
+            timeout=_CLOUD_TIMEOUT,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+    except Exception as exc:  # noqa: BLE001
+        return {"online": False, "models": [], "endpoint": OLLAMA_CLOUD_URL,
+                "detail": type(exc).__name__}
+    models = [{"name": m["id"]} for m in (data.get("data") or [])
+              if isinstance(m, dict) and m.get("id")]
+    return {"online": True, "models": models, "endpoint": OLLAMA_CLOUD_URL}
+
+
+def discover_all(ollama_cloud_key: str = "") -> dict[str, Any]:
+    """The full picture so ``/model`` can show everything selectable:
+    the JROS registry, every ``.gguf`` on disk (repo / cache / LM
+    Studio), Ollama (live server + on-disk manifests), LM Studio's live
+    server, and — when ``ollama_cloud_key`` is supplied — the Ollama
+    Cloud catalogue."""
+    ollama_live = discover_ollama()
+    # Merge live Ollama models with the on-disk manifest list so models
+    # show even when the server is down — de-duped by name.
+    names = {m["name"] for m in ollama_live.get("models", [])}
+    for m in discover_ollama_disk():
+        if m["name"] not in names:
+            names.add(m["name"])
+            ollama_live.setdefault("models", []).append(m)
     return {
         "jaeger": discover_jaeger(),
-        "ollama": discover_ollama(),
+        "local_gguf": discover_local_gguf(),
+        "ollama": ollama_live,
         "lmstudio": discover_lmstudio(),
+        "ollama_cloud": discover_ollama_cloud(ollama_cloud_key),
     }

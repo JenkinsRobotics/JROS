@@ -958,13 +958,25 @@ class JaegerTUI:
         frags.append((f"fg:{ACCENT_PTK} bold", "❯ "))
         return frags
 
+    def _prompt_placeholder(self) -> Any:
+        """Ghost hint shown in the empty input line — what Enter does
+        mid-turn and the key shortcuts, hermes-style. Disappears the
+        moment the user types."""
+        return [(
+            "fg:ansibrightblack",
+            f"  msg → {self._busy_mode}   ·   /steer   ·   /busy   "
+            "·   ^C interrupt",
+        )]
+
     def _read_line(self) -> Any:
         """Read one line via the prompt_toolkit session — slash
         autocomplete, ghost-text, the pinned status bar, history.
         Returns the string, :data:`CTRL_C` on Ctrl-C, ``None`` on EOF."""
         if self._ptk_session is None:
             self._ptk_session = build_session()
-        return read_prompt(self._ptk_session, message=self._prompt_message)
+        return read_prompt(self._ptk_session,
+                           message=self._prompt_message,
+                           placeholder=self._prompt_placeholder)
 
     # ── Turn worker (concurrent input) ──────────────────────────────
 
@@ -983,8 +995,14 @@ class JaegerTUI:
             return func()
         try:
             from prompt_toolkit.application import run_in_terminal
-            fut = asyncio.run_coroutine_threadsafe(
-                run_in_terminal(func), loop)
+
+            # run_in_terminal must be *invoked* inside the prompt_toolkit
+            # event loop (it calls get_app()); wrap it in a coroutine so
+            # run_coroutine_threadsafe schedules the whole thing there.
+            async def _runner() -> Any:
+                return await run_in_terminal(func)
+
+            fut = asyncio.run_coroutine_threadsafe(_runner(), loop)
             return fut.result()
         except Exception:  # noqa: BLE001
             return func()

@@ -62,6 +62,7 @@ def read_prompt(
     session: PromptSession,
     *,
     message: Callable[[], Any],
+    placeholder: Callable[[], Any] | None = None,
 ) -> Any:
     """Read one line of input. Returns the typed string, :data:`CTRL_C`
     on Ctrl-C, or ``None`` on EOF (Ctrl-D).
@@ -83,6 +84,7 @@ def read_prompt(
             return session.prompt(
                 message,
                 refresh_interval=_REFRESH_INTERVAL,
+                placeholder=placeholder,
             )
     except KeyboardInterrupt:
         return CTRL_C

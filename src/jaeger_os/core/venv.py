@@ -118,6 +118,15 @@ def install_into_venv(
             "error": (f"invalid package spec {spec!r} — must be a plain pip "
                       "requirement like 'requests' or 'httpx>=0.27'"),
         }
+    # OSV malware check — refuse a package with a known MAL-* advisory.
+    # Fail-open: an unreachable OSV never blocks a legitimate install.
+    try:
+        from .osv_check import check_pypi_package
+        malware = check_pypi_package(spec)
+    except Exception:  # noqa: BLE001
+        malware = None
+    if malware:
+        return {"ok": False, "package": spec, "error": malware}
     try:
         ensure_venv(layout)
     except Exception as exc:  # noqa: BLE001

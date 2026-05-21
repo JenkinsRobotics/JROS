@@ -30,11 +30,15 @@ def _ensure_imagegen_pipeline() -> tuple[Any, str]:
     if _imagegen_state["pipeline"] is not None and _imagegen_state["model_id"] == model_id:
         return _imagegen_state["pipeline"], model_id
 
+    # Optional backend — ensure() gives a clean, actionable error (and
+    # an opt-in auto-install) instead of a raw ImportError.
+    from ..lazy_deps import FeatureUnavailable, ensure
     try:
-        from diffusers import AutoPipelineForText2Image
-        import torch
-    except ImportError as exc:
-        raise RuntimeError(f"diffusers/torch missing — pip install diffusers accelerate ({exc})")
+        ensure("image.diffusers")
+    except FeatureUnavailable as exc:
+        raise RuntimeError(exc.remediation) from exc
+    from diffusers import AutoPipelineForText2Image
+    import torch
 
     started = time.perf_counter()
     device = "mps" if hasattr(torch.backends, "mps") and torch.backends.mps.is_available() else "cpu"

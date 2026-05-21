@@ -4,12 +4,15 @@
   • append_file(path, content) — append inside <instance>/skills/
   • edit_file(path, old, new)  — surgical find/replace inside skills/
   • delete_file(path)          — delete inside <instance>/skills/
-  • file_read(path)            — read anywhere except <instance>/credentials/
-  • list_skill_dir(path)       — list under <instance>/skills/
-  • search_files(query, path)  — grep file contents under <instance>/skills/
+  • file_read(path)            — read ANYWHERE except credentials/
+  • list_skill_dir(path)       — list any directory (default: skills/)
+  • search_files(query, path)  — grep file contents anywhere
 
-ALL writes/appends/deletes are sandbox-resolved under <instance>/skills/.
-The framework dir (core/, prompts/, etc.) is read-only to the agent.
+The read/write split is deliberate. **Reads are unconfined** — Jaeger
+can read its own source, the whole repository it lives in, and the
+wider system, so it can reason about the codebase. **Writes are
+sandboxed** to <instance>/skills/ — the agent edits its own workspace,
+never the framework. The one read it refuses is a credential file.
 
 Every successful write/append/delete lands as a git commit inside the
 instance dir, giving the human a real authorship audit trail.
@@ -17,15 +20,26 @@ instance dir, giving the human a real authorship audit trail.
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 from ._common import (
     SandboxError,
     _audit,
+    _display_path,
     _require_layout,
+    _resolve_read,
     _resolve_under,
     git_autocommit,
 )
+
+# Directories search_files never descends into — VCS internals, virtual
+# envs, caches, and the multi-GB model store would swamp a content grep.
+_SEARCH_SKIP = frozenset({
+    ".git", ".venv", "venv", "node_modules", "__pycache__",
+    ".mypy_cache", ".pytest_cache", ".ruff_cache", ".jaeger",
+    "models", "dist", "build", ".idea",
+})
 
 
 def _maybe_syntax_check(path_rel: str, content: str) -> dict[str, Any] | None:
@@ -209,11 +223,12 @@ def delete_file(path: str) -> dict[str, Any]:
 
 
 def file_read(path: str, offset: int = 0, limit: int | None = None) -> dict[str, Any]:
-    """Read a text file from anywhere under the instance dir EXCEPT credentials/.
+    """Read a text file from ANYWHERE — Jaeger's own source code, the
+    repository it lives in, the wider system.
 
-    Use this to inspect identity/config/manifest, prior skills, and the
-    contents of skills/. Reads of credentials/ are rejected with a hint
-    pointing at `get_credential()`.
+    Use this to study the codebase, inspect identity/config/manifest,
+    prior skills, anything. The only read it refuses is a credential
+    file (a hint points at ``get_credential()``).
 
     For a large file, page it: ``offset`` is the 0-based first line and
     ``limit`` the number of lines to return (default: the whole file).
@@ -222,28 +237,21 @@ def file_read(path: str, offset: int = 0, limit: int | None = None) -> dict[str,
     """
     layout = _require_layout()
     try:
-        target = _resolve_under(layout.root, path)
+        target = _resolve_read(path)
     except SandboxError as exc:
         _audit("file_read_denied", {"path": path, "reason": str(exc)})
         return {"read": False, "error": str(exc)}
-
-    try:
-        target.relative_to(layout.credentials_dir.resolve())
-        _audit("file_read_denied", {"path": path, "reason": "credentials are off-limits"})
-        return {
-            "read": False,
-            "error": ("credentials/ is off-limits to direct reads. "
-                      "Use get_credential(name) instead."),
-        }
-    except ValueError:
-        pass
 
     if not target.exists():
         return {"read": False, "error": "not found", "path": path}
     if target.is_dir():
         return {"read": False, "error": "is a directory", "path": path}
-    full = target.read_text(encoding="utf-8")
-    rel = str(target.relative_to(layout.root))
+    try:
+        full = target.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as exc:
+        return {"read": False, "error": f"unreadable (binary?): {exc}",
+                "path": path}
+    rel = _display_path(target, layout)
 
     if offset or limit is not None:
         lines = full.splitlines(keepends=True)
@@ -262,11 +270,14 @@ def file_read(path: str, offset: int = 0, limit: int | None = None) -> dict[str,
 
 
 def list_skill_dir(path: str = ".") -> dict[str, Any]:
-    """List files under skills/. Use this to discover existing skills
-    before adding a new version (so the agent picks the right _vN suffix)."""
+    """List a directory's contents. Defaults to the instance's skills/
+    dir; pass any path — a repo subdirectory, an absolute path — to list
+    elsewhere. Use it to explore the codebase or to discover existing
+    skills before adding a new version (so the agent picks the right
+    _vN suffix)."""
     layout = _require_layout()
     try:
-        target = _resolve_under(layout.skills_dir, path) if path != "." else layout.skills_dir
+        target = layout.skills_dir if path == "." else _resolve_read(path)
     except SandboxError as exc:
         return {"listed": False, "error": str(exc)}
     if not target.exists():
@@ -281,23 +292,26 @@ def list_skill_dir(path: str = ".") -> dict[str, Any]:
             "type": "directory" if child.is_dir() else "file",
             "bytes": child.stat().st_size if child.is_file() else None,
         })
-    return {"listed": True, "path": str(target.relative_to(layout.root)), "entries": entries}
+    return {"listed": True, "path": _display_path(target, layout),
+            "entries": entries}
 
 
 def search_files(query: str, path: str = ".", max_results: int = 50) -> dict[str, Any]:
-    """Search file CONTENTS under <instance>/skills/ — a recursive grep.
+    """Search file CONTENTS — a recursive, case-insensitive grep over
+    the codebase.
 
-    Case-insensitive substring match. Use this to find where something
-    is defined or used across the skills you've authored, instead of
-    reading files one by one. ``path`` narrows the search to a
-    subdirectory. Returns matches as ``{file, line, text}``; skips
-    binary files and anything over 1 MB; caps at ``max_results``."""
+    ``path`` defaults to the current directory (the repository when
+    Jaeger is launched from its root); pass any directory to narrow it.
+    Use this to find where something is defined or used instead of
+    reading files one by one. Returns matches as ``{file, line, text}``;
+    skips VCS/venv/cache dirs and the model store, binary files, and
+    anything over 1 MB; caps at ``max_results``."""
     layout = _require_layout()
     needle = (query or "").lower()
     if not needle:
         return {"searched": False, "error": "empty query"}
     try:
-        root = _resolve_under(layout.skills_dir, path) if path != "." else layout.skills_dir
+        root = Path.cwd() if path == "." else _resolve_read(path)
     except SandboxError as exc:
         return {"searched": False, "error": str(exc)}
     if not root.exists():
@@ -305,8 +319,15 @@ def search_files(query: str, path: str = ".", max_results: int = 50) -> dict[str
 
     cap = max(1, min(int(max_results or 50), 500))
     matches: list[dict[str, Any]] = []
-    for child in sorted(root.rglob("*")):
+    candidates = [root] if root.is_file() else sorted(root.rglob("*"))
+    for child in candidates:
         if not child.is_file():
+            continue
+        try:
+            rel_parts = child.relative_to(root).parts
+        except ValueError:
+            rel_parts = child.parts
+        if any(part in _SEARCH_SKIP for part in rel_parts):
             continue
         try:
             if child.stat().st_size > 1_000_000:
@@ -317,7 +338,7 @@ def search_files(query: str, path: str = ".", max_results: int = 50) -> dict[str
         for lineno, line in enumerate(text.splitlines(), 1):
             if needle in line.lower():
                 matches.append({
-                    "file": str(child.relative_to(layout.root)),
+                    "file": _display_path(child, layout),
                     "line": lineno,
                     "text": line.strip()[:200],
                 })

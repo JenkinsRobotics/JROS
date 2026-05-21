@@ -240,19 +240,40 @@ class ExternalModelClient:
         return f"external · {self.provider} · {self.ext.model} · {where}"
 
     def connectivity_check(self) -> dict[str, Any]:
-        """Tiny live request to confirm the endpoint answers. Returns
-        ``{ok, detail, latency_s}``. Used by boot + the /model command so
-        a misconfigured endpoint fails loud instead of mid-conversation."""
+        """Confirm the endpoint answers. Returns ``{ok, detail, latency_s}``.
+
+        For an OpenAI-compatible provider this is a cheap ``GET /models``
+        — it proves the endpoint + API key work without paying for a
+        generation. Critically, it does NOT generate: a *thinking*
+        model (qwen3.5, …) legitimately returns an empty completion when
+        a token-capped probe runs out of budget mid-reasoning, which the
+        old chat-probe mistook for 'unreachable' and fell back to local.
+        ``ok`` means the HTTP round-trip succeeded — reachability, not
+        output quality."""
+        started = time.perf_counter()
         try:
+            if self.provider in _OPENAI_COMPATIBLE:
+                import requests
+                key = self._api_key or (
+                    "lm-studio" if self.provider == "lmstudio" else "")
+                headers = {"Authorization": f"Bearer {key}"} if key else {}
+                resp = requests.get(
+                    f"{self.ext.base_url.rstrip('/')}/models",
+                    headers=headers, timeout=self.ext.timeout_s,
+                )
+                resp.raise_for_status()
+                return {"ok": True, "detail": "endpoint reachable",
+                        "latency_s": round(time.perf_counter() - started, 2)}
+            # Anthropic — a small generation probe (no /models list).
             result = self.chat(
-                [{"role": "user", "content": "reply with the single word: ok"}],
-                max_tokens=8,
-                temperature=0.0,
+                [{"role": "user", "content": "Reply with: ok"}],
+                max_tokens=64, temperature=0.0,
             )
             return {
-                "ok": bool(result.text),
-                "detail": result.text[:80] or "(empty reply)",
+                "ok": True,
+                "detail": (result.text[:80].strip() or "reachable"),
                 "latency_s": round(result.latency_s, 2),
             }
         except Exception as exc:  # noqa: BLE001
-            return {"ok": False, "detail": f"{type(exc).__name__}: {exc}", "latency_s": 0.0}
+            return {"ok": False, "detail": f"{type(exc).__name__}: {exc}",
+                    "latency_s": 0.0}

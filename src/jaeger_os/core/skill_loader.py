@@ -289,6 +289,33 @@ def load_and_register(
                       flush=True)
                 continue
 
+        # Safety scan — a static content scan (exfiltration, prompt
+        # injection, destructive commands, embedded secrets). A `danger`
+        # verdict blocks an instance-zone skill before its Python is
+        # imported; a core/shipped skill is only warned about.
+        try:
+            from .skills_guard import scan_skill
+            scan = scan_skill(skill.folder, name=skill.name)
+        except Exception:  # noqa: BLE001
+            scan = None
+        if scan is not None and scan.is_danger:
+            if audit:
+                audit("skill_guard_flag", {
+                    "skill": skill.name, "version": skill.version,
+                    "zone": skill.zone, "verdict": scan.verdict,
+                    "findings": len(scan.findings),
+                })
+            if skill.zone != "core":
+                skipped.append((skill, f"safety scan: {scan.verdict}"))
+                print(f"[jaeger-skills] {skill.name}_v{skill.version} "
+                      f"({skill.zone}) skipped: safety scan flagged "
+                      f"{len(scan.findings)} issue(s).", flush=True)
+                continue
+            print(f"[jaeger-skills] WARNING: core skill {skill.name} "
+                  f"tripped the safety scan ({len(scan.findings)} "
+                  "finding(s)) — loading anyway (shipped/trusted).",
+                  flush=True)
+
         try:
             module = _import_skill(skill)
             register = getattr(module, "register", None)

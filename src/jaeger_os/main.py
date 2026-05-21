@@ -861,17 +861,26 @@ def _register_builtins(agent: Agent[None, str], client: Any) -> None:
         return t.system_status()
 
     @agent.tool_plain
+    @requires_tier(PermissionTier.WRITE_LOCAL, skill="files",
+                   operation="write_file",
+                   summary="write a file in the skills workspace")
     def write_file(path: str, content: str) -> dict:
         """Write a text file in the sandboxed skills/ directory. Overwrites
         if it already exists."""
         return t.file_write(path=path, content=content)
 
     @agent.tool_plain
+    @requires_tier(PermissionTier.WRITE_LOCAL, skill="files",
+                   operation="append_file",
+                   summary="append to a file in the skills workspace")
     def append_file(path: str, content: str) -> dict:
         """Append text to an existing skills/ file."""
         return t.append_file(path=path, content=content)
 
     @agent.tool_plain
+    @requires_tier(PermissionTier.WRITE_LOCAL, skill="files",
+                   operation="patch",
+                   summary="edit a file in the skills workspace")
     def patch(path: str, old: str, new: str, replace_all: bool = False) -> dict:
         """Surgically edit an EXISTING skills/ file by find-and-replace.
         Prefer this over write_file to change a file you've already
@@ -883,6 +892,9 @@ def _register_builtins(agent: Agent[None, str], client: Any) -> None:
         return t.edit_file(path=path, old=old, new=new, replace_all=replace_all)
 
     @agent.tool_plain
+    @requires_tier(PermissionTier.WRITE_LOCAL, skill="files",
+                   operation="delete_file",
+                   summary="delete a file from the skills workspace")
     def delete_file(path: str) -> dict:
         """Delete a file from the skills/ directory."""
         return t.delete_file(path=path)
@@ -1028,6 +1040,9 @@ def _register_builtins(agent: Agent[None, str], client: Any) -> None:
         return t.get_weather(location=location)
 
     @agent.tool_plain
+    @requires_tier(PermissionTier.WRITE_LOCAL, skill="code",
+                   operation="execute_code",
+                   summary="run Python code in the skills workspace")
     def execute_code(code: str, timeout_s: float = 10.0) -> dict:
         """Run Python code and return its output. Reach for this for
         ANYTHING computational: arithmetic, the current date/time
@@ -1140,6 +1155,9 @@ def _register_builtins(agent: Agent[None, str], client: Any) -> None:
                         priority=priority, note=note)
 
     @agent.tool_plain
+    @requires_tier(PermissionTier.EXTERNAL_EFFECT, skill="browser",
+                   operation="browser",
+                   summary="drive a real web browser")
     def browser(action: str, url: str = "", element: int = 0,
                 text: str = "", direction: str = "down",
                 key: str = "Enter") -> dict:
@@ -1158,16 +1176,19 @@ def _register_builtins(agent: Agent[None, str], client: Any) -> None:
                          text=text, direction=direction, key=key)
 
     @agent.tool_plain
-    def skill(action: str, name: str = "", query: str = "") -> dict:
+    def skill(action: str, name: str = "", query: str = "",
+              file: str = "") -> dict:
         """Discover and read playbook skills — experienced procedures for
         a task (instructions + often runnable shell/Python). `action`:
           • list — every available skill (name · category · summary)
           • search — skills matching `query`; use this FIRST when a task
             might have a skill ("inspect a codebase", "search arxiv")
-          • view — the full instructions of skill `name`; read them, then
+          • view — the full instructions of skill `name` plus a `files`
+            listing of its bundled scripts/references; read them, then
             carry them out with your normal tools (terminal, execute_code).
+            Pass `file="scripts/foo.py"` to read one bundled file.
         On-demand — skills are NOT all in your prompt; find what you need."""
-        return t.skill(action=action, name=name, query=query)
+        return t.skill(action=action, name=name, query=query, file=file)
 
     @agent.tool_plain
     def board_view(column: str = "", tag: str = "") -> dict:
@@ -1334,6 +1355,9 @@ def _register_builtins(agent: Agent[None, str], client: Any) -> None:
         return t.look_at(image_path=image_path, question=question)
 
     @agent.tool_plain
+    @requires_tier(PermissionTier.WRITE_LOCAL, skill="vision",
+                   operation="image_generate",
+                   summary="generate an image into the skills workspace")
     def image_generate(
         prompt: str,
         out_path: str = "generated.png",
@@ -1351,6 +1375,9 @@ def _register_builtins(agent: Agent[None, str], client: Any) -> None:
         )
 
     @agent.tool_plain
+    @requires_tier(PermissionTier.EXTERNAL_EFFECT, skill="host",
+                   operation="open_on_host",
+                   summary="open a URL / file / app on the host")
     def open_on_host(target: str, kind: str = "auto") -> dict:
         """Open something on the host (macOS). One verb for three cases:
         a URL in the default browser, a workspace file in its default
@@ -1386,6 +1413,9 @@ def _register_builtins(agent: Agent[None, str], client: Any) -> None:
         return _delegate_parallel(client, clean)
 
     @agent.tool_plain
+    @requires_tier(PermissionTier.EXTERNAL_EFFECT, skill="messaging",
+                   operation="send_message",
+                   summary="send a message on an external channel")
     def send_message(channel: str, recipient: str, text: str) -> dict:
         """Send a proactive message to a user on a messaging channel.
 
@@ -1986,21 +2016,23 @@ async def _run_via_iter(
                         call = pending_tool_calls.pop(
                             getattr(p, "tool_call_id", ""), {},
                         )
+                        _tname = call.get("name") or getattr(p, "tool_name", "")
                         _started = call.get("started", 0.0)
-                        _emit_tool(
-                            "done",
-                            call.get("name") or getattr(p, "tool_name", ""),
-                            "",
-                            (time.perf_counter() - _started)
-                            if _started else 0.0,
-                        )
+                        _elapsed = ((time.perf_counter() - _started)
+                                    if _started else 0.0)
+                        _emit_tool("done", _tname, "", _elapsed)
                         fail_sig = _semantic_failure_signature(
-                            call.get("name") or getattr(p, "tool_name", ""),
-                            call.get("args") or {},
-                            p.content,
+                            _tname, call.get("args") or {}, p.content,
                         )
                         if fail_sig:
                             failure_signatures[fail_sig] = failure_signatures.get(fail_sig, 0) + 1
+                        # Usage telemetry — best-effort, never fatal.
+                        try:
+                            from .usage_stats import record_tool
+                            record_tool(_tname, ok=not fail_sig,
+                                        elapsed=_elapsed)
+                        except Exception:  # noqa: BLE001
+                            pass
                 halt_reason = _loop_halt_reason(
                     tool_calls_made, call_signatures, failure_signatures,
                 )

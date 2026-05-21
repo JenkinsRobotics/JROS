@@ -257,6 +257,20 @@ class PermissionsConfig(BaseModel):
     mode: Literal["confirm", "allow"] = "confirm"
 
 
+class SecurityConfig(BaseModel):
+    """Security posture toggles.
+
+    ``allow_lazy_installs`` — when an optional feature backend (Kokoro
+    TTS, a vision model, the ddgs search client) is missing, may the
+    framework pip-install it into the instance venv on first use?
+    OFF by default: a missing backend returns a clean "feature
+    unavailable, run X" message instead of installing silently.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+    allow_lazy_installs: bool = False
+
+
 class Config(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -270,6 +284,7 @@ class Config(BaseModel):
     external_model: ExternalModelConfig = Field(default_factory=ExternalModelConfig)
     warmup: WarmupConfig = Field(default_factory=WarmupConfig)
     permissions: PermissionsConfig = Field(default_factory=PermissionsConfig)
+    security: SecurityConfig = Field(default_factory=SecurityConfig)
 
     @field_validator("instance_name")
     @classmethod

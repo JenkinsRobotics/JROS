@@ -77,9 +77,12 @@ def test_edit_file_rejects_sandbox_escape(bound_instance):
 
 
 def test_search_files_finds_content(bound_instance):
+    # search_files now defaults to cwd (the repo) for codebase-wide
+    # grep; scope it to the instance skills dir explicitly here.
+    skills = str(bound_instance.skills_dir)
     tools.file_write("a.py", "def hello():\n    return 1\n")
     tools.file_write("b.py", "def world():\n    return 2\n")
-    result = tools.search_files("def hello")
+    result = tools.search_files("def hello", path=skills)
     assert result["searched"] is True
     assert result["count"] == 1
     assert result["matches"][0]["file"].endswith("a.py")
@@ -87,12 +90,54 @@ def test_search_files_finds_content(bound_instance):
 
 
 def test_search_files_is_case_insensitive(bound_instance):
+    skills = str(bound_instance.skills_dir)
     tools.file_write("a.py", "RETURN_VALUE = 7\n")
-    assert tools.search_files("return_value")["count"] == 1
+    assert tools.search_files("return_value", path=skills)["count"] == 1
 
 
 def test_search_files_empty_query(bound_instance):
     assert tools.search_files("")["searched"] is False
+
+
+# ── read-anywhere (reads are unconfined; writes stay sandboxed) ───────
+
+
+def test_file_read_reads_an_absolute_path_outside_the_instance(
+    bound_instance, tmp_path,
+):
+    # A read outside the instance dir — Jaeger can read its own source
+    # and the wider repo, not just <instance>/skills/.
+    outside = tmp_path / "elsewhere.txt"
+    outside.write_text("hello from outside the instance\n")
+    r = tools.file_read(str(outside))
+    assert r["read"] is True
+    assert "outside the instance" in r["content"]
+
+
+def test_file_read_refuses_a_credential_file(bound_instance):
+    cred = bound_instance.credentials_dir / "api_key"
+    bound_instance.credentials_dir.mkdir(parents=True, exist_ok=True)
+    cred.write_text("super-secret\n")
+    r = tools.file_read(str(cred))
+    assert r["read"] is False
+    assert "credential" in r["error"].lower()
+
+
+def test_writes_stay_confined_to_the_instance(bound_instance, tmp_path):
+    # Reads are unconfined, but a write to an absolute path outside the
+    # instance must still be refused — the sandbox holds for writes.
+    escape = tmp_path / "escape.txt"
+    r = tools.file_write(str(escape), "should not land here")
+    assert r["written"] is False
+    assert not escape.exists()
+
+
+def test_file_read_relative_falls_back_to_instance(bound_instance):
+    # A workspace-relative path still resolves even though reads are
+    # cwd-first — the instance root is the fallback.
+    tools.file_write("note.txt", "workspace file\n")
+    r = tools.file_read("skills/note.txt")
+    assert r["read"] is True and "workspace file" in r["content"]
 
 
 # ── file_read pagination ─────────────────────────────────────────────

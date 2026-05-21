@@ -248,8 +248,9 @@ def _brain_line(cfg: Any, client: Any) -> str:
 def _model(ctx: SlashContext, args: str) -> SlashResult:
     """Show or switch the agent's brain.
 
-       /model                          show every model
-       /model use local                in-process llama-cpp model
+       /model                          interactive model picker
+       /model list                     print every model as text
+       /model use local [name]         a local .gguf, in-process
        /model use ollama <name>        a local Ollama server
        /model use lmstudio <name>      a local LM Studio server
        /model use ollama-cloud <name>  Ollama Cloud (prompts for a key)
@@ -257,7 +258,95 @@ def _model(ctx: SlashContext, args: str) -> SlashResult:
     parts = args.split()
     if parts and parts[0].lower() == "use":
         return _model_use(ctx, parts[1:])
+    if parts and parts[0].lower() in ("list", "ls", "all"):
+        return _model_list(ctx)
+    return _model_picker(ctx)
 
+
+def _resolve_cloud_key(ctx: SlashContext) -> str:
+    """The stored external-model API key, if any — used to discover the
+    Ollama Cloud catalogue. Empty string when none is configured."""
+    try:
+        from jaeger_os.core.external_model import resolve_api_key
+        from jaeger_os.core.instance import InstanceLayout
+        from jaeger_os.main import _pipeline
+        ext = getattr(_pipeline.get("config"), "external_model", None)
+        if ext is None:
+            return ""
+        layout = InstanceLayout(root=Path(str(ctx.instance_dir)))
+        return resolve_api_key(ext, layout) or ""
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def _model_picker(ctx: SlashContext) -> SlashResult:
+    """The interactive ``/model`` picker — a centered arrow-key box of
+    every selectable model. Enter switches; Esc cancels. The currently
+    active model is pre-highlighted."""
+    from jaeger_os.core.model_discovery import discover_all
+    from jaeger_os.main import _pipeline
+    from .picker import pick
+
+    cfg = _pipeline.get("config")
+    cloud_key = _resolve_cloud_key(ctx)
+    with ctx.console.status("[dim]scanning for models…[/]"):
+        found = discover_all(cloud_key)
+    options: list[tuple[Any, str]] = []
+    seen: set[str] = set()
+
+    def _add(value: Any, tag: str, name: str, extra: str = "") -> None:
+        if name in seen:
+            return
+        seen.add(name)
+        options.append((value, f"{('[' + tag + ']'):<11} {name}  {extra}"))
+
+    # The configured external (cloud) model — always selectable, and
+    # pre-highlighted when it is the active brain.
+    ext = getattr(cfg, "external_model", None)
+    active: Any = None
+    if ext is not None and getattr(ext, "model", ""):
+        active = (ext.provider, ext.model)
+        mark = "● active" if getattr(ext, "enabled", False) else "configured"
+        _add(active, ext.provider, ext.model, mark)
+
+    for m in found.get("jaeger", []):
+        if m.get("path"):
+            _add(("local", m["name"]), "local", m["name"], "registered")
+    for m in found.get("local_gguf", []):
+        sz = f"{m['size_gb']}GB" if m.get("size_gb") else ""
+        _add(("local", m["path"]), "gguf", m["name"], f"{sz} {m.get('source','')}")
+    for m in found.get("ollama", {}).get("models", []):
+        _add(("ollama", m["name"]), "ollama", m["name"])
+    for m in found.get("lmstudio", {}).get("models", []):
+        _add(("lmstudio", m["name"]), "lmstudio", m["name"])
+    for m in found.get("ollama_cloud", {}).get("models", []):
+        _add(("ollama-cloud", m["name"]), "cloud", m["name"])
+    options.append((("__cloud__", ""),
+                    f"{'[cloud]':<11} Ollama Cloud — type a model…"))
+
+    if not options:
+        return SlashResult(message="[yellow]No models found.[/]")
+    choice = pick(
+        " Select a model ", options,
+        text="↑/↓ move · Enter select · Esc cancel",
+        default=active,
+    )
+    if choice is None:
+        return SlashResult(message="[dim]model unchanged.[/]")
+    target, name = choice
+    if target == "__cloud__":
+        try:
+            name = ctx.console.input("  ollama-cloud model: ").strip()
+        except (EOFError, KeyboardInterrupt):
+            return SlashResult(message="[dim]cancelled.[/]")
+        if not name:
+            return SlashResult(message="[yellow]No model entered.[/]")
+        return _model_use(ctx, ["ollama-cloud", name])
+    return _model_use(ctx, [target, name])
+
+
+def _model_list(ctx: SlashContext) -> SlashResult:
+    """Print every model as a plain text catalogue (``/model list``)."""
     from jaeger_os.core.model_discovery import discover_all
     from jaeger_os.main import _pipeline
     cfg = _pipeline.get("config")
@@ -265,16 +354,30 @@ def _model(ctx: SlashContext, args: str) -> SlashResult:
         f"[bold]Active brain:[/] {_brain_line(cfg, _pipeline.get('client'))}"
     )
     with ctx.console.status("[dim]scanning for models…[/]"):
-        found = discover_all()
+        found = discover_all(_resolve_cloud_key(ctx))
 
     # JROS in-process GGUF models.
-    ctx.console.print("\n[bold]JROS models[/] [dim]· in-process GGUF[/]")
+    ctx.console.print("\n[bold]JROS models[/] [dim]· registered, in-process[/]")
     for m in found["jaeger"]:
         dot = "[green]●[/]" if m.get("path") else "[dim]○[/]"
         size = f"{m['size_gb']} GB" if m.get("size_gb") else ""
         ctx.console.print(f"  {dot} {m['name']:30s} {size:9s} "
                           f"[dim]{m.get('status', '')}[/]")
     ctx.console.print("  [dim]download:  /download <name>[/]")
+
+    # Every .gguf on disk JROS can load in-process — repo models/, the
+    # JROS cache, LM Studio's folder. All selectable with /model use local.
+    local = found.get("local_gguf", [])
+    if local:
+        ctx.console.print(
+            f"\n[bold]Local GGUF files[/] [dim]· {len(local)} on disk, "
+            "loadable in-process[/]")
+        for m in local:
+            sz = f"{m['size_gb']} GB" if m.get("size_gb") else ""
+            ctx.console.print(
+                f"  [green]●[/] {m['name']:42s} {sz:9s} "
+                f"[dim]{m.get('source', '')}[/]")
+        ctx.console.print("  [dim]switch:  /model use local <name>[/]")
 
     # Local Ollama + LM Studio servers (the troubleshooting A/B targets).
     for label, key, switch in (("Ollama", "ollama", "ollama"),
@@ -294,16 +397,23 @@ def _model(ctx: SlashContext, args: str) -> SlashResult:
             ctx.console.print(
                 f"  [dim]not running — start {label} to A/B against it[/]")
 
-    # Ollama Cloud — a cloud brain; there is nothing local to probe, so
-    # it's a static entry. The agent phones out when this is selected.
+    # Ollama Cloud — the agent phones out when this is the brain. The
+    # catalogue shows when an API key is stored; otherwise it's a hint.
+    cloud = found.get("ollama_cloud", {})
+    cloud_status = ("[green]reachable[/]" if cloud.get("online")
+                    else "[dim]no key / unreachable[/]")
     ctx.console.print(
-        "\n[bold]Ollama Cloud[/] [dim]· https://ollama.com/v1[/]  "
-        "[cyan]cloud[/]"
-    )
-    ctx.console.print(
-        "  [dim]switch:  /model use ollama-cloud <model>   "
-        "(e.g. qwen3.5:397b — prompts for an API key, once)[/]"
-    )
+        f"\n[bold]Ollama Cloud[/] [dim]· https://ollama.com/v1[/]  "
+        f"{cloud_status}")
+    cloud_models = cloud.get("models", [])
+    if cloud_models:
+        for m in cloud_models:
+            ctx.console.print(f"  - {m['name']}")
+        ctx.console.print("  [dim]switch:  /model use ollama-cloud <model>[/]")
+    else:
+        ctx.console.print(
+            "  [dim]switch:  /model use ollama-cloud <model>   "
+            "(e.g. qwen3.5:397b — prompts for an API key, once)[/]")
 
     ctx.console.print(
         "\n[dim]switch:[/]  /model use local"
@@ -364,8 +474,9 @@ def _model_use(ctx: SlashContext, args: list[str]) -> SlashResult:
         ctx.console.print("[yellow]Switching the brain needs the TUI.[/]")
         return SlashResult()
     if not args:
-        ctx.console.print("[yellow]Usage:[/] /model use local | "
-                          "ollama <name> | lmstudio <name>")
+        ctx.console.print(
+            "[yellow]Usage:[/] /model use local [name] | "
+            "ollama <name> | lmstudio <name> | ollama-cloud <name>")
         return SlashResult()
 
     from jaeger_os.main import _pipeline
@@ -379,7 +490,21 @@ def _model_use(ctx: SlashContext, args: list[str]) -> SlashResult:
 
     if target in ("local", "llama-cpp", "llamacpp", "jaeger"):
         cfg.external_model.enabled = False
-        summary = "local · llama-cpp"
+        if wanted:
+            # Pick a specific .gguf — match the discovered list by name
+            # (or take a literal path / registry key), then point the
+            # in-process llama-cpp backend at it.
+            from jaeger_os.core.model_discovery import discover_local_gguf
+            chosen = wanted
+            for m in discover_local_gguf():
+                cand = {m["name"], m["name"].removesuffix(".gguf")}
+                if wanted in cand or wanted == m["path"]:
+                    chosen = m["path"]
+                    break
+            cfg.model.model_path = chosen
+            summary = f"local · {Path(chosen).name}"
+        else:
+            summary = f"local · {Path(str(cfg.model.model_path)).name}"
     elif target in ("ollama", "lmstudio", "lm-studio"):
         provider = "ollama" if target == "ollama" else "lmstudio"
         from jaeger_os.core.model_discovery import (
@@ -1113,20 +1238,37 @@ def _statusbar(ctx: SlashContext, args: str) -> SlashResult:  # noqa: ARG001
 
 
 def _busy(ctx: SlashContext, args: str) -> SlashResult:
-    """Show or set what Enter does while the agent is mid-turn."""
+    """Show or set what Enter does while the agent is mid-turn.
+
+    ``/busy`` with no argument opens an interactive picker; ``/busy
+    <mode>`` sets it directly."""
     tui = ctx.tui
     mode = args.strip().lower()
     if not mode:
         cur = getattr(tui, "_busy_mode", "interrupt") if tui else "interrupt"
-        ctx.console.print(
-            f"[bold]Busy-input mode[/] — currently [cyan]{cur}[/]\n"
-            "  [dim]What a typed message does while the agent is working:[/]\n"
-            "  [bold]interrupt[/]  stop the running turn, run the new one now\n"
-            "  [bold]queue[/]      run the new message after the current turn\n"
-            "  [bold]steer[/]      run the new message as the very next turn\n"
-            "  [dim]change with[/] [bold]/busy interrupt│queue│steer[/]"
+        running = getattr(tui, "_turn_running", None)
+        if running is not None and running.is_set():
+            # A turn is painting the screen — a modal picker would be
+            # corrupted; show the modes as text instead.
+            return SlashResult(
+                message=f"[bold]Busy-input mode[/] — [cyan]{cur}[/]. "
+                        "[dim]/busy interrupt│queue│steer to change.[/]")
+        from .picker import pick
+        choice = pick(
+            " Busy-input mode ",
+            [
+                ("interrupt",
+                 "interrupt   stop the running turn, run the new one now"),
+                ("queue",
+                 "queue       run the new message after the current turn"),
+                ("steer",
+                 "steer       run the new message as the very next turn"),
+            ],
+            text=f"current: {cur}  ·  ↑/↓ move · Enter select · Esc cancel",
         )
-        return SlashResult()
+        if choice is None:
+            return SlashResult(message="[dim]busy mode unchanged.[/]")
+        mode = choice
     if tui is None or not hasattr(tui, "set_busy_mode"):
         return SlashResult(message="[yellow]/busy needs the TUI.[/]")
     if tui.set_busy_mode(mode):
@@ -1364,6 +1506,20 @@ def _usage(ctx: SlashContext, args: str) -> SlashResult:  # noqa: ARG001
     ctx.console.print(
         f"  context      ~{tok:,} / {mx:,} tokens ({pct}%) "
         "[dim](estimate)[/]")
+    # Tool usage telemetry — most-called tools, with failure counts.
+    try:
+        from jaeger_os.core.usage_stats import top_tools
+        rows = top_tools(8)
+    except Exception:  # noqa: BLE001
+        rows = []
+    if rows:
+        ctx.console.print("\n[bold]Top tools[/] [dim]· this instance[/]")
+        for r in rows:
+            calls, fails = r.get("calls", 0), r.get("failures", 0)
+            fail_note = f"  [red]{fails} failed[/]" if fails else ""
+            ctx.console.print(
+                f"  {r['name']:22s} {calls:4d} call(s)"
+                f"  [dim]{r.get('total_s', 0)}s[/]{fail_note}")
     return SlashResult()
 
 

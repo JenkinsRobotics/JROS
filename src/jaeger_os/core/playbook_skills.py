@@ -27,6 +27,11 @@ _SKILLS_DIR = Path(__file__).resolve().parent.parent / "skills"
 _VERSIONED = re.compile(r"_v\d+$")
 
 
+# Where a skill came from — for trust decisions and a future curator
+# that must never prune a user-written skill (audit gap #8).
+_VALID_ORIGINS = ("builtin", "user", "agent", "marketplace")
+
+
 @dataclass
 class PlaybookSkill:
     name: str
@@ -34,6 +39,34 @@ class PlaybookSkill:
     description: str
     path: Path                       # the SKILL.md file
     tags: list[str] = field(default_factory=list)
+    # Provenance: "builtin" (shipped), "user" (hand-written), "agent"
+    # (the agent authored it), "marketplace" (installed from elsewhere).
+    origin: str = "builtin"
+
+
+def read_skill_origin(folder: Path) -> str:
+    """A skill folder's provenance — from a ``.origin`` marker file if
+    present, else ``builtin`` (the default for shipped skills)."""
+    try:
+        marker = (folder / ".origin").read_text(encoding="utf-8").strip()
+        if marker in _VALID_ORIGINS:
+            return marker
+    except OSError:
+        pass
+    return "builtin"
+
+
+def mark_skill_origin(folder: Path, origin: str) -> None:
+    """Stamp a skill folder with its provenance — a ``.origin`` file.
+    Called when a skill is authored (``agent``) or installed
+    (``marketplace``). Unknown values are ignored."""
+    if origin not in _VALID_ORIGINS:
+        return
+    try:
+        folder.mkdir(parents=True, exist_ok=True)
+        (folder / ".origin").write_text(origin + "\n", encoding="utf-8")
+    except OSError:
+        pass
 
 
 def _parse_frontmatter(text: str) -> dict[str, Any]:
@@ -97,6 +130,7 @@ def discover_playbooks() -> list[PlaybookSkill]:
             description=str(fm.get("description") or "").strip(),
             path=md,
             tags=_tags_of(fm),
+            origin=read_skill_origin(folder),
         ))
     return sorted(out, key=lambda s: (s.category, s.name))
 

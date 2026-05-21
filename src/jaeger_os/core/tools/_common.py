@@ -101,6 +101,49 @@ def _resolve_under(root: Path, path: str) -> Path:
     return full
 
 
+def _resolve_read(path: str) -> Path:
+    """Resolve a path for a READ operation.
+
+    Reads are deliberately **unconfined** — Jaeger can read its own
+    source, the whole repository it lives in, and the wider system, so
+    it can reason about the codebase. Writes stay sandboxed (see
+    :func:`_resolve_under`). The one carve-out: never a file inside a
+    ``credentials/`` directory — secrets go through ``get_credential``.
+
+    Path resolution: an absolute path (and ``~``) is honoured as-is. A
+    relative path is tried **cwd-first** (so ``src/jaeger_os/main.py``
+    reads the repo naturally), then falls back to the **instance root**
+    (so a workspace-relative path like ``skills/foo.py`` still resolves
+    even when cwd isn't the instance)."""
+    if not path:
+        raise SandboxError("path must be non-empty")
+    p = Path(path).expanduser()
+    if p.is_absolute():
+        full = p.resolve()
+    else:
+        full = (Path.cwd() / p).resolve()
+        if not full.exists() and _layout is not None:
+            inst = (_layout.root / p).resolve()
+            if inst.exists():
+                full = inst
+    if "credentials" in full.parts[:-1]:
+        raise SandboxError(
+            "credentials/ is off-limits to direct reads — "
+            "use get_credential(name) instead"
+        )
+    return full
+
+
+def _display_path(target: Path, layout: InstanceLayout) -> str:
+    """Path for a tool result — relative to the instance root when the
+    target lives inside it, otherwise the absolute path (so reads of the
+    wider repo / system still report a sensible location)."""
+    try:
+        return str(target.relative_to(layout.root))
+    except ValueError:
+        return str(target)
+
+
 # ---------------------------------------------------------------------------
 # Git auto-commit — pairs with file_write to make every agent-authored
 # change a real audit trail (commit per write, jaeger-agent author).

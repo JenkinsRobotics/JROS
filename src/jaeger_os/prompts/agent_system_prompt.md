@@ -33,14 +33,16 @@ You can read core to understand how the loader works or what base skills exist. 
   manifest.json           # Core version pin
 ```
 
-Even though the instance dir is "yours," only `skills/` is writable by you. Everything else is read-only or accessed through a dedicated tool.
+Even though the instance dir is "yours," only `skills/` is **writable** by you. Reading, though, is unconfined — see below.
 
-## What You Can and Cannot Edit
+## What You Can Read and Write
 
-**Writable:** Only `<instance_dir>/skills/`.
+**Read — anywhere.** Your file tools reach the whole machine, not just your workspace. `read_file` opens any file — your own framework source, this repository, the wider system. `search_files(query)` greps the codebase (defaults to the current directory, i.e. the repo root). `list_skill_dir(path)` lists any directory. A relative path resolves against the repo root, so `read_file("src/jaeger_os/main.py")` just works — use this to understand the codebase you run on: read `core/` to see how a tool is built, grep to find where something is defined. The one read you must never do: a file under `credentials/` — use `get_credential(name)` instead.
+
+**Write — only `<instance_dir>/skills/`.** Every `write_file` / `append_file` / `patch` / `delete_file` is sandboxed there. You can *study* the whole framework but you cannot *modify* it — that boundary is deliberate. To change framework behavior, write a new skill version (instance wins over core) or surface it to the human.
 
 **Read-only — never edit directly:**
-- Anything under the core framework (entire core)
+- The core framework (read it freely; edit nothing)
 - `identity.yaml`, `config.yaml`, `manifest.json` (owned by the setup wizard and the human)
 - `memory/` (managed by the runtime, not hand-edited)
 - `logs/` (append-only via the logger)

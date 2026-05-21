@@ -49,9 +49,38 @@ def test_offline_server_probe_is_graceful() -> None:
     assert r2["online"] is False and r2["models"] == []
 
 
-def test_discover_all_covers_three_sources() -> None:
+def test_discover_all_covers_every_source() -> None:
     d = discover_all()
-    assert set(d) == {"jaeger", "ollama", "lmstudio"}
+    assert set(d) == {
+        "jaeger", "local_gguf", "ollama", "lmstudio", "ollama_cloud",
+    }
     assert isinstance(d["jaeger"], list)
-    for src in ("ollama", "lmstudio"):
+    assert isinstance(d["local_gguf"], list)
+    for src in ("ollama", "lmstudio", "ollama_cloud"):
         assert "online" in d[src] and "models" in d[src]
+
+
+def test_ollama_cloud_offline_without_a_key() -> None:
+    from jaeger_os.core.model_discovery import discover_ollama_cloud
+    r = discover_ollama_cloud("")
+    assert r["online"] is False and r["models"] == []
+
+
+def test_local_gguf_discovery_is_a_filesystem_scan() -> None:
+    # discover_local_gguf returns disk .gguf files with name/path/source
+    # and never raises, even if no model dir exists.
+    from jaeger_os.core.model_discovery import discover_local_gguf
+    out = discover_local_gguf()
+    assert isinstance(out, list)
+    for m in out:
+        assert m["name"].endswith(".gguf")
+        assert m["path"] and m["source"]
+
+
+def test_ollama_disk_discovery_skips_os_noise() -> None:
+    from jaeger_os.core.model_discovery import discover_ollama_disk
+    out = discover_ollama_disk()
+    assert isinstance(out, list)
+    # .DS_Store / hidden files must never leak in as "models".
+    assert all(not m["name"].endswith(".DS_Store") for m in out)
+    assert all(not m["name"].startswith(".") for m in out)

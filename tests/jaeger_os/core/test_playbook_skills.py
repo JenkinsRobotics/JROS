@@ -63,3 +63,63 @@ def test_skill_view_unknown_is_clean() -> None:
 def test_skill_unknown_action_is_clean() -> None:
     r = skill(action="teleport")
     assert r["ok"] is False and "unknown" in r["error"]
+
+
+# ── scripts/ affordance (audit gap #9) ───────────────────────────────
+
+
+def test_skill_view_lists_bundled_files() -> None:
+    # view returns a `files` dict bucketing the skill's bundled files.
+    r = skill(action="view", name="codebase-inspection")
+    assert r["ok"] is True
+    assert isinstance(r.get("files"), dict)
+
+
+def test_bucket_skill_files_categorises(tmp_path) -> None:
+    from jaeger_os.core.tools.skills import _bucket_skill_files
+    (tmp_path / "SKILL.md").write_text("# skill\n")
+    (tmp_path / "scripts").mkdir()
+    (tmp_path / "scripts" / "run.py").write_text("print(1)\n")
+    (tmp_path / "notes.txt").write_text("misc\n")
+    buckets = _bucket_skill_files(tmp_path)
+    assert buckets["scripts"] == ["scripts/run.py"]
+    assert buckets["other"] == ["notes.txt"]
+    assert "SKILL.md" not in str(buckets)   # SKILL.md is excluded
+
+
+def test_read_skill_file_reads_a_bundled_file(tmp_path) -> None:
+    from jaeger_os.core.tools.skills import _read_skill_file
+    (tmp_path / "scripts").mkdir()
+    (tmp_path / "scripts" / "go.sh").write_text("echo hi\n")
+    r = _read_skill_file(tmp_path, "scripts/go.sh")
+    assert r["ok"] is True and "echo hi" in r["content"]
+
+
+def test_read_skill_file_rejects_escape(tmp_path) -> None:
+    from jaeger_os.core.tools.skills import _read_skill_file
+    assert _read_skill_file(tmp_path, "../../etc/passwd")["ok"] is False
+    assert _read_skill_file(tmp_path, "/etc/passwd")["ok"] is False
+
+
+# ── skill provenance (audit gap #8) ──────────────────────────────────
+
+
+def test_skill_origin_defaults_to_builtin(tmp_path) -> None:
+    assert pb.read_skill_origin(tmp_path) == "builtin"
+
+
+def test_mark_and_read_skill_origin_round_trip(tmp_path) -> None:
+    pb.mark_skill_origin(tmp_path, "agent")
+    assert pb.read_skill_origin(tmp_path) == "agent"
+
+
+def test_mark_skill_origin_rejects_unknown(tmp_path) -> None:
+    pb.mark_skill_origin(tmp_path, "nonsense")
+    assert not (tmp_path / ".origin").exists()
+    assert pb.read_skill_origin(tmp_path) == "builtin"
+
+
+def test_discovered_playbooks_carry_an_origin() -> None:
+    skills = pb.discover_playbooks()
+    assert all(s.origin in ("builtin", "user", "agent", "marketplace")
+               for s in skills)

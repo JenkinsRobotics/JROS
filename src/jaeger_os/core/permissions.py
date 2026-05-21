@@ -417,18 +417,44 @@ class PermissionPolicy:
         self.mode = PolicyMode.NORMAL
 
 
-# --- Live policy contextvar ---------------------------------------------------
+# --- Live policy: contextvar overlay + process-wide install -------------------
 
+# The fail-safe default. Also the sentinel current_policy() uses to tell
+# "this context never had a policy set" apart from "a policy is active".
+_DEFAULT_POLICY = PermissionPolicy()
 
 _current_policy: contextvars.ContextVar[PermissionPolicy] = contextvars.ContextVar(
     "lilith_permission_policy",
-    default=PermissionPolicy(),
+    default=_DEFAULT_POLICY,
 )
+
+# Process-wide installed policy. A contextvar does NOT propagate into a
+# thread started with threading.Thread — a fresh thread gets an empty
+# context. The TUI runs every turn on a background worker thread, and
+# pydantic-ai dispatches sync tools onto anyio worker threads; none of
+# them inherit a policy install_policy() set on the main thread. Without
+# this backstop current_policy() on the worker falls back to the
+# DenyAllProvider default and silently refuses every tier-gated tool.
+# install_policy() writes here so the policy resolves from any thread.
+_installed_policy: PermissionPolicy | None = None
 
 
 def current_policy() -> PermissionPolicy:
-    """Return the policy active in the current context."""
-    return _current_policy.get()
+    """Return the policy active in the current context.
+
+    Resolution order:
+      1. an explicit :func:`use_policy` overlay set in this context;
+      2. the process-wide policy from :func:`install_policy`;
+      3. the fail-safe default (:class:`DenyAllProvider`).
+
+    Step 2 is what lets a turn running on a worker thread — which never
+    inherited the main thread's contextvars — still see the policy the
+    launcher installed. Without it the worker resolves to the default and
+    refuses every tier-1+ tool with "confirmation refused"."""
+    pol = _current_policy.get()
+    if pol is _DEFAULT_POLICY and _installed_policy is not None:
+        return _installed_policy
+    return pol
 
 
 @contextlib.contextmanager
@@ -446,10 +472,16 @@ def use_policy(policy: PermissionPolicy) -> Iterator[PermissionPolicy]:
 
 
 def install_policy(policy: PermissionPolicy) -> None:
-    """Install ``policy`` as the active policy for this context and
-    everything it spawns. Unlike :func:`use_policy`, this does not
-    restore — it is the boot-time install for a long-running process
-    (the launcher wires a real confirmation provider through here)."""
+    """Install ``policy`` as the process-wide active policy.
+
+    Unlike :func:`use_policy`, this does not restore — it is the
+    boot-time install for a long-running process (the launcher wires a
+    real confirmation provider through here). It sets both the contextvar
+    (so the installing context sees it directly) and a process-wide
+    global, so a worker thread that never inherited the contextvar — the
+    TUI runs turns on one — still resolves to it via :func:`current_policy`."""
+    global _installed_policy
+    _installed_policy = policy
     _current_policy.set(policy)
 
 

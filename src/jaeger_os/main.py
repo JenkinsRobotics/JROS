@@ -50,6 +50,7 @@ from .core import credentials as creds
 from .core import log_rotation
 from .core import memory as mem
 from .core import prompts as prompt_module
+from .core import tool_interrupt
 from .core import tools as jaeger_tools
 from .core.cron_runner import CronRunner
 from .core.instance import (
@@ -1923,12 +1924,13 @@ def begin_turn_cancel_scope() -> "threading.Event":
     Set the Event from any thread — the REPL on Ctrl-C, or the voice
     layer when the user speaks — to ask the in-flight turn to stop. The
     agent loop (:func:`_run_via_iter`) checks it between steps and halts
-    gracefully. Cleared here so a stale cancel can't kill the next turn."""
-    ev = _pipeline.get("cancel_event")
-    if ev is None:
-        ev = threading.Event()
-        _pipeline["cancel_event"] = ev
-    ev.clear()
+    gracefully. Cleared here so a stale cancel can't kill the next turn.
+
+    The Event comes from :mod:`jaeger_os.core.tool_interrupt` so it is the
+    *same* object a long-running tool polls via ``is_interrupted()`` — one
+    cancel flag, checked between loop nodes *and* mid-tool."""
+    ev = tool_interrupt.begin_scope()
+    _pipeline["cancel_event"] = ev
     return ev
 
 
@@ -2028,7 +2030,7 @@ async def _run_via_iter(
                             failure_signatures[fail_sig] = failure_signatures.get(fail_sig, 0) + 1
                         # Usage telemetry — best-effort, never fatal.
                         try:
-                            from .usage_stats import record_tool
+                            from .core.usage_stats import record_tool
                             record_tool(_tname, ok=not fail_sig,
                                         elapsed=_elapsed)
                         except Exception:  # noqa: BLE001

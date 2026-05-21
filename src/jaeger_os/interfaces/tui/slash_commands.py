@@ -232,6 +232,44 @@ def _do_switch_instance(ctx: SlashContext, name: str) -> SlashResult:
 
 # ── Model management ────────────────────────────────────────────────
 
+# Cloud providers reachable via `/model use <provider> <model>`. Each
+# phones out, needs a real API key, and stores that key under its OWN
+# credential name — so switching between providers never clobbers the
+# previous one's key.
+_CLOUD_PROVIDERS = ("ollama-cloud", "openai", "anthropic", "gemini")
+_CLOUD_ALIASES = {
+    "ollamacloud": "ollama-cloud", "cloud": "ollama-cloud",
+    "claude": "anthropic", "google": "gemini",
+}
+_CLOUD_BASE_URL = {
+    "ollama-cloud": "https://ollama.com/v1",
+    "openai": "https://api.openai.com/v1",
+    # Google Gemini's OpenAI-compatible surface — rides the openai path.
+    "gemini": "https://generativelanguage.googleapis.com/v1beta/openai/",
+    # Unused by the Anthropic SDK; set so the saved config self-documents.
+    "anthropic": "https://api.anthropic.com",
+}
+_CLOUD_CRED = {
+    "ollama-cloud": "ollama_cloud_api_key",
+    "openai": "openai_api_key",
+    "anthropic": "anthropic_api_key",
+    "gemini": "gemini_api_key",
+}
+# (human label, where-to-get-a-key) — shown by the key prompt.
+_CLOUD_KEY_HINT = {
+    "ollama-cloud": ("Ollama Cloud", "ollama.com → Settings → API keys"),
+    "openai": ("OpenAI", "platform.openai.com/api-keys"),
+    "anthropic": ("Anthropic", "console.anthropic.com → Settings → API Keys"),
+    "gemini": ("Google Gemini", "aistudio.google.com/apikey"),
+}
+# An example model id per provider — shown when no model is given.
+_CLOUD_EXAMPLE = {
+    "ollama-cloud": "qwen3.5:397b",
+    "openai": "gpt-4o",
+    "anthropic": "claude-opus-4-7",
+    "gemini": "gemini-2.5-flash",
+}
+
 
 def _brain_line(cfg: Any, client: Any) -> str:
     """One-line description of the active brain."""
@@ -254,6 +292,9 @@ def _model(ctx: SlashContext, args: str) -> SlashResult:
        /model use ollama <name>        a local Ollama server
        /model use lmstudio <name>      a local LM Studio server
        /model use ollama-cloud <name>  Ollama Cloud (prompts for a key)
+       /model use openai <model>       OpenAI API (prompts for a key)
+       /model use anthropic <model>    Claude via the Anthropic API
+       /model use gemini <model>       Google Gemini API
     """
     parts = args.split()
     if parts and parts[0].lower() == "use":
@@ -321,8 +362,14 @@ def _model_picker(ctx: SlashContext) -> SlashResult:
         _add(("lmstudio", m["name"]), "lmstudio", m["name"])
     for m in found.get("ollama_cloud", {}).get("models", []):
         _add(("ollama-cloud", m["name"]), "cloud", m["name"])
-    options.append((("__cloud__", ""),
-                    f"{'[cloud]':<11} Ollama Cloud — type a model…"))
+    # Cloud APIs have no cheap model list to enumerate — offer a
+    # "type a model" entry for each so they're reachable from the picker.
+    for _prov, _label in (("ollama-cloud", "Ollama Cloud"),
+                          ("openai", "OpenAI"),
+                          ("anthropic", "Anthropic · Claude"),
+                          ("gemini", "Google Gemini")):
+        options.append((("__type__", _prov),
+                        f"{'[cloud]':<11} {_label} — type a model…"))
 
     if not options:
         return SlashResult(message="[yellow]No models found.[/]")
@@ -334,14 +381,15 @@ def _model_picker(ctx: SlashContext) -> SlashResult:
     if choice is None:
         return SlashResult(message="[dim]model unchanged.[/]")
     target, name = choice
-    if target == "__cloud__":
+    if target == "__type__":
+        provider = name
         try:
-            name = ctx.console.input("  ollama-cloud model: ").strip()
+            typed = ctx.console.input(f"  {provider} model: ").strip()
         except (EOFError, KeyboardInterrupt):
             return SlashResult(message="[dim]cancelled.[/]")
-        if not name:
+        if not typed:
             return SlashResult(message="[yellow]No model entered.[/]")
-        return _model_use(ctx, ["ollama-cloud", name])
+        return _model_use(ctx, [provider, typed])
     return _model_use(ctx, [target, name])
 
 
@@ -416,18 +464,24 @@ def _model_list(ctx: SlashContext) -> SlashResult:
             "(e.g. qwen3.5:397b — prompts for an API key, once)[/]")
 
     ctx.console.print(
-        "\n[dim]switch:[/]  /model use local"
+        "\n[dim]switch · on-device:[/]  /model use local"
         "  ·  /model use ollama <name>  ·  /model use lmstudio <name>"
-        "  ·  /model use ollama-cloud <name>"
+        "\n[dim]switch · cloud API:[/]  /model use ollama-cloud <model>"
+        "  ·  /model use openai <model>  ·  /model use anthropic <model>"
+        "  ·  /model use gemini <model>"
     )
     return SlashResult()
 
 
-def _ensure_cloud_key(ctx: SlashContext, cfg: Any) -> bool:
+def _ensure_cloud_key(ctx: SlashContext, cfg: Any, provider: str) -> bool:
     """Make sure the external-model API key is available before we boot
     onto a cloud endpoint. If none resolves, prompt for it with hidden
     input and store it in the instance credential store (0600). Returns
-    False if the user supplies nothing."""
+    False if the user supplies nothing.
+
+    The key resolves against ``cfg.external_model.api_key_credential`` —
+    which the caller sets to the provider's own credential name — so
+    each provider keeps a separate stored key."""
     from jaeger_os.core import credentials as creds
     from jaeger_os.core.external_model import resolve_api_key
     from jaeger_os.core.instance import InstanceLayout
@@ -440,9 +494,10 @@ def _ensure_cloud_key(ctx: SlashContext, cfg: Any) -> bool:
     except Exception:  # noqa: BLE001
         pass
 
+    label, where = _CLOUD_KEY_HINT.get(provider, (provider, ""))
     ctx.console.print(
-        "[bold]Ollama Cloud needs an API key.[/] "
-        "[dim]Create one at ollama.com → Settings → API keys.[/]"
+        f"[bold]{label} needs an API key.[/]"
+        + (f" [dim]Create one at {where}.[/]" if where else "")
     )
     try:
         key = ctx.console.input(
@@ -475,8 +530,9 @@ def _model_use(ctx: SlashContext, args: list[str]) -> SlashResult:
         return SlashResult()
     if not args:
         ctx.console.print(
-            "[yellow]Usage:[/] /model use local [name] | "
-            "ollama <name> | lmstudio <name> | ollama-cloud <name>")
+            "[yellow]Usage:[/] /model use local [name] | ollama <name> | "
+            "lmstudio <name> | ollama-cloud <model> | openai <model> | "
+            "anthropic <model> | gemini <model>")
         return SlashResult()
 
     from jaeger_os.main import _pipeline
@@ -540,27 +596,31 @@ def _model_use(ctx: SlashContext, args: list[str]) -> SlashResult:
         )
         cfg.external_model.model = wanted
         summary = f"external · {provider} · {wanted}"
-    elif target in ("ollama-cloud", "ollamacloud", "cloud"):
+    elif _CLOUD_ALIASES.get(target, target) in _CLOUD_PROVIDERS:
+        provider = _CLOUD_ALIASES.get(target, target)
         if not wanted:
             ctx.console.print(
-                "[yellow]Pick a model:[/] "
-                "[bold]/model use ollama-cloud <model>[/]\n"
-                "[dim]e.g. /model use ollama-cloud qwen3.5:397b — browse "
-                "the cloud catalog at ollama.com/library.[/]")
+                f"[yellow]Pick a model:[/] "
+                f"[bold]/model use {provider} <model>[/]\n"
+                f"[dim]e.g. /model use {provider} "
+                f"{_CLOUD_EXAMPLE[provider]}[/]")
             return SlashResult()
         cfg.external_model.enabled = True
-        cfg.external_model.provider = "ollama-cloud"
-        cfg.external_model.base_url = "https://ollama.com/v1"
+        cfg.external_model.provider = provider
+        cfg.external_model.base_url = _CLOUD_BASE_URL[provider]
+        # Each cloud provider keeps its key under its own credential
+        # name, so switching providers never overwrites another's key.
+        cfg.external_model.api_key_credential = _CLOUD_CRED[provider]
         cfg.external_model.model = wanted
-        # The cloud endpoint needs a real API key — make sure one is on
+        # A cloud endpoint needs a real API key — make sure one is on
         # hand (prompting + storing it if not) before we reboot onto it.
-        if not _ensure_cloud_key(ctx, cfg):
+        if not _ensure_cloud_key(ctx, cfg, provider):
             return SlashResult()
-        summary = f"external · ollama-cloud · {wanted}"
+        summary = f"external · {provider} · {wanted}"
     else:
         ctx.console.print(
-            f"[yellow]Unknown target {target!r}[/] — "
-            "use local / ollama / lmstudio / ollama-cloud.")
+            f"[yellow]Unknown target {target!r}[/] — use local / ollama / "
+            "lmstudio / ollama-cloud / openai / anthropic / gemini.")
         return SlashResult()
 
     # Persist to config.yaml, then reboot so make_client rebuilds the brain.

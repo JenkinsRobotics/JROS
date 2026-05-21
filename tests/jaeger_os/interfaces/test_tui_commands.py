@@ -49,3 +49,42 @@ def test_stop_runs_clean_with_no_processes(ctx) -> None:
 def test_save_runs_clean(ctx) -> None:
     # Empty conversation — must not raise.
     assert slash.dispatch("/save", ctx).quit is False
+
+
+# ── /model use <cloud provider> ──────────────────────────────────────
+
+
+def test_cloud_provider_maps_are_consistent() -> None:
+    """Every cloud provider must carry a base URL, a credential name, a
+    key hint and an example model — so /model use <provider> never
+    half-works for one of them."""
+    for prov in slash._CLOUD_PROVIDERS:
+        assert prov in slash._CLOUD_BASE_URL, prov
+        assert prov in slash._CLOUD_CRED, prov
+        assert prov in slash._CLOUD_KEY_HINT, prov
+        assert prov in slash._CLOUD_EXAMPLE, prov
+    # Each provider keeps its key under its OWN credential name — a
+    # collision would mean switching providers clobbers a stored key.
+    assert len(set(slash._CLOUD_CRED.values())) == len(slash._CLOUD_CRED)
+
+
+def test_cloud_providers_are_valid_schema_providers() -> None:
+    """The TUI's cloud list must stay in sync with the config schema's
+    accepted providers."""
+    from jaeger_os.core.schemas import ExternalModelConfig
+    for prov in slash._CLOUD_PROVIDERS:
+        assert ExternalModelConfig(provider=prov, model="x").provider == prov
+
+
+def test_gemini_uses_openai_compatible_endpoint() -> None:
+    """Gemini must point at Google's OpenAI-compatible surface so it
+    rides external_model's openai path — no native adapter."""
+    url = slash._CLOUD_BASE_URL["gemini"]
+    assert "generativelanguage.googleapis.com" in url
+    assert "openai" in url
+
+
+def test_cloud_aliases_resolve_to_real_providers() -> None:
+    """Every alias must resolve to a provider in _CLOUD_PROVIDERS."""
+    for alias, prov in slash._CLOUD_ALIASES.items():
+        assert prov in slash._CLOUD_PROVIDERS, alias

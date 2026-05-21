@@ -77,6 +77,8 @@ def skill(action: str, name: str = "", query: str = "",
         ``files`` listing of its bundled scripts / references. Pass
         ``file="scripts/foo.py"`` to read one of those bundled files.
       - ``stats``  — usage telemetry: which tools and skills get used.
+      - ``curate`` — assess the skill library: which agent-authored
+        skills have gone stale. Read-only — reports, archives nothing.
 
     Reach for a skill when a task is non-trivial and specialized
     ("inspect a codebase", "make an ascii-art banner", "search arxiv")."""
@@ -85,6 +87,12 @@ def skill(action: str, name: str = "", query: str = "",
     if act in ("stats", "usage"):
         from ..usage_stats import top_skills, top_tools
         return {"ok": True, "tools": top_tools(12), "skills": top_skills(12)}
+
+    if act in ("curate", "curation", "cleanup"):
+        # Read-only dry run — surfaces stale / unused agent-authored
+        # skills. Archiving is a deliberate, separate step (curator A2).
+        from ..curator import run_curation
+        return run_curation(apply=False)
 
     if act in ("list", "all", ""):
         skills = _pb.discover_playbooks()
@@ -122,6 +130,14 @@ def skill(action: str, name: str = "", query: str = "",
             content = s.path.read_text(encoding="utf-8")
         except OSError as exc:
             return {"ok": False, "error": f"couldn't read skill: {exc}"}
+        # Expand {{date}} / {{instance_name}} / {{skill_folder}} … template
+        # placeholders before the model sees the body (audit A6).
+        try:
+            from ..skill_preprocessing import preprocess_skill
+            content = preprocess_skill(
+                content, skill_name=s.name, skill_folder=folder)
+        except Exception:  # noqa: BLE001 — never let preprocessing break view
+            pass
         try:
             from ..usage_stats import record_skill
             record_skill(s.name)

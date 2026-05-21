@@ -19,7 +19,9 @@ import time
 from typing import Any
 
 from ._common import _audit, _require_layout
+from ..command_guard import hardline_guard
 from ..permissions import PermissionTier, requires_tier
+from ..tool_interrupt import ToolInterrupted, run_interruptible
 
 
 def run_python(code: str, timeout_s: float = 10.0) -> dict[str, Any]:
@@ -43,6 +45,7 @@ def run_python(code: str, timeout_s: float = 10.0) -> dict[str, Any]:
     MAX = 200_000
     started = time.perf_counter()
     timed_out = False
+    interrupted = False
     # Run inside the agent's skills/ workspace so generated code sees the
     # files it just wrote. Falls back to the scratch dir when no instance
     # is bound (standalone tests).
@@ -62,9 +65,9 @@ def run_python(code: str, timeout_s: float = 10.0) -> dict[str, Any]:
         try:
             with open(script, "w", encoding="utf-8") as fh:
                 fh.write(cleaned)
-            proc = subprocess.run(
+            proc = run_interruptible(
                 [sys.executable, "-s", "-E", script],
-                capture_output=True, text=True, timeout=timeout_s,
+                timeout=timeout_s,
                 cwd=run_dir,
                 env={"PATH": os.environ.get("PATH", ""), "HOME": scratch},
             )
@@ -74,6 +77,12 @@ def run_python(code: str, timeout_s: float = 10.0) -> dict[str, Any]:
             exit_code = -1
             stdout = (exc.stdout.decode() if isinstance(exc.stdout, bytes) else (exc.stdout or "")) or ""
             stderr = (exc.stderr.decode() if isinstance(exc.stderr, bytes) else (exc.stderr or "")) or ""
+        except ToolInterrupted as exc:
+            # The turn was cancelled mid-run — the child has been killed.
+            interrupted = True
+            exit_code = 130
+            stdout = (exc.stdout.decode() if isinstance(exc.stdout, bytes) else (exc.stdout or "")) or ""
+            stderr = (exc.stderr.decode() if isinstance(exc.stderr, bytes) else (exc.stderr or "")) or ""
         finally:
             try:
                 os.unlink(script)
@@ -81,15 +90,17 @@ def run_python(code: str, timeout_s: float = 10.0) -> dict[str, Any]:
                 pass
     elapsed = time.perf_counter() - started
     return {
-        "ok": exit_code == 0 and not timed_out,
+        "ok": exit_code == 0 and not timed_out and not interrupted,
         "exit_code": exit_code,
         "stdout": stdout[:MAX],
         "stderr": stderr[:MAX],
         "elapsed_s": round(elapsed, 3),
         "timed_out": timed_out,
+        "interrupted": interrupted,
     }
 
 
+@hardline_guard("command")
 @requires_tier(
     PermissionTier.PRIVILEGED,
     skill="shell",
@@ -103,7 +114,10 @@ def run_shell(command: str, timeout_s: float = 60.0) -> dict[str, Any]:
     THIS IS THE HIGHEST-RISK TOOL. It is gated at PRIVILEGED (tier 4),
     so every call routes through the permission confirmation flow — the
     human sees and approves the exact command before it runs. Every
-    invocation is written to the instance audit log.
+    invocation is written to the instance audit log. A small set of
+    catastrophic commands (``rm -rf /``, ``mkfs``, fork bombs, writing to
+    a raw disk device, …) is refused unconditionally by the hardline
+    guard — below even the tier prompt.
 
     Sandboxing is partial by nature (a shell command can do anything
     the OS lets the user do): the command runs with a fresh tempdir as
@@ -129,11 +143,12 @@ def run_shell(command: str, timeout_s: float = 60.0) -> dict[str, Any]:
     MAX = 200_000
     started = time.perf_counter()
     timed_out = False
+    interrupted = False
     with tempfile.TemporaryDirectory(prefix="jaeger_shell_") as scratch:
         try:
-            proc = subprocess.run(
+            proc = run_interruptible(
                 ["/bin/sh", "-c", cleaned],
-                capture_output=True, text=True, timeout=timeout,
+                timeout=timeout,
                 cwd=scratch,
             )
             stdout, stderr, exit_code = proc.stdout, proc.stderr, proc.returncode
@@ -144,16 +159,25 @@ def run_shell(command: str, timeout_s: float = 60.0) -> dict[str, Any]:
                       else (exc.stdout or "")) or ""
             stderr = (exc.stderr.decode() if isinstance(exc.stderr, bytes)
                       else (exc.stderr or "")) or ""
+        except ToolInterrupted as exc:
+            # The turn was cancelled mid-command — the child was killed.
+            interrupted = True
+            exit_code = 130
+            stdout = (exc.stdout.decode() if isinstance(exc.stdout, bytes)
+                      else (exc.stdout or "")) or ""
+            stderr = (exc.stderr.decode() if isinstance(exc.stderr, bytes)
+                      else (exc.stderr or "")) or ""
         except Exception as exc:  # noqa: BLE001
             return {"ok": False, "error": f"{type(exc).__name__}: {exc}",
                     "command": cleaned}
     elapsed = time.perf_counter() - started
     return {
-        "ok": exit_code == 0 and not timed_out,
+        "ok": exit_code == 0 and not timed_out and not interrupted,
         "command": cleaned,
         "exit_code": exit_code,
         "stdout": stdout[:MAX],
         "stderr": stderr[:MAX],
         "elapsed_s": round(elapsed, 3),
         "timed_out": timed_out,
+        "interrupted": interrupted,
     }

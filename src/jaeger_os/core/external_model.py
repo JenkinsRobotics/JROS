@@ -5,10 +5,13 @@ llama-cpp model wrapped by :class:`jaeger_os.core.llm_model.LlamaCppModel`.
 This module is the opt-in alternative — when ``config.external_model``
 is enabled, the agent runs on an external provider instead:
 
-  • ``lmstudio``  — a local LM Studio server (OpenAI-compatible HTTP).
-                    Still on-device, just a separate process / GUI.
-  • ``openai``    — any OpenAI-compatible cloud or self-hosted endpoint.
-  • ``anthropic`` — Claude via the Anthropic API.
+  • ``lmstudio``     — a local LM Studio server (OpenAI-compatible HTTP).
+                       Still on-device, just a separate process / GUI.
+  • ``ollama``       — a local Ollama server (OpenAI-compatible HTTP).
+  • ``ollama-cloud`` — Ollama's hosted endpoint (needs an API key).
+  • ``openai``       — any OpenAI-compatible cloud / self-hosted endpoint.
+  • ``anthropic``    — Claude via the Anthropic API.
+  • ``gemini``       — Google Gemini via its OpenAI-compatible endpoint.
 
 The agent loop (``agent.iter()``, skip-final, the fix loop, Deep Think)
 is model-agnostic — it only needs (a) a pydantic-ai ``Model`` for the
@@ -40,8 +43,10 @@ from .schemas import ExternalModelConfig
 # OpenAI-compatible providers all speak the same /chat/completions wire
 # format; only anthropic is its own shape. ``ollama-cloud`` is Ollama's
 # hosted endpoint (https://ollama.com/v1) — same protocol as local
-# ollama, but a real API key is required.
-_OPENAI_COMPATIBLE = {"lmstudio", "ollama", "ollama-cloud", "openai"}
+# ollama, but a real API key is required. ``gemini`` is Google's
+# OpenAI-compatible endpoint (generativelanguage.googleapis.com/v1beta/
+# openai/) — so it rides the same path as openai, no native adapter.
+_OPENAI_COMPATIBLE = {"lmstudio", "ollama", "ollama-cloud", "openai", "gemini"}
 
 # The conventional environment variable each provider's key lives in,
 # checked last by :func:`resolve_api_key`.
@@ -50,6 +55,7 @@ _CONVENTIONAL_ENV = {
     "lmstudio": "OPENAI_API_KEY",
     "ollama-cloud": "OLLAMA_API_KEY",
     "anthropic": "ANTHROPIC_API_KEY",
+    "gemini": "GEMINI_API_KEY",
 }
 
 
@@ -191,12 +197,22 @@ class ExternalModelClient:
         grammar: str | None = None,
     ) -> ExtChatResult:
         """One-shot chat completion. ``stream`` / ``grammar`` are ignored
-        (parity with ``LlamaCppPythonClient.chat``)."""
+        (parity with ``LlamaCppPythonClient.chat``).
+
+        Cloud calls are wrapped in :func:`cloud_errors.retry_call` — a
+        rate-limit or transient 5xx is retried with jittered backoff; a
+        bad key / unknown model is raised straight through (audit A8)."""
+        from .cloud_errors import retry_call
+
+        is_oai = self.provider in _OPENAI_COMPATIBLE
+
+        def _call() -> str:
+            if is_oai:
+                return self._chat_openai(messages, max_tokens, temperature, top_p)
+            return self._chat_anthropic(messages, max_tokens, temperature, top_p)
+
         started = time.perf_counter()
-        if self.provider in _OPENAI_COMPATIBLE:
-            text = self._chat_openai(messages, max_tokens, temperature, top_p)
-        else:
-            text = self._chat_anthropic(messages, max_tokens, temperature, top_p)
+        text = retry_call(_call)
         return ExtChatResult(text=text.strip(), latency_s=time.perf_counter() - started)
 
     def _chat_openai(self, messages, max_tokens, temperature, top_p) -> str:
@@ -275,5 +291,12 @@ class ExternalModelClient:
                 "latency_s": round(result.latency_s, 2),
             }
         except Exception as exc:  # noqa: BLE001
-            return {"ok": False, "detail": f"{type(exc).__name__}: {exc}",
-                    "latency_s": 0.0}
+            # Classify the failure so the user sees "bad API key" rather
+            # than a raw exception repr (audit A8).
+            from .cloud_errors import classify_exception, friendly_message
+            return {
+                "ok": False,
+                "detail": friendly_message(exc, provider=self.provider),
+                "error_class": classify_exception(exc),
+                "latency_s": 0.0,
+            }

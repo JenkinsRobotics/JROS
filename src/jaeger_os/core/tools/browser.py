@@ -24,6 +24,8 @@ import queue
 import threading
 from typing import Any
 
+from ..tool_interrupt import is_interrupted
+
 
 def _headless() -> bool:
     """Headed by default so the user can watch the page (e.g. a video
@@ -244,6 +246,13 @@ def browser(action: str, url: str = "", element: int = 0, text: str = "",
     act = (action or "").strip().lower()
     if act in ("close", "quit", "shutdown"):
         return _session.call("_stop", {})
+    # A Playwright action runs to completion on its worker thread and
+    # cannot be interrupted partway. ``close`` is always allowed through
+    # (it tears the session down); any other action bails before starting
+    # if the turn was already cancelled.
+    if is_interrupted():
+        return {"ok": False, "interrupted": True,
+                "error": "browser action interrupted by user"}
     return _session.call(act, {
         "url": url, "element": element, "text": text,
         "direction": direction, "key": key,

@@ -27,6 +27,7 @@ from typing import Any
 
 from ._common import _require_layout
 from ..permissions import PermissionTier, requires_tier
+from ..tool_interrupt import ToolInterrupted, run_interruptible
 from ..venv import (
     ensure_venv,
     install_into_venv,
@@ -102,15 +103,16 @@ def run_in_venv(code: str, timeout_s: float = 30.0) -> dict[str, Any]:
     MAX = 200_000
     started = time.perf_counter()
     timed_out = False
+    interrupted = False
     py = str(venv_python(layout))
     with tempfile.TemporaryDirectory(prefix="jaeger_venv_run_") as scratch:
         try:
-            proc = subprocess.run(
+            proc = run_interruptible(
                 # NB: no -I here (that's the whole point — venv
                 # site-packages must be visible). cwd is still a fresh
                 # tempdir so the code can't scribble on the workspace.
                 [py, "-c", cleaned],
-                capture_output=True, text=True, timeout=timeout,
+                timeout=timeout,
                 cwd=scratch,
                 env={"PATH": os.environ.get("PATH", ""), "HOME": scratch},
             )
@@ -122,12 +124,21 @@ def run_in_venv(code: str, timeout_s: float = 30.0) -> dict[str, Any]:
                       else (exc.stdout or "")) or ""
             stderr = (exc.stderr.decode() if isinstance(exc.stderr, bytes)
                       else (exc.stderr or "")) or ""
+        except ToolInterrupted as exc:
+            # The turn was cancelled mid-run — the child was killed.
+            interrupted = True
+            exit_code = 130
+            stdout = (exc.stdout.decode() if isinstance(exc.stdout, bytes)
+                      else (exc.stdout or "")) or ""
+            stderr = (exc.stderr.decode() if isinstance(exc.stderr, bytes)
+                      else (exc.stderr or "")) or ""
     elapsed = time.perf_counter() - started
     return {
-        "ok": exit_code == 0 and not timed_out,
+        "ok": exit_code == 0 and not timed_out and not interrupted,
         "exit_code": exit_code,
         "stdout": stdout[:MAX],
         "stderr": stderr[:MAX],
         "elapsed_s": round(elapsed, 3),
         "timed_out": timed_out,
+        "interrupted": interrupted,
     }

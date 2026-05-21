@@ -182,20 +182,22 @@ class Trajectory:
     ) -> TrajectoryEvent:
         """Append a tool call result.
 
-        ``args`` and ``result`` must be JSON-serializable. The caller is
-        responsible for redacting anything that should not land in the
-        trajectory log (the export is plain-text JSONL on disk).
+        ``args`` and ``result`` must be JSON-serializable. The export is
+        plain-text JSONL on disk, so secrets (API keys, tokens, auth
+        headers) are scrubbed here via :mod:`jaeger_os.core.redact`
+        before anything is written.
         """
+        from .redact import redact_obj, redact_text
         payload: dict[str, Any] = {
             "skill": skill,
             "operation": operation,
-            "args": args or {},
+            "args": redact_obj(args or {}),
             "ok": ok,
         }
         if result is not None:
-            payload["result"] = result
+            payload["result"] = redact_obj(result)
         if error is not None:
-            payload["error"] = error
+            payload["error"] = redact_text(error)
         if duration_ms is not None:
             payload["duration_ms"] = duration_ms
         return self._record("tool_invocation", payload, actor=actor)

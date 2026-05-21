@@ -61,6 +61,10 @@ def _audit(event: str, payload: dict[str, Any]) -> None:
         "event": event,
         **payload,
     }
+    # Redact secrets before they land in the tamper-evident audit log —
+    # a run_shell command or tool arg can carry an API key (audit A3).
+    from ..redact import redact_obj
+    entry = redact_obj(entry)
     with layout.audit_log_path.open("a", encoding="utf-8") as fh:
         fh.write(json.dumps(entry, ensure_ascii=True, default=str) + "\n")
 
@@ -131,6 +135,12 @@ def _resolve_read(path: str) -> Path:
             "credentials/ is off-limits to direct reads — "
             "use get_credential(name) instead"
         )
+    # Reads are unconfined, but never an OS-level secret store —
+    # ~/.ssh, .aws/credentials, a .env, … (audit A5).
+    from ..file_safety import is_sensitive_path
+    _sensitive = is_sensitive_path(full)
+    if _sensitive:
+        raise SandboxError(f"refused — {_sensitive}")
     return full
 
 

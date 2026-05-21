@@ -184,12 +184,14 @@ class ExternalModelConfig(BaseModel):
                            OpenAI-compatible cloud endpoint; needs a key
       • ``openai``       — any OpenAI-compatible cloud / self-hosted endpoint
       • ``anthropic``    — Claude via the Anthropic API
+      • ``gemini``       — Google Gemini via its OpenAI-compatible endpoint
 
     ``lmstudio`` and ``ollama`` are both still on-device — a separate
     local server, used to A/B against the in-process model when
     troubleshooting whether the local llama-cpp model is at fault.
-    ``ollama-cloud`` and ``openai`` are true cloud brains (the agent
-    phones out) — off by default, like the rest of this block.
+    ``ollama-cloud``, ``openai``, ``anthropic`` and ``gemini`` are true
+    cloud brains (the agent phones out) — off by default, like the rest
+    of this block.
 
     The API key is NEVER stored in this file. It is read from the
     instance's credentials/ store by the name in ``api_key_credential``
@@ -200,7 +202,7 @@ class ExternalModelConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
     enabled: bool = False
     provider: Literal[
-        "lmstudio", "ollama", "ollama-cloud", "openai", "anthropic",
+        "lmstudio", "ollama", "ollama-cloud", "openai", "anthropic", "gemini",
     ] = "lmstudio"
     base_url: str = Field(
         "http://localhost:1234/v1",

@@ -123,6 +123,68 @@ def test_external_client_surface():
     assert "lmstudio" in client.describe()
 
 
+# ── gemini (OpenAI-compatible endpoint) ─────────────────────────────
+
+
+_GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/openai/"
+
+
+def test_external_model_provider_gemini_accepted():
+    """The provider Literal must accept 'gemini'."""
+    ext = ExternalModelConfig(provider="gemini", model="gemini-2.5-flash")
+    assert ext.provider == "gemini"
+
+
+def test_external_model_rejects_bogus_provider():
+    """…and reject anything that is not a known provider."""
+    with pytest.raises(Exception):
+        ExternalModelConfig(provider="bogus-provider")
+
+
+def test_build_gemini_model_via_openai_path():
+    """Gemini's OpenAI-compatible endpoint maps to OpenAIChatModel — it
+    rides the same path as 'openai', with no native Gemini adapter."""
+    ext = ExternalModelConfig(
+        enabled=True, provider="gemini", model="gemini-2.5-flash",
+        base_url=_GEMINI_URL,
+    )
+    model = build_external_model(ext, api_key="fake-key")
+    assert type(model).__name__ == "OpenAIChatModel"
+
+
+def test_build_gemini_requires_key():
+    """Gemini is a true cloud endpoint — an empty key must fail loud,
+    not silently placeholder the way a local server does."""
+    ext = ExternalModelConfig(
+        enabled=True, provider="gemini", model="gemini-2.5-flash",
+        base_url=_GEMINI_URL,
+    )
+    with pytest.raises(ExternalModelError):
+        build_external_model(ext, api_key="")
+
+
+def test_resolve_gemini_key_from_conventional_env(monkeypatch):
+    ext = ExternalModelConfig(provider="gemini", api_key_env="")
+    monkeypatch.setenv("GEMINI_API_KEY", "gemini-key")
+    assert resolve_api_key(ext, layout=None) == "gemini-key"
+
+
+def test_gemini_client_surface(monkeypatch):
+    """A Gemini client mirrors the external surface and reports its
+    OpenAI-compatible endpoint in describe()."""
+    monkeypatch.setenv("GEMINI_API_KEY", "fake-gemini-key")
+    ext = ExternalModelConfig(
+        enabled=True, provider="gemini", model="gemini-2.5-flash",
+        base_url=_GEMINI_URL,
+    )
+    client = ExternalModelClient(ext, layout=None)
+    assert client.kind == "external"
+    assert client.provider == "gemini"
+    assert type(client.model).__name__ == "OpenAIChatModel"
+    assert "gemini" in client.describe()
+    assert "generativelanguage" in client.describe()
+
+
 # ── anthropic message shaping ───────────────────────────────────────
 
 

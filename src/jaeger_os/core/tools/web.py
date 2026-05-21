@@ -38,6 +38,8 @@ from html.parser import HTMLParser
 from typing import Any, Callable
 from urllib.parse import parse_qs, unquote, urlparse
 
+from ..tool_interrupt import is_interrupted
+
 
 # ── Shared result shape ─────────────────────────────────────────────
 
@@ -360,6 +362,14 @@ def web_fetch(url: str, max_chars: int = 8000) -> dict[str, Any]:
     except ImportError:
         verify = True
 
+    # Fetch the body in chunks (stream=True) rather than one blocking read,
+    # so a slow or huge page can be abandoned the moment the turn is
+    # cancelled instead of running to completion. 5 MB hard cap on the raw
+    # body — well past any page worth reading, and a backstop on a server
+    # that never stops sending.
+    RAW_CAP = 5_000_000
+    resp = None
+    body = bytearray()
     try:
         resp = requests.get(
             target,
@@ -373,14 +383,29 @@ def web_fetch(url: str, max_chars: int = 8000) -> dict[str, Any]:
             },
             timeout=15,
             verify=verify,
+            stream=True,
         )
         resp.raise_for_status()
+        for chunk in resp.iter_content(chunk_size=16384):
+            if is_interrupted():
+                return {"ok": False, "url": target, "interrupted": True,
+                        "error": "web_fetch interrupted by user"}
+            if chunk:
+                body.extend(chunk)
+                if len(body) >= RAW_CAP:
+                    break
     except Exception as exc:  # noqa: BLE001
         return {"ok": False, "url": target,
                 "error": f"{type(exc).__name__}: {exc}"}
+    finally:
+        if resp is not None:
+            try:
+                resp.close()
+            except Exception:  # noqa: BLE001
+                pass
 
     content_type = (resp.headers.get("Content-Type") or "").split(";")[0].strip()
-    raw = resp.text or ""
+    raw = bytes(body).decode(resp.encoding or "utf-8", errors="replace")
 
     if "html" in content_type or (not content_type and "<html" in raw[:500].lower()):
         parser = _ReadableText()
@@ -403,7 +428,7 @@ def web_fetch(url: str, max_chars: int = 8000) -> dict[str, Any]:
         "content_type": content_type or "unknown",
         "text": text[:cap],
         "truncated": truncated,
-        "bytes": len(raw.encode("utf-8", errors="ignore")),
+        "bytes": len(body),
     }
 
 

@@ -521,7 +521,14 @@ class JaegerTUI:
 
         self._render_turn_header(user_text, source=source)
         started = time.perf_counter()
-        result = run_for_voice(client, user_text,
+        # Expand @file / @url references — the header above shows the
+        # concise original; the agent receives the inlined content (A4).
+        try:
+            from jaeger_os.core.context_refs import expand_references
+            agent_text = expand_references(user_text)
+        except Exception:  # noqa: BLE001 — never let expansion break a turn
+            agent_text = user_text
+        result = run_for_voice(client, agent_text,
                                session_key=_DEFAULT_SESSION_KEY)
         self._last_turn_s = time.perf_counter() - started
         self._turn_count += 1

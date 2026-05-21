@@ -17,6 +17,7 @@ import time
 from typing import Any
 
 from ._common import SandboxError, _require_layout, _resolve_under
+from ..tool_interrupt import is_interrupted
 
 
 # ---------------------------------------------------------------------------
@@ -165,6 +166,14 @@ def look_at(image_path: str, question: str = "Describe this image in one short s
         from PIL import Image
     except Exception as exc:
         return {"saw": False, "error": f"Pillow missing: {exc}"}
+
+    # The VLM load + inference below are single blocking calls that cannot
+    # be interrupted partway. Bail before starting if the turn was already
+    # cancelled so we don't kick off a multi-second model load nobody is
+    # waiting on.
+    if is_interrupted():
+        return {"saw": False, "interrupted": True,
+                "error": "look_at interrupted by user"}
 
     try:
         model, tok, model_id = _ensure_vision_model()

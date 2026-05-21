@@ -6,29 +6,36 @@ versus hermes-agent. Verified by reading source in both trees — no assumptions
 
 > ## ⏩ Port progress (2026-05-21)
 >
-> **Done (7 of 12) — all the self-contained items:**
+> **Done (8 of 12):**
 > - **#1** tier gating — `@requires_tier` on every write/effect tool +
 >   read-anywhere file tools (`core/tools/_common._resolve_read`).
 > - **#2** skill safety guard — `core/skills_guard.py`, wired into
 >   `skill_loader` + the `skill` tool.
 > - **#3** lazy-deps — `core/lazy_deps.py` + `SecurityConfig`.
 > - **#4** usage telemetry — `core/usage_stats.py` (`logs/usage.json`).
+>   *(Also fixed a dead import in `_run_via_iter` — `from .usage_stats`
+>   should have been `from .core.usage_stats`; telemetry was silently
+>   no-op'ing.)*
+> - **#6** mid-tool interrupt — `core/tool_interrupt.py`: one shared
+>   turn-interrupt Event (unified with `begin_turn_cancel_scope`) +
+>   `run_interruptible` subprocess helper. Wired into `run_python` /
+>   `run_shell` / `run_in_venv` (kill the child) and `web_fetch`
+>   (chunked download, polls per chunk); preflight check in `look_at` /
+>   `browser`.
 > - **#8** skill provenance — `origin` field + `.origin` marker.
 > - **#9** `scripts/` affordance — `skill(view, file=…)` + a `files` listing.
 > - **#12** OSV malware check — `core/osv_check.py`, wired into `venv`.
 >
-> **Remaining (5) — loop-internal / large, do these next:**
+> **Remaining (4) — loop-internal / large, do these next:**
 > - **#5** tool-result formatter ladder — belongs in the `R4` main-loop
 >   rebuild (`docs/main_loop_review.md`); the hallucination-prevention
 >   logic in `_fast_finalize_sync` is load-bearing, don't rush it.
-> - **#6** mid-tool interrupt — port hermes `tools/interrupt.py`; wire
->   the per-thread interrupt into `_run_via_iter` + long-running tools.
 > - **#7** MCP OAuth + dynamic refresh — port `mcp_oauth_manager.py`.
 > - **#10** central tool registry / per-tool metadata.
 > - **#11** oversized-result persistence / turn budget.
 >
-> ~356 tests green. Start the next session on **#6** (smallest of the
-> remaining) or **#5** as part of the main-loop rebuild.
+> ~367 tests green. Start the next session on **#7** (self-contained) or
+> **#5** as part of the main-loop rebuild.
 
 **References read**
 - hermes: `tools/registry.py`, `tools/__init__.py`, `tools/schema_sanitizer.py`,
@@ -188,20 +195,38 @@ bounded to ~120 tokens) — the latency cost is small and the maintenance cost
 drops to zero. Touch `main.py` `_format_tool_result_as_answer`,
 `_DETERMINISTIC_FINAL_TOOLS`, `_fast_finalize_sync`.
 
-### 6. No mid-tool interrupt
-**What:** JROS checks the cancel event *between* agent-loop nodes; a
+### 6. No mid-tool interrupt — ✅ DONE (2026-05-21)
+**What:** JROS checked the cancel event *between* agent-loop nodes; a
 long-running `run_shell` / `web_fetch` / `browser` / `look_at` (vision model
-load) cannot be interrupted once started. Hermes tools cooperatively poll
-`is_interrupted()`. **Why it matters:** MEMORY flags AEC barge-in / "user
-speaks mid-turn" as a live goal. With the current design, the user can
-interrupt the *agent's thinking* but not a 60-second shell command or a
-multi-second model download. For a voice-first robot that is a real UX gap.
-**Port sketch:** Port `tools/interrupt.py` as `core/tool_interrupt.py` — the
-per-thread `set_interrupt`/`is_interrupted` design is small and clean. Have
-`_run_via_iter` call `set_interrupt(True)` on the tool's worker thread when
-`cancel_event` fires, and have the long-running tools (`run_shell`,
-`run_in_venv`, `web_fetch`, `browser`, `look_at`) poll `is_interrupted()` in
-their loops / pass it as a `subprocess` kill signal.
+load) could not be interrupted once started. Hermes tools cooperatively poll
+`is_interrupted()`. **Why it mattered:** MEMORY flags AEC barge-in / "user
+speaks mid-turn" as a live goal. The user could interrupt the *agent's
+thinking* but not a 60-second shell command.
+
+**Shipped:** `core/tool_interrupt.py`.
+- One process-wide turn-interrupt `threading.Event` —
+  `begin_turn_cancel_scope` now hands *that* object back as the turn's
+  `cancel_event`, so the flag the TUI sets, the flag `_run_via_iter` checks
+  between nodes, and the flag a tool polls mid-call are all one Event (no
+  second source of truth). **Deviation from the port sketch:** the sketch
+  said per-thread (like hermes). JROS serialises turns through `llm_lock`
+  and pydantic-ai dispatches sync tools onto anonymous worker threads the
+  loop never names — so a per-thread design has no clean thread to target.
+  Process-wide is correct here: one user turn at a time, and cancelling it
+  should stop its tools *and* its delegates' tools.
+- `run_interruptible()` — a `subprocess.run` drop-in that polls every 0.2s
+  and `terminate()`→`kill()`s the child on interrupt, raising
+  `ToolInterrupted` with the partial output. Wired into `run_python`,
+  `run_shell`, `run_in_venv` (each now returns `interrupted: True`).
+- `web_fetch` rewritten as a chunked `stream=True` download that polls
+  `is_interrupted()` per 16 KB chunk (+ a 5 MB raw-body cap).
+- `look_at` and `browser` get a preflight `is_interrupted()` check — their
+  inner calls (VLM load, a Playwright action) are atomic and can't be
+  broken mid-flight, but they no longer *start* on an already-cancelled
+  turn.
+- `tests/jaeger_os/core/test_tool_interrupt.py` — 11 tests (signal
+  contract, helper normal/timeout/interrupt, child-actually-killed, wired
+  tools, scope unification).
 
 ### 7. MCP integration has no OAuth and no dynamic refresh
 **What:** JROS MCP (`plugins/mcp/client.py`) does static-config connect + call

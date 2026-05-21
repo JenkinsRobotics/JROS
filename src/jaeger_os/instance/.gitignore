@@ -10,6 +10,9 @@
 */manifest.json
 */.lock
 
+# soul.md — the user's free-form character/voice doc for the instance.
+*/soul.md
+
 # Per-skill permission grants the user accepted ("always allow") —
 # runtime state, written by the confirmation provider.
 */permissions.json

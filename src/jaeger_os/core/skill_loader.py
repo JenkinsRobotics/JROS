@@ -182,6 +182,55 @@ def reset_registered() -> None:
     _REGISTERED_KEYS.clear()
 
 
+class _ToolCapturingAgent:
+    """Wraps the agent during a skill's ``register()`` so we record
+    exactly which tools the skill adds — that captured set IS the
+    skill's toolset (a skill is a self-describing bundle of tools).
+    Every other attribute passes straight through to the real agent."""
+
+    def __init__(self, agent: Any) -> None:
+        self._agent = agent
+        self.captured: list[str] = []
+
+    def _wrap(self, real: Callable[..., Any]) -> Callable[..., Any]:
+        def deco(*args: Any, **kwargs: Any) -> Any:
+            # Bare-decorator form: @agent.tool_plain  → args == (fn,)
+            if len(args) == 1 and not kwargs and callable(args[0]):
+                name = getattr(args[0], "__name__", None)
+                if name:
+                    self.captured.append(name)
+                return real(args[0])
+            # Parametrised form: @agent.tool_plain(retries=…) — pass through.
+            return real(*args, **kwargs)
+        return deco
+
+    @property
+    def tool_plain(self) -> Callable[..., Any]:
+        return self._wrap(self._agent.tool_plain)
+
+    @property
+    def tool(self) -> Callable[..., Any]:
+        return self._wrap(self._agent.tool)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._agent, name)
+
+
+def _skill_summary(skill: DiscoveredSkill) -> str:
+    """One-line summary for the toolset catalog — the SKILL.md
+    ``description:`` field, else a generic fallback."""
+    try:
+        md = (skill.module_path.parent / "SKILL.md").read_text(encoding="utf-8")
+    except Exception:
+        return f"the {skill.name} skill"
+    for line in md.splitlines():
+        if line.strip().lower().startswith("description:"):
+            desc = line.split(":", 1)[1].strip()
+            if desc:
+                return desc
+    return f"the {skill.name} skill"
+
+
 def load_and_register(
     agent: Any,
     layout: InstanceLayout,
@@ -236,7 +285,17 @@ def load_and_register(
             if register is None:
                 skipped.append((skill, "no register(agent) callable"))
                 continue
-            register(agent)
+            # Register through a capturing wrapper so the skill's tools
+            # become its own named toolset (a skill IS a toolset).
+            capturing = _ToolCapturingAgent(agent)
+            register(capturing)
+            if capturing.captured:
+                try:
+                    from .toolsets import register_skill_toolset
+                    register_skill_toolset(skill.name, capturing.captured,
+                                           summary=_skill_summary(skill))
+                except Exception:  # noqa: BLE001
+                    pass
         except Exception as exc:
             tb = traceback.format_exc(limit=4)
             skipped.append((skill, f"import/register failed: {exc}\n{tb}"))

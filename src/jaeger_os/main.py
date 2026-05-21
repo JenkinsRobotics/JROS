@@ -747,14 +747,12 @@ def _register_builtins(agent: Agent[None, str], client: Any) -> None:
 
     @agent.tool_plain
     def terminal(command: str, timeout_s: float = 60.0) -> dict:
-        """LAST RESORT — non-Python CLI tools ONLY (git, npm, brew,
-        ffmpeg). NEVER use this to run Python code — that is run_python
-        (stdlib) or run_in_venv (with installed packages). NEVER use it
-        for file operations — that is write_file / read_file /
-        list_skill_dir. It is PRIVILEGED-tier: every call interrupts the
-        user for confirmation. Picking terminal when run_python or a
-        file tool would do is a mistake — reach for it only when the
-        task genuinely needs a non-Python command-line program."""
+        """Run a non-Python command-line program — git, npm, brew,
+        ffmpeg. For Python code use run_python (stdlib) or run_in_venv
+        (installed packages); for files use write_file / read_file /
+        list_skill_dir. PRIVILEGED-tier: each call prompts the user, so
+        reach for it only when the task genuinely needs a shell
+        program."""
         return t.run_shell(command=command, timeout_s=timeout_s)
 
     @agent.tool_plain
@@ -868,6 +866,52 @@ def _register_builtins(agent: Agent[None, str], client: Any) -> None:
         return t.board_update(card_id=card_id, title=title,
                               description=description, priority=priority,
                               add_tag=add_tag, note=note, result=result)
+
+    @agent.tool_plain
+    def todo(todos: list[dict] | None = None, merge: bool = False) -> dict:
+        """Your session task list — a scratchpad to plan and track a
+        multi-step job. Use it for ANY task with 3+ steps, or when the
+        user hands you several things to do.
+
+        Call with no arguments to read the current list. Pass `todos`
+        to write — a list of {id, content, status} items where `status`
+        is pending/in_progress/completed/cancelled. List order is
+        priority. `merge=false` (default) replaces the whole list with a
+        fresh plan; `merge=true` updates items by id and appends new
+        ones.
+
+        Keep exactly ONE item `in_progress` at a time. Mark an item
+        `completed` the moment it is done. If a step fails, set it
+        `cancelled` and add a revised item. This is a within-session
+        scratchpad — for durable cross-session work use the kanban
+        board. When every item is completed, the task is done."""
+        return t.todo(todos=todos, merge=merge)
+
+    @agent.tool_plain
+    def load_toolset(name: str = "") -> dict:
+        """Make a group of extra tools visible. You start each turn with
+        a small CORE toolset; everything else is grouped — built-in
+        classes (`files`, `code`, `media`, …) and skills (each skill is
+        its own toolset of curated tools).
+
+        Call this the MOMENT a task needs a capability you don't see a
+        tool for — BEFORE concluding you can't do it. The new tools
+        appear on your very next step. Call with no name (or an unknown
+        one) to get the catalog of every toolset and what it holds.
+        Returns the toolsets now active."""
+        from .core.toolsets import (
+            active_toolset_names, all_toolsets, enable_toolset,
+        )
+        clean = (name or "").strip().lower()
+        if enable_toolset(clean):
+            return {"ok": True, "loaded": clean,
+                    "active": sorted(active_toolset_names())}
+        return {
+            "ok": False,
+            "error": (f"unknown toolset {name!r}" if clean
+                      else "give a toolset name — catalog below"),
+            "available": all_toolsets(),
+        }
 
     @agent.tool_plain
     def start_background(code: str, name: str = "") -> dict:

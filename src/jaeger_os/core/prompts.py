@@ -3,8 +3,12 @@
 Layered, in this order, so the result is deterministic at startup:
 
   [identity blurb from identity.yaml]
+  [soul.md — optional free-form character/voice doc, if the instance
+   has one; user-owned, complements the structured identity.yaml]
   [MANDATORY TOOL RULES — short, near the top, so a small local model
    doesn't gloss past them]
+  [OPERATING DISCIPLINE — terse execute-don't-promise / keep-going
+   directives; the agentic-reliability counterpart to the tool rules]
   [v2 self-improvement contract — OFF by default, gated behind
    skills.include_self_improvement_contract in the instance config]
   [runtime hints: workspace path, tool surface notes]
@@ -63,6 +67,27 @@ Mandatory tool rules — these are not suggestions:
 """
 
 
+OPERATING_DISCIPLINE = """\
+Operating discipline — how to actually get a task done:
+
+- EXECUTE, don't promise. Never end a turn saying you "will" or "can" do
+  something — call the tool now. A plan with no tool calls is a failed
+  turn.
+- One request often needs several tool calls. Keep going until the task
+  is genuinely done; don't stop after the first step or hand a checklist
+  back to the user.
+- For a task with 3+ steps, call `todo` FIRST to lay out the plan, then
+  work the items one at a time, marking each `completed` as you finish.
+  When every item is done, so is the task.
+- Independent tool calls in the same turn can be issued together —
+  prefer that over a slow round-trip each.
+- Before editing a file, read it first. Before importing a package,
+  check it is installed.
+- A failed tool call is information: read the error, fix the cause, then
+  retry. Never repeat the exact same call unchanged.
+"""
+
+
 RUNTIME_TAIL = """\
 The only writable area is the sandboxed `skills/` directory of your
 instance. All "path" arguments to file tools are relative to that root.
@@ -73,9 +98,12 @@ to skills/ and explain where it actually went.
 Behavior:
 - Use tools to fulfill requests. Each tool has a typed signature; pass
   arguments that match.
-- If the user asks for something none of your tools can do, say so
-  honestly in plain text — don't invent a tool error or pretend a tool
-  ran when it didn't.
+- You see a focused CORE set of tools. If a task needs a capability you
+  don't see a tool for, call `load_toolset` to make the right group
+  visible BEFORE concluding you can't do it — the tools you need are
+  one `load_toolset` call away.
+- If the request is genuinely beyond every toolset, say so honestly —
+  don't invent a tool error or pretend a tool ran when it didn't.
 - After a tool returns, decide whether the user's request is fully
   answered. If yes, write the SHORTEST possible reply — often just one
   sentence, sometimes just the value. Never restate the question. Bare
@@ -85,6 +113,29 @@ Behavior:
 - After authoring or modifying skill files, call `reload_skills()` so
   the loader registers your new code.
 """
+
+
+_SOUL_MAX_CHARS = 4000
+
+
+def _load_soul(layout: InstanceLayout) -> str:
+    """Read the optional per-instance ``soul.md`` — a free-form character
+    / voice document the user hand-writes. It complements identity.yaml:
+    identity.yaml carries the structured facts (name, role, voice_id),
+    soul.md carries the prose voice and character. Absent ⇒ ``""``.
+
+    User-owned and read-only to the agent (same posture as identity.yaml);
+    capped so a long file can't crowd out the routing imperatives."""
+    try:
+        path = layout.root / "soul.md"
+        if not path.is_file():
+            return ""
+        text = path.read_text(encoding="utf-8").strip()
+    except Exception:
+        return ""
+    if len(text) > _SOUL_MAX_CHARS:
+        text = text[:_SOUL_MAX_CHARS].rstrip() + "\n…(soul.md truncated)"
+    return text
 
 
 def build_system_prompt(layout: InstanceLayout) -> str:
@@ -105,7 +156,14 @@ def build_system_prompt(layout: InstanceLayout) -> str:
     if ident_blurb:
         parts.append(ident_blurb)
 
+    # soul.md — optional free-form character/voice doc, right after the
+    # structured identity so it reads as "and here is how I speak".
+    soul = _load_soul(layout)
+    if soul:
+        parts.append(soul)
+
     parts.append(MANDATORY_TOOL_RULES.strip())
+    parts.append(OPERATING_DISCIPLINE.strip())
 
     include_v2 = False
     try:

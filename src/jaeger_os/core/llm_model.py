@@ -369,7 +369,7 @@ class LlamaCppModel(Model):
         # OpenAI-format tool defs are stable per agent. Cache by id() of the
         # function_tools list pydantic-ai hands us — saves rebuilding ~20
         # dicts every request.
-        self._openai_tools_cache_key: int | None = None
+        self._openai_tools_cache_key: Any = None
         self._openai_tools_cache_value: list[dict[str, Any]] | None = None
 
     def reset_timings(self) -> None:
@@ -571,14 +571,20 @@ class LlamaCppModel(Model):
         return out
 
     def _to_openai_tools(self, function_tools: list[Any]) -> list[dict[str, Any]]:
-        # Pydantic-AI hands us the same function_tools list every request for
-        # a given agent. Cache the OpenAI conversion by `id()` so we don't
-        # rebuild ~20 dicts on every turn.
-        key = id(function_tools) if function_tools else 0
+        # Pydantic-AI hands us the same function_tools list every request.
+        # Scope it to the active toolsets (core/toolsets.py) so the model
+        # routes over a small surface, not all ~60 schemas at once. Cache
+        # by (list id, active toolsets) — the active set only ever grows,
+        # so this rebuilds at most once per toolset widening.
+        from .toolsets import active_toolset_names, tool_visible
+        active = frozenset(active_toolset_names())
+        key = (id(function_tools) if function_tools else 0, active)
         if key == self._openai_tools_cache_key and self._openai_tools_cache_value is not None:
             return self._openai_tools_cache_value
         result: list[dict[str, Any]] = []
         for t in function_tools or []:
+            if not tool_visible(getattr(t, "name", "")):
+                continue
             schema = getattr(t, "parameters_json_schema", None) or {"type": "object", "properties": {}}
             result.append({
                 "type": "function",

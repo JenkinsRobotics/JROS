@@ -111,6 +111,9 @@ from .deepthink_tools import list_deep_think_queue, propose_deep_think_task
 # Kanban task board
 from .board import board_add, board_move, board_update, board_view
 
+# In-session task list (planning scratchpad)
+from .todo import reset_todos, todo
+
 
 __all__ = [
     # framework wiring
@@ -157,4 +160,6 @@ __all__ = [
     "propose_deep_think_task", "list_deep_think_queue",
     # kanban board
     "board_view", "board_add", "board_move", "board_update",
+    # in-session task list
+    "todo", "reset_todos",
 ]

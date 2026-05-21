@@ -21,7 +21,12 @@ from ._common import _require_layout
 
 
 def get_time(timezone: str | None = None) -> dict[str, Any]:
-    """Current local date/time, or in a specific IANA timezone if provided."""
+    """The current date, day of week, year and time — local, or in a
+    specific IANA timezone if provided. The source of truth for any
+    question about the present moment; never answer those from memory.
+
+    Returns explicit ``date`` / ``weekday`` / ``year`` fields alongside
+    ``datetime`` so the answer can't be misread."""
     if timezone:
         try:
             from zoneinfo import ZoneInfo
@@ -32,6 +37,10 @@ def get_time(timezone: str | None = None) -> dict[str, Any]:
         now = dt.datetime.now().astimezone()
     return {
         "datetime": now.strftime("%Y-%m-%d %I:%M:%S %p %Z"),
+        "date": now.strftime("%A, %B %d, %Y"),
+        "weekday": now.strftime("%A"),
+        "year": now.year,
+        "time": now.strftime("%I:%M %p"),
         "iso": now.isoformat(timespec="seconds"),
         "timezone": str(now.tzinfo),
     }

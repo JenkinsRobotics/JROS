@@ -43,10 +43,12 @@ import contextlib
 import contextvars
 import functools
 import inspect
+import json
 import sys
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from enum import IntEnum
+from pathlib import Path
 from typing import Any, Protocol, TypeVar, cast, runtime_checkable
 
 
@@ -175,6 +177,71 @@ class AllowAllProvider:
         return True
 
 
+@dataclass
+class PermissionGrants:
+    """Per-skill permission grants — so a 'yes' actually sticks.
+
+    Confirmation is **per skill, not per call**. Once the user approves a
+    skill, that skill stops asking:
+
+    • plain *yes* → granted for the rest of this session (in memory).
+    • *always*    → granted permanently — written to
+      ``<instance>/permissions.json`` and reloaded on every boot.
+
+    A skill the user never approved still prompts. The two zones keep a
+    multi-step task (one ``computer_use`` job is dozens of clicks) from
+    becoming a wall of identical prompts.
+    """
+
+    path: Path | None = None
+    persistent: set[str] = field(default_factory=set)
+    session: set[str] = field(default_factory=set)
+
+    @classmethod
+    def load(cls, instance_dir: Any = None) -> "PermissionGrants":
+        """Load the persisted grants for an instance. Missing / unreadable
+        file ⇒ empty grants (every skill prompts)."""
+        if not instance_dir:
+            return cls()
+        path = Path(instance_dir) / "permissions.json"
+        persistent: set[str] = set()
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            persistent = {str(s) for s in data.get("granted_skills", [])}
+        except (FileNotFoundError, json.JSONDecodeError, OSError, ValueError):
+            pass
+        return cls(path=path, persistent=persistent)
+
+    def is_granted(self, skill: str) -> bool:
+        return bool(skill) and (skill in self.persistent or skill in self.session)
+
+    def grant_session(self, skill: str) -> None:
+        """Approve ``skill`` for the rest of this session."""
+        if skill:
+            self.session.add(skill)
+
+    def grant_persistent(self, skill: str) -> None:
+        """Approve ``skill`` permanently — persisted across restarts."""
+        if not skill:
+            return
+        self.session.add(skill)
+        if skill not in self.persistent:
+            self.persistent.add(skill)
+            self._save()
+
+    def _save(self) -> None:
+        if self.path is None:
+            return
+        try:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            self.path.write_text(
+                json.dumps({"granted_skills": sorted(self.persistent)}, indent=2),
+                encoding="utf-8",
+            )
+        except OSError:
+            pass
+
+
 class ConsoleConfirmationProvider:
     """Asks the human to approve a tier-gated operation at the console.
 
@@ -187,15 +254,17 @@ class ConsoleConfirmationProvider:
     input) ``confirm`` denies without blocking — identical to
     ``DenyAllProvider``, so unattended runs never hang on ``input()``.
 
-    Answering ``a`` approves *and remembers*: every later request this
-    session auto-approves, so a multi-step task is not a wall of prompts.
+    Grants are **per skill** (see :class:`PermissionGrants`): *yes* holds
+    for the session, *always* persists across restarts. An already-granted
+    skill never prompts again.
     """
 
-    def __init__(self) -> None:
-        self._allow_all = False
+    def __init__(self, instance_dir: Any = None) -> None:
+        self._grants = PermissionGrants.load(instance_dir)
 
     def confirm(self, request: "PermissionRequest") -> bool:
-        if self._allow_all:
+        skill = getattr(request, "skill", "") or ""
+        if self._grants.is_granted(skill):
             return True
         if not sys.stdin.isatty():
             return False  # unattended — fail safe, never block
@@ -206,15 +275,24 @@ class ConsoleConfirmationProvider:
         if request.summary:
             print(f"     {request.summary}")
         try:
-            ans = input("     allow?  [y]es / [N]o / [a]llow-all this session : ")
+            ans = input(
+                f"     allow?  [y]es (rest of session) / [N]o / "
+                f"[a]lways (remember {skill or 'this'}) : "
+            )
         except (EOFError, KeyboardInterrupt):
             print()
             return False
         ans = ans.strip().lower()
-        if ans in ("a", "all", "allow-all"):
-            self._allow_all = True
+        # First-letter match: "always" / "allow" / "a" all persist;
+        # "yes" / "y" grant for the session.
+        if ans.startswith("a"):
+            self._grants.grant_persistent(skill)
+            print(f"     ✓ remembered — {skill or 'this'} won't ask again")
             return True
-        return ans in ("y", "yes")
+        if ans.startswith("y"):
+            self._grants.grant_session(skill)
+            return True
+        return False
 
 
 # --- Policy -------------------------------------------------------------------

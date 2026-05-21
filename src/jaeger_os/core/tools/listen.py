@@ -47,6 +47,14 @@ def _get_model(name: str) -> Any:
     return _cached_model
 
 
+def warm_listen() -> dict[str, Any]:
+    """Pre-load the Whisper STT model so the first ``listen`` call is
+    decode-only, not a ~3-5 s cold load. Called by the boot warmup.
+    Idempotent — the model is memoized."""
+    _get_model(_DEFAULT_MODEL)
+    return {"warmed": True, "model": _DEFAULT_MODEL}
+
+
 def listen(seconds: int = 5, model: str = _DEFAULT_MODEL) -> dict[str, Any]:
     """Record ``seconds`` of microphone audio and return the transcript.
 

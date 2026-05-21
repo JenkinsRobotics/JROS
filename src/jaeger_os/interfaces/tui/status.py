@@ -155,8 +155,10 @@ def status_bar(
     minutes = int((uptime_s % 3600) // 60)
     bits.append((f"up {hours}h {minutes:02d}m", "dim"))
 
-    # Voice
-    bits.append((f"voice {voice_state}", "dim"))
+    # Mic / always-listening voice loop. Labelled "mic" so it isn't
+    # mistaken for TTS — text_to_speech works regardless of this state;
+    # this tracks the hands-free STT loop (python -m jaeger_os --voice).
+    bits.append((f"mic {voice_state}", "dim"))
 
     out = Text()
     for i, (s, style) in enumerate(bits):

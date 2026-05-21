@@ -74,3 +74,19 @@ def test_drift_extract_paren_form_file_write():
     parsed = json.loads(calls[0]["function"]["arguments"])
     assert parsed["content"] == "print('hi')"
     assert parsed["path"] == "skills/h.py"
+
+
+def test_drift_extract_tool_call_block_with_gemma_quote_tokens():
+    """Regression: Gemma emits a <tool_call> JSON block but wraps string
+    values in its own quote tokens (<|"|>). json.loads choked on those,
+    so the whole tool call was silently dropped — the value never ran.
+    They must normalize to real quotes and the call must survive."""
+    text = (
+        '<tool_call>\n{"name": "computer_type_text", "arguments": '
+        '{"text":<|"|>https://example.com/x?q=a+b<|"|>}}\n</tool_call>'
+    )
+    calls = _extract_drift_tool_calls(text)
+    assert len(calls) == 1
+    assert calls[0]["function"]["name"] == "computer_type_text"
+    parsed = json.loads(calls[0]["function"]["arguments"])
+    assert parsed["text"] == "https://example.com/x?q=a+b"

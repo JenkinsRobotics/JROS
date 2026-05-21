@@ -7,11 +7,11 @@ tool and skill in the 0.1.0 build, plus package integrity.
 
 | Check | Result |
 |---|---|
-| pytest suite | **74 / 74 passed** |
-| Skill smoke tests | **2 / 2 passed** |
-| Skill benchmarks | **2 / 2 — score 1.0** |
+| pytest suite | **85 / 85 passed** |
+| Skill smoke tests | **1 / 1 passed** |
+| Skill benchmarks | **1 / 1 — score 1.0** |
 | Package install (clean venv) | ✅ imports, console scripts present |
-| Tool + skill registration | ✅ 54 builtin + 8 skill tools, 0 skipped |
+| Tool + skill registration | ✅ 54 builtin + 7 skill tools, 0 skipped |
 
 ## 1. pytest — functional tests (74)
 
@@ -28,22 +28,24 @@ Every framework subsystem and tool group has functional cover:
 | `test_computer_use.py` | 10 | the `computer_use` skill — accessibility-tree parsing, click-point maths, key chords, tool registration |
 | `test_jaeger_tui.py` | 13 | the TUI — banner, boot panel, status bar, slash commands |
 
-## 2. Skill smoke tests (2 / 2)
+## 2. Skill smoke tests (1 / 1)
 
 The skill loader runs each skill's `tests/smoke_test.py` before
-registering it. Both pass:
+registering it:
 
-- `example_v1` — the reference skill. ✅
 - `computer_use_v1` — the flagship skill. ✅
 
-## 3. Skill benchmarks (2 / 2 — score 1.0)
+(The reference template moved to `docs/skill_template/` — it is no
+longer an auto-loaded skill, so it neither registers a tool nor runs at
+boot. Its smoke test + benchmark still pass when run directly.)
+
+## 3. Skill benchmarks (1 / 1 — score 1.0)
 
 Each skill's scored `tests/benchmark.py` (the per-skill benchmark
 mechanism — `benchmark_skill` / `core/skill_benchmark.py`):
 
 | Skill | Score | Cases |
 |---|---|---|
-| `example_v1` | **1.0** | 3 / 3 — greeting cases |
 | `computer_use_v1` | **1.0** | 8 / 8 — accessibility-tree parsing, centre-point maths, AppleScript escaping, key-chord resolution |
 
 ## 4. Package integrity
@@ -58,11 +60,10 @@ A clean throwaway venv install of the 0.1.0 wheel:
 ## 5. Tool + skill registration
 
 - **54 built-in agent tools** registered by `_register_builtins`.
-- **2 skills** discovered, smoke-tested, and registered — `computer_use`,
-  `example` — **0 skipped**.
-- **8 skill tools** wired onto the agent: the 7 `computer_*` tools plus
-  `say_example_greeting`.
-- Total agent tool surface: **62 tools**.
+- **1 skill** discovered, smoke-tested, and registered — `computer_use`
+  — **0 skipped**.
+- **7 skill tools** wired onto the agent: the `computer_*` toolset.
+- Total agent tool surface: **61 tools**.
 
 ## Scope — what this covers, what it doesn't
 

@@ -56,19 +56,28 @@ _DEFAULT_INSTANCE_DIR = (
 class _TuiConfirmationProvider:
     """Confirmation prompt for the TUI.
 
-    A tier-gated tool (run_in_venv, install_package, run_shell, …) asks
-    the user for approval through this. It suspends the turn's spinner
-    so the prompt is visible, asks via the Rich console, then resumes.
-    Answering ``a`` approves and remembers — the rest of the session
-    auto-approves so a multi-step build is not a wall of prompts.
+    A tier-gated tool (computer_use, run_in_venv, install_package, …)
+    asks the user for approval through this. It suspends the turn's
+    spinner so the prompt is visible, asks via the Rich console, then
+    resumes.
+
+    Grants are **per skill** (:class:`~jaeger_os.core.permissions.PermissionGrants`):
+    *yes* approves the skill for the rest of the session, *always*
+    persists it to ``<instance>/permissions.json`` so it never asks
+    again across restarts. An already-granted skill never re-prompts —
+    a 'yes' is a yes.
     """
 
     def __init__(self, tui: "JaegerTUI") -> None:
+        from jaeger_os.core.permissions import PermissionGrants
         self._tui = tui
-        self._allow_all = False
+        # 'yes' holds for the session, 'always' persists to
+        # <instance>/permissions.json — loaded for the booted instance.
+        self._grants = PermissionGrants.load(getattr(tui, "instance_dir", None))
 
     def confirm(self, request: Any) -> bool:
-        if self._allow_all:
+        skill = getattr(request, "skill", "") or ""
+        if self._grants.is_granted(skill):
             return True
         live = getattr(self._tui, "_active_live", None)
         if live is not None:
@@ -88,15 +97,25 @@ class _TuiConfirmationProvider:
                 console.print(f"  [dim]{request.summary}[/]")
             try:
                 ans = console.input(
-                    "  allow?  [bold]y[/]es / [bold]N[/]o / [bold]a[/]llow-all this session: "
+                    f"  allow?  [bold]y[/]es (rest of session) / [bold]N[/]o / "
+                    f"[bold]a[/]lways (remember [cyan]{skill or 'this'}[/]): "
                 ).strip().lower()
             except (EOFError, KeyboardInterrupt):
                 console.print()
                 return False
-            if ans in ("a", "all", "allow-all"):
-                self._allow_all = True
+            # First-letter match: "always"/"allow"/"a" persist the grant;
+            # "yes"/"y" grant it for the session.
+            if ans.startswith("a"):
+                self._grants.grant_persistent(skill)
+                console.print(
+                    f"  [green]✓ remembered[/] — [cyan]{skill or 'this'}[/] "
+                    f"won't ask again"
+                )
                 return True
-            return ans in ("y", "yes")
+            if ans.startswith("y"):
+                self._grants.grant_session(skill)
+                return True
+            return False
         finally:
             if live is not None:
                 try:
@@ -158,6 +177,11 @@ class JaegerTUI:
             instance_dir=self.instance_dir,
         ))
         self.console.print()
+
+    def _print_ready_hint(self) -> None:
+        """The 'type a prompt' hint. Printed *after* the eager boot so it
+        only appears once the Jaeger is actually operational — not while
+        the model is still loading."""
         self.console.print(
             "[dim]Type a prompt, or [bold]/help[/] for slash commands.[/]"
         )
@@ -186,12 +210,38 @@ class JaegerTUI:
         return self._client
 
     def _install_confirmations(self) -> None:
-        """Install the TUI-aware permission confirmation provider, so
-        tier-gated tools prompt the user (with the spinner suspended)
-        instead of being auto-denied. Overrides the generic provider
-        ``boot_for_tui`` installs by default."""
-        from jaeger_os.core.permissions import PermissionPolicy, install_policy
-        install_policy(PermissionPolicy(confirmation=_TuiConfirmationProvider(self)))
+        """Install the permission confirmation provider for the TUI.
+
+        'confirm' mode → the spinner-aware prompt; 'allow' mode →
+        auto-approve. The mode is ``config.permissions.mode``, chosen at
+        first-boot setup and persisted, so the posture survives restarts."""
+        from jaeger_os.core.permissions import (
+            AllowAllProvider, PermissionPolicy, install_policy,
+        )
+        from jaeger_os.main import _pipeline
+        cfg = _pipeline.get("config")
+        mode = getattr(getattr(cfg, "permissions", None), "mode", "confirm")
+        provider = (AllowAllProvider() if mode == "allow"
+                    else _TuiConfirmationProvider(self))
+        install_policy(PermissionPolicy(confirmation=provider))
+
+    def _boot_eager(self) -> None:
+        """Boot the pipeline at launch so the Jaeger is operational the
+        moment the prompt appears — no waiting for the first message to
+        trigger the model load + warmups.
+
+        A failure here is non-fatal: it is printed and ``_ensure_agent``
+        will retry on the first turn, so a transient boot error never
+        leaves the user staring at a dead REPL."""
+        if self.skip_model:
+            return
+        try:
+            self._ensure_agent()
+        except Exception as exc:  # noqa: BLE001
+            self.console.print(
+                f"[red]Boot failed:[/] {exc}\n"
+                "[dim]Will retry on your first message.[/]"
+            )
 
     def switch_instance(self, name: str) -> None:
         """Hot-switch the running TUI to a different instance.
@@ -521,7 +571,7 @@ class JaegerTUI:
             except (EOFError, KeyboardInterrupt):
                 return None
         # Timed path — print the prompt, then select-wait on stdin.
-        self.console.print("[bold yellow]›[/] ", end="")
+        self.console.print("[bold yellow]›[/]: ", end="")
         try:
             ready, _, _ = select.select([sys.stdin], [], [], idle)
         except (OSError, ValueError):
@@ -569,6 +619,11 @@ class JaegerTUI:
         with no input auto-enters Deep Think if the queue has approved
         work."""
         self.render_boot()
+        # Boot eagerly: the Jaeger comes up the instant the app launches,
+        # so by the time the prompt is shown it is already operational
+        # and the idle/Deep-Think loop is armed.
+        self._boot_eager()
+        self._print_ready_hint()
         pending_goal_prompt: str | None = None
         try:
             while True:

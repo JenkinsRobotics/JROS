@@ -47,7 +47,7 @@ def test_status_bar_renders_all_segments() -> None:
     assert "thinking" in plain
     assert "1,024/8,192" in plain
     assert "up 0h 02m" in plain
-    assert "voice off" in plain
+    assert "mic off" in plain  # mic = the STT loop; renamed from "voice"
 
 
 def test_status_bar_no_context_overflow() -> None:
@@ -153,3 +153,51 @@ def test_render_boot_doesnt_load_model() -> None:
     tui = JaegerTUI(skip_model=True)
     tui.console = Console(file=open("/dev/null", "w"), width=120)
     tui.render_boot()  # would explode if it touched the agent
+
+
+# ── Eager boot ──────────────────────────────────────────────────────
+
+
+def test_render_boot_omits_the_prompt_hint() -> None:
+    """The 'type a prompt' hint moved out of render_boot — it must not
+    show until the eager boot finishes (see _print_ready_hint)."""
+    tui = JaegerTUI(skip_model=True)
+    tui.console = Console(width=120)
+    with tui.console.capture() as cap:
+        tui.render_boot()
+    assert "Type a prompt" not in cap.get()
+
+
+def test_print_ready_hint_shows_the_prompt_hint() -> None:
+    tui = JaegerTUI(skip_model=True)
+    tui.console = Console(width=120)
+    with tui.console.capture() as cap:
+        tui._print_ready_hint()
+    assert "Type a prompt" in cap.get()
+
+
+def test_boot_eager_is_skipped_when_skip_model() -> None:
+    """skip_model mode must never trigger a boot, eager or otherwise."""
+    tui = JaegerTUI(skip_model=True)
+    tui._ensure_agent = MagicMock()
+    tui._boot_eager()
+    tui._ensure_agent.assert_not_called()
+
+
+def test_boot_eager_swallows_boot_failure() -> None:
+    """A boot error at launch is non-fatal — _boot_eager prints it and
+    returns so the REPL can retry on the first turn."""
+    tui = JaegerTUI(skip_model=False)
+    tui.console = Console(width=120)
+    tui._ensure_agent = MagicMock(side_effect=RuntimeError("gemma exploded"))
+    with tui.console.capture() as cap:
+        tui._boot_eager()  # must not raise
+    out = cap.get()
+    assert "Boot failed" in out
+    assert "gemma exploded" in out
+
+
+def test_auto_idle_defaults_to_thirty_minutes() -> None:
+    """Jaegers use free time — auto-idle Deep Think is on by default."""
+    from jaeger_os.core.schemas import DeepThinkConfig
+    assert DeepThinkConfig().auto_idle_minutes == 30

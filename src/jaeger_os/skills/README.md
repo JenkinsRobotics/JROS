@@ -45,12 +45,18 @@ Folder names end in `_v<N>` (e.g. `weather_v1/`, `weather_v2/`):
 
 | skill | purpose |
 |---|---|
-| [`example_v1/`](example_v1/) | Reference template demonstrating the contract end-to-end. Copy this folder as a starting point for new skills. NOT a production capability. |
+| [`computer_use_v2/`](computer_use_v2/) | Drive any macOS app — self-verifying, name-based tools plus an LLM plan/act/verify loop (`computer_do`). The flagship skill. |
+| [`computer_use_v1/`](computer_use_v1/) | The original raw-primitive version — **shadowed by v2** (the loader picks the highest `_v<N>`). Kept as the worked example of override-by-versioning. |
 
 (The collection is intentionally small — Jaeger ships the agent's
 primitive surface as TOOLS in [`../core/tools/`](../core/tools/), not as
-skills. Skills are for the agent's own learned behaviors and for users
-who want to bundle composable capability packages.)
+skills. Skills are for composed, larger capabilities.)
+
+A minimal **copy-me template** for authoring a new skill — the
+SKILL.md + module + smoke-test + benchmark contract at its smallest —
+lives at [`../../../docs/skill_template/`](../../../docs/skill_template/).
+It is kept out of this auto-loaded directory on purpose, so it never
+registers a tool into a running agent.
 
 ## Where agent-authored skills go
 

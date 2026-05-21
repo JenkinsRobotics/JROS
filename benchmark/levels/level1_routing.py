@@ -34,6 +34,7 @@ PROMPTS: list[tuple[str, str | None, list[str]]] = [
     # ── Core routing
     ("what time is it",                                                              "get_time",          [":"]),
     ("what time is it in shanghai",                                                  "get_time",          [":", "shanghai", "china"]),
+    ("what day is today",                                                            "get_time",          []),
     ("calculate 47 times 23 plus 12",                                                "calculate",         ["1093"]),
     ("calculate the square root of 12345",                                           "calculate",         ["111.10", "111.108", "111.1"]),
     ("list the workspace",                                                           "list_skill_dir",    []),

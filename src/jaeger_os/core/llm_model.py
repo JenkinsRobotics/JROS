@@ -9,11 +9,26 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import re
 import time
 import uuid
 from datetime import datetime, timezone
 from typing import Any
+
+
+def _native_tools_enabled() -> bool:
+    """Whether to render conversation history in each model's NATIVE tool
+    dialect (structured ``tool_calls`` + ``tool`` messages, rendered by
+    the GGUF's own chat template) instead of the legacy Hermes-XML path.
+
+    OFF by default — the prototype A/B (docs/native_handler_ab.md) showed
+    the native path is a wash on accuracy at n=1, so the proven legacy
+    baseline stays the default until a multi-sample run justifies the
+    switch. ``JAEGER_NATIVE_TOOLS=1`` opts in."""
+    return os.environ.get("JAEGER_NATIVE_TOOLS", "0").strip().lower() in (
+        "1", "true", "yes", "on",
+    )
 
 
 # Drift patterns: Gemma 4 (not OpenAI-tuned) sometimes emits tool calls in
@@ -108,6 +123,14 @@ def _parse_paren_args(raw: str) -> dict[str, Any]:
     return out
 
 
+def _degemma_quotes(raw: str) -> str:
+    """Normalize Gemma's special-token quotes (`<|"|>`, `<|'|>`) into
+    plain JSON double-quotes. Gemma routinely wraps string values in
+    these instead of real quotes — left as-is they make ``json.loads``
+    fail, which silently drops the whole tool call."""
+    return raw.replace('<|"|>', '"').replace("<|'|>", '"')
+
+
 def _parse_loose_args(raw: str) -> dict[str, Any]:
     """Convert Gemma's loose `{timezone:<|"|>Asia/Shanghai<|"|>}` into a clean dict.
 
@@ -115,7 +138,7 @@ def _parse_loose_args(raw: str) -> dict[str, Any]:
     quotes (`<|"|>...<|"|>`). We strip those and try to parse what's left
     as JSON; if that fails, parse manually.
     """
-    cleaned = raw.replace('<|"|>', '"').replace("<|'|>", '"')
+    cleaned = _degemma_quotes(raw)
     # Try parsing as JSON first
     try:
         result = json.loads("{" + cleaned + "}") if not cleaned.startswith("{") else json.loads(cleaned)
@@ -135,13 +158,151 @@ def _parse_loose_args(raw: str) -> dict[str, Any]:
     return pairs
 
 
+# --- Gemma 4 native brace-arg parser -------------------------------------------
+# Gemma 4's chat template renders tool-call arguments as a JSON-ish object
+# with BARE keys and <|"|>-delimited strings, e.g.
+#   {query:<|"|>population of japan<|"|>,max_results:5,opts:{deep:true}}
+# A proper recursive parser handles arbitrary nesting and — unlike the old
+# _parse_loose_args, which returned on the first quoted pair — never drops a
+# key.
+_GEMMA_QUOTE = '<|"|>'
+_GEMMA_KEY = re.compile(r"[^:,{}\[\]]+")
+_GEMMA_BARE = re.compile(r"[^,{}\[\]]+")
+
+
+def _gemma_skip_ws(s: str, i: int) -> int:
+    while i < len(s) and s[i] in " \t\r\n":
+        i += 1
+    return i
+
+
+def _parse_gemma_value(s: str, i: int) -> tuple[Any, int]:
+    """Recursive-descent parse of ONE Gemma-native value at ``s[i]``.
+    Returns ``(value, index_after)``. Raises ValueError on malformed input."""
+    i = _gemma_skip_ws(s, i)
+    if i >= len(s):
+        raise ValueError("unexpected end of input")
+    # String — <|"|>...<|"|>
+    if s.startswith(_GEMMA_QUOTE, i):
+        start = i + len(_GEMMA_QUOTE)
+        end = s.find(_GEMMA_QUOTE, start)
+        if end == -1:
+            raise ValueError("unterminated string")
+        return s[start:end], end + len(_GEMMA_QUOTE)
+    # Object — {key:value,...} with bare or quoted keys
+    if s[i] == "{":
+        obj: dict[str, Any] = {}
+        i = _gemma_skip_ws(s, i + 1)
+        if i < len(s) and s[i] == "}":
+            return obj, i + 1
+        while True:
+            i = _gemma_skip_ws(s, i)
+            if s.startswith(_GEMMA_QUOTE, i):
+                key, i = _parse_gemma_value(s, i)
+            else:
+                km = _GEMMA_KEY.match(s, i)
+                if not km:
+                    raise ValueError("expected key")
+                key, i = km.group(0).strip(), km.end()
+            i = _gemma_skip_ws(s, i)
+            if i >= len(s) or s[i] != ":":
+                raise ValueError("expected ':'")
+            val, i = _parse_gemma_value(s, i + 1)
+            obj[str(key)] = val
+            i = _gemma_skip_ws(s, i)
+            if i < len(s) and s[i] == ",":
+                i += 1
+                continue
+            if i < len(s) and s[i] == "}":
+                return obj, i + 1
+            raise ValueError("expected ',' or '}'")
+    # Array — [value,...]
+    if s[i] == "[":
+        arr: list[Any] = []
+        i = _gemma_skip_ws(s, i + 1)
+        if i < len(s) and s[i] == "]":
+            return arr, i + 1
+        while True:
+            val, i = _parse_gemma_value(s, i)
+            arr.append(val)
+            i = _gemma_skip_ws(s, i)
+            if i < len(s) and s[i] == ",":
+                i += 1
+                continue
+            if i < len(s) and s[i] == "]":
+                return arr, i + 1
+            raise ValueError("expected ',' or ']'")
+    # Bareword — number / bool / null / unquoted text
+    bm = _GEMMA_BARE.match(s, i)
+    if not bm:
+        raise ValueError("expected value")
+    return _coerce_scalar(bm.group(0).strip()), bm.end()
+
+
+def _parse_gemma_args(raw: str) -> dict[str, Any]:
+    """Parse Gemma 4's native tool-call brace arguments into a dict.
+
+    Handles arbitrary nesting and never silently drops a key. Falls back
+    to the older loose parse rather than dropping the whole call when the
+    input is too malformed for the recursive parser."""
+    s = (raw or "").strip()
+    if not s:
+        return {}
+    body = s if s.startswith("{") else "{" + s + "}"
+    try:
+        val, _ = _parse_gemma_value(body, 0)
+        if isinstance(val, dict):
+            return val
+    except (ValueError, IndexError):
+        pass
+    return _parse_loose_args(raw)
+
+
+# --- Qwen3-Coder native tool-call parser ---------------------------------------
+# Qwen3-Coder emits tool calls as nested XML, NOT JSON:
+#   <tool_call><function=name><parameter=p>value</parameter></function></tool_call>
+_QWEN_TOOLCALL = re.compile(r"<tool_call>\s*(.*?)\s*</tool_call>", re.DOTALL)
+_QWEN_FUNCTION = re.compile(r"<function=([^>]+)>(.*?)</function>", re.DOTALL)
+_QWEN_PARAM = re.compile(r"<parameter=([^>]+)>\n?(.*?)\n?</parameter>", re.DOTALL)
+
+
+def _extract_qwen_tool_calls(text: str) -> list[dict[str, Any]]:
+    """Salvage Qwen3-Coder's native ``<function=…><parameter=…>`` tool
+    calls. Returns OpenAI-style tool_calls. Parameter values are kept as
+    raw strings — pydantic-ai coerces them against the tool schema."""
+    out: list[dict[str, Any]] = []
+    for tc in _QWEN_TOOLCALL.finditer(text):
+        for fn in _QWEN_FUNCTION.finditer(tc.group(1)):
+            name = fn.group(1).strip()
+            if not name:
+                continue
+            args: dict[str, Any] = {}
+            for pm in _QWEN_PARAM.finditer(fn.group(2)):
+                args[pm.group(1).strip()] = pm.group(2)
+            out.append({
+                "id": "qwen_" + uuid.uuid4().hex[:8],
+                "type": "function",
+                "function": {"name": name, "arguments": json.dumps(args)},
+            })
+    return out
+
+
 def _extract_drift_tool_calls(text: str) -> list[dict[str, Any]]:
-    """Find tool calls in non-standard formats. Returns OpenAI-style tool_calls."""
-    # Cheap early-exit: every drift pattern starts with `<`. If the model's
-    # response has no angle brackets, we know nothing to salvage — skip the
-    # three regex sweeps entirely.
+    """Extract tool calls from a model's NATIVE textual form when
+    llama-cpp-python didn't parse them into structured tool_calls.
+
+    Covers Gemma 4 (``<|tool_call>call:name{…}<tool_call|>``) and
+    Qwen3-Coder (``<function=…><parameter=…>``) — each model's own
+    dialect. Returns OpenAI-style tool_calls."""
+    # Cheap early-exit: every native form opens with `<`.
     if "<" not in text:
         return []
+    # Qwen3-Coder's <function=…> form is distinct from every Gemma
+    # pattern; a model only ever speaks one dialect, so if Qwen calls
+    # are present they ARE the answer.
+    qwen = _extract_qwen_tool_calls(text)
+    if qwen:
+        return qwen
     out: list[dict[str, Any]] = []
     for pat_idx, pattern in enumerate(_DRIFT_PATTERNS):
         for match in pattern.finditer(text):
@@ -153,18 +314,23 @@ def _extract_drift_tool_calls(text: str) -> list[dict[str, Any]]:
                 if pat_idx == 1:
                     args = _parse_paren_args(groups[1])
                 else:
-                    args = _parse_loose_args(groups[1])
+                    args = _parse_gemma_args(groups[1])
             elif len(groups) == 1:
-                # JSON form: {"name": "x", "arguments": {...}}
+                # JSON form: {"name": "x", "arguments": {...}}. Gemma
+                # sometimes wraps string values in its own quote tokens
+                # (<|"|> … <|"|>) instead of real JSON quotes, which makes
+                # json.loads fail and silently drops the whole tool call —
+                # normalize them to " before parsing.
+                raw = _degemma_quotes(groups[0])
                 try:
-                    payload = json.loads(groups[0])
+                    payload = json.loads(raw)
                 except json.JSONDecodeError:
                     continue
                 name = payload.get("name", "")
                 args = payload.get("arguments", {}) or {}
                 if isinstance(args, str):
                     try:
-                        args = json.loads(args)
+                        args = json.loads(_degemma_quotes(args))
                     except json.JSONDecodeError:
                         args = {}
             else:
@@ -195,6 +361,9 @@ class LlamaCppModel(Model):
     def __init__(self, llama: Any, model_name: str = "local-gemma-4-26b-a4b") -> None:
         self._llama = llama
         self._model_name_value = model_name
+        # Gemma 4 and Qwen3 want different tool-message shapes: Gemma's
+        # template reads `tool_responses`, Qwen's reads OpenAI `content`.
+        self._is_gemma = "gemma" in (model_name or "").lower()
         self.last_call_times: list[float] = []
         self.last_call_ttft: list[float] = []
         # OpenAI-format tool defs are stable per agent. Cache by id() of the
@@ -225,6 +394,16 @@ class LlamaCppModel(Model):
     ) -> ModelResponse:
         chat_messages = self._to_chat_messages(messages)
         tools = self._to_openai_tools(model_request_parameters.function_tools)
+        # Stash the tool schemas so _fast_finalize renders the SAME
+        # <system + tools> prefix this decide call uses. Without it the
+        # finalize call (system-only) evicts the tool-schema KV and the
+        # next decide cold-prefills all ~60 schemas — ~12s wasted/turn.
+        if tools:
+            try:
+                from jaeger_os.main import _pipeline as _pl
+                _pl["openai_tools"] = tools
+            except Exception:  # noqa: BLE001
+                pass
 
         settings: dict[str, Any] = dict(model_settings or {})
         kwargs: dict[str, Any] = {
@@ -255,18 +434,102 @@ class LlamaCppModel(Model):
         raise NotImplementedError("Streaming not implemented for LlamaCppModel")
 
     # --- Conversions ---------------------------------------------------------------
+    @staticmethod
+    def _tool_call_args(part: Any) -> dict[str, Any]:
+        """A tool-call part's args as a plain dict (pydantic-ai gives
+        either a dict or a JSON string)."""
+        args_val = getattr(part, "args", None)
+        if isinstance(args_val, str):
+            try:
+                return json.loads(args_val)
+            except json.JSONDecodeError:
+                return {}
+        return args_val or {}
+
     def _to_chat_messages(self, messages: list[ModelMessage]) -> list[dict[str, Any]]:
         """Convert pydantic-ai messages to llama-cpp-python chat format.
 
-        Gemma 4's chat template doesn't understand OpenAI's `"role": "tool"`
-        message type, so tool returns become user turns with a
-        `<tool_response>...</tool_response>` body — the same format
-        python_hermes_xml uses successfully. Similarly, assistant turns that
-        contain tool calls are serialized as Gemma's native `<tool_call>`
-        text rather than the structured `tool_calls` array, which prevents
-        llama-cpp-python from getting confused about what the template
-        should emit.
+        Two paths, switched by ``JAEGER_NATIVE_TOOLS`` (see
+        :func:`_native_tools_enabled`):
+
+        • **native** (default) — emit structured ``tool_calls`` on
+          assistant turns and proper ``tool`` messages, so the GGUF's OWN
+          chat template renders the conversation in the model's native
+          tool dialect. Gemma 4 then sees its past actions as
+          ``<|tool_call>call:…`` / ``<|tool_response>…`` — exactly what
+          it was trained on, instead of a foreign Hermes-XML transcript.
+        • **legacy** — tool history hand-serialized as Hermes XML inside
+          user/assistant content. Kept for the A/B benchmark.
         """
+        if _native_tools_enabled():
+            return self._to_native_messages(messages)
+        return self._to_legacy_messages(messages)
+
+    def _to_native_messages(self, messages: list[ModelMessage]) -> list[dict[str, Any]]:
+        """Structured path — feed the GGUF's own template the message
+        shape it expects so it renders native tool tokens itself."""
+        out: list[dict[str, Any]] = []
+        for msg in messages:
+            kind = getattr(msg, "kind", None)
+            if kind == "request":
+                for part in msg.parts:
+                    pk = getattr(part, "part_kind", None)
+                    if pk == "system-prompt":
+                        out.append({"role": "system", "content": part.content})
+                    elif pk == "user-prompt":
+                        content = part.content if isinstance(part.content, str) else str(part.content)
+                        out.append({"role": "user", "content": content})
+                    elif pk == "tool-return":
+                        tool_name = getattr(part, "tool_name", "") or "tool"
+                        response = part.content
+                        if self._is_gemma:
+                            # Gemma's template renders `tool_responses`;
+                            # giving it `content` too would double-print.
+                            out.append({
+                                "role": "tool",
+                                "tool_responses": [
+                                    {"name": tool_name, "response": response},
+                                ],
+                            })
+                        else:
+                            # Qwen + OpenAI-shaped templates read `content`.
+                            body = json.dumps(
+                                {"name": tool_name, "content": response},
+                                ensure_ascii=True, default=str,
+                            )
+                            out.append({
+                                "role": "tool",
+                                "content": body,
+                                "tool_call_id": getattr(part, "tool_call_id", "") or "",
+                            })
+            elif kind == "response":
+                texts: list[str] = []
+                tool_calls: list[dict[str, Any]] = []
+                for part in msg.parts:
+                    pk = getattr(part, "part_kind", None)
+                    if pk == "text":
+                        texts.append(part.content)
+                    elif pk == "tool-call":
+                        tool_calls.append({
+                            "id": getattr(part, "tool_call_id", "") or ("call_" + uuid.uuid4().hex[:8]),
+                            "type": "function",
+                            "function": {
+                                "name": part.tool_name,
+                                "arguments": self._tool_call_args(part),
+                            },
+                        })
+                assistant: dict[str, Any] = {
+                    "role": "assistant",
+                    "content": "\n".join(t for t in texts if t),
+                }
+                if tool_calls:
+                    assistant["tool_calls"] = tool_calls
+                out.append(assistant)
+        return out
+
+    def _to_legacy_messages(self, messages: list[ModelMessage]) -> list[dict[str, Any]]:
+        """Legacy path — tool history hand-serialized as Hermes XML in
+        user/assistant content. Pre-native baseline; kept for the A/B."""
         out: list[dict[str, Any]] = []
         for msg in messages:
             kind = getattr(msg, "kind", None)
@@ -295,14 +558,7 @@ class LlamaCppModel(Model):
                     if pk == "text":
                         texts.append(part.content)
                     elif pk == "tool-call":
-                        args_val = part.args
-                        if isinstance(args_val, str):
-                            try:
-                                args_dict = json.loads(args_val)
-                            except json.JSONDecodeError:
-                                args_dict = {}
-                        else:
-                            args_dict = args_val or {}
+                        args_dict = self._tool_call_args(part)
                         call_json = json.dumps(
                             {"name": part.tool_name, "arguments": args_dict},
                             ensure_ascii=True,

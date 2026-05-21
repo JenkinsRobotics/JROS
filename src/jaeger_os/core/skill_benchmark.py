@@ -85,7 +85,7 @@ def benchmark_skill(layout: Any, skill_name: str) -> dict[str, Any]:
             "skill": skill_name,
             "error": ("no tests/benchmark.py — a benchmark is a script that "
                       "prints one JSON object with a 'score'. See "
-                      "skills/example_v1/tests/benchmark.py for the template."),
+                      "docs/skill_template/tests/benchmark.py for the template."),
         }
 
     started = time.perf_counter()

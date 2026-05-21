@@ -12,6 +12,7 @@ the line after the command name; handlers split it themselves.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Callable
 
 from rich.console import Console
@@ -590,6 +591,82 @@ def _board(ctx: SlashContext, args: str) -> SlashResult:
     return SlashResult()
 
 
+# ── Lifecycle: shutdown / reboot / factory reset ─────────────────────
+
+
+def _shutdown(ctx: SlashContext, args: str) -> SlashResult:  # noqa: ARG001
+    """Shut the Jaeger down cleanly — the REPL's finally block releases
+    the instance lock and stops background extensions."""
+    return SlashResult(quit=True, message="Shutting down. Goodbye.")
+
+
+def _reboot(ctx: SlashContext, args: str) -> SlashResult:  # noqa: ARG001
+    """Reboot the Jaeger — tear the pipeline down and bring it straight
+    back up (model, skills, config reloaded) without leaving the TUI."""
+    if ctx.tui is None:
+        ctx.console.print("[yellow]Reboot isn't available in this context.[/]")
+        return SlashResult()
+    name = Path(str(ctx.instance_dir)).name
+    ctx.console.print(f"[yellow]Rebooting {name}…[/]")
+    try:
+        ctx.tui.switch_instance(name)
+    except Exception as exc:  # noqa: BLE001
+        ctx.console.print(f"[red]Reboot failed:[/] {exc}")
+        return SlashResult()
+    ctx.console.print("[green]Rebooted.[/]")
+    return SlashResult()
+
+
+def _factory_reset_instance(root: Path) -> None:
+    """Erase an instance back to first-boot state: remove the
+    identity/config/manifest trio (so the wizard runs next launch) and
+    clear all agent-accumulated state, keeping the empty skeleton dirs."""
+    import shutil
+
+    for f in ("identity.yaml", "config.yaml", "manifest.json", ".lock"):
+        (root / f).unlink(missing_ok=True)
+    for sub in ("skills", "memory", "logs", "credentials",
+                "processes", "packaged_skills", "venv"):
+        d = root / sub
+        if not d.is_dir():
+            continue
+        for child in d.iterdir():
+            if child.name == ".gitkeep":
+                continue
+            if child.is_dir():
+                shutil.rmtree(child, ignore_errors=True)
+            else:
+                child.unlink(missing_ok=True)
+
+
+def _factoryreset(ctx: SlashContext, args: str) -> SlashResult:  # noqa: ARG001
+    """Erase this instance — identity, config, agent-authored skills,
+    memory, logs, venv — then exit. The next launch runs first-time
+    setup from scratch. Guarded by a typed confirmation."""
+    root = Path(str(ctx.instance_dir))
+    ctx.console.print(
+        f"[bold red]⚠ Factory reset[/] erases the instance at [dim]{root}[/]:\n"
+        "  identity · config · agent-authored skills · memory · logs · venv\n"
+        "  [dim]The next launch starts from first-time setup.[/]"
+    )
+    try:
+        confirm = input("  Type 'reset' to confirm (anything else cancels): ")
+    except (EOFError, KeyboardInterrupt):
+        confirm = ""
+    if confirm.strip().lower() != "reset":
+        ctx.console.print("[dim]Factory reset cancelled.[/]")
+        return SlashResult()
+    try:
+        _factory_reset_instance(root)
+    except Exception as exc:  # noqa: BLE001
+        ctx.console.print(f"[red]Factory reset failed:[/] {exc}")
+        return SlashResult()
+    return SlashResult(
+        quit=True,
+        message="Factory reset complete — the next launch runs first-time setup.",
+    )
+
+
 # ── Registry ─────────────────────────────────────────────────────────
 
 
@@ -606,6 +683,9 @@ REGISTRY: tuple[SlashCommand, ...] = (
     SlashCommand("goal",      "show/set/clear an autonomous completion condition (Claude-Code-style)", _goal),
     SlashCommand("deepthink", "autonomous skill-development mode: add/list/approve/start", _deepthink),
     SlashCommand("board",     "kanban task board: show/add/approve/done/move", _board),
+    SlashCommand("reboot",    "tear down + re-boot the pipeline (reload model/skills/config)", _reboot),
+    SlashCommand("shutdown",  "shut the Jaeger down cleanly", _shutdown),
+    SlashCommand("factoryreset", "erase the instance → next launch runs first-time setup", _factoryreset),
     SlashCommand("reset",     "(placeholder) reset session state", _reset),
     SlashCommand("quit",      "exit the TUI", _quit),
 )

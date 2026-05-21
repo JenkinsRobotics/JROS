@@ -131,6 +131,14 @@ def _ensure_vision_model() -> tuple[Any, Any, str]:
     return model, tok, model_id
 
 
+def warm_vision() -> dict[str, Any]:
+    """Pre-load the Moondream2 VLM so the first ``look_at`` is inference-
+    only, not a cold model load. Called by the boot warmup when
+    ``warmup.vision`` is enabled. Idempotent — the model is memoized."""
+    _, _, model_id = _ensure_vision_model()
+    return {"warmed": True, "model": model_id}
+
+
 def look_at(image_path: str, question: str = "Describe this image in one short sentence.") -> dict[str, Any]:
     """Look at an image file under <instance>/skills/ and answer a question.
 

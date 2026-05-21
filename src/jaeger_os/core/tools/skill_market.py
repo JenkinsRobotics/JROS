@@ -50,7 +50,7 @@ def benchmark_skill(name: str) -> dict[str, Any]:
     Use this when revising a skill: benchmark the old version, write the
     new one, benchmark again — ``delta > 0`` means the revision actually
     helped. Same principle as the repo's level benchmarks, scoped to one
-    skill. See skills/example_v1/tests/benchmark.py for the template.
+    skill. See docs/skill_template/tests/benchmark.py for the template.
 
     Returns ``{ok, skill, score, passed, total, previous_score, delta,
     improved, cases}`` or ``{ok: False, error: ...}``."""

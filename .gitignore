@@ -66,6 +66,13 @@ benchmark/**/*_rows.jsonl
 benchmark/**/*.jsonl
 benchmark/**/*.log
 
+# ...EXCEPT the historical record. The timing suite's append-only
+# history and the level-suite's v1-v5 snapshots ARE the project's
+# performance baseline — they are committed and grow with the repo.
+!benchmark/timing/bench_history.jsonl
+!benchmark/levels/history/
+!benchmark/levels/history/BENCHMARK_*.md
+
 # JROS runtime artifacts
 *.pid
 *.log

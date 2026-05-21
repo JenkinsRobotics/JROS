@@ -115,12 +115,12 @@ class DeepThinkConfig(BaseModel):
         description="Model swapped in for Deep Think skill authoring.",
     )
     auto_idle_minutes: int = Field(
-        0, ge=0, le=240,
+        30, ge=0, le=240,
         description=(
             "Minutes of no user input before the TUI auto-enters Deep "
-            "Think (when there's approved queued work). 0 = OFF — Deep "
-            "Think only starts via /deepthink start. Opt in by setting a "
-            "value like 10."
+            "Think (when there's approved queued work) — the Jaeger uses "
+            "free time to work its own queue. Default 30. 0 = OFF: Deep "
+            "Think only starts via /deepthink start."
         ),
     )
 
@@ -164,6 +164,40 @@ class ExternalModelConfig(BaseModel):
     timeout_s: float = Field(60.0, gt=0, le=600)
 
 
+class WarmupConfig(BaseModel):
+    """Boot-time warmup — pre-load the heavy plugins so a Jaeger is
+    fully operational the moment boot finishes, not on first use.
+
+    A deployed robot runs TTS and STT constantly, so those default ON —
+    the first ``text_to_speech`` / ``listen`` should be instant, not a
+    cold model load mid-conversation. Vision pulls a multi-GB model, so
+    it defaults OFF — flip it on per-instance when the robot needs it.
+    Set a flag false to trim boot time on a dev box that won't use it.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+    tts: bool = True       # warm Kokoro TTS at boot
+    stt: bool = True       # warm Whisper STT at boot
+    vision: bool = False   # warm the Moondream2 VLM — heavy, opt-in
+
+
+class PermissionsConfig(BaseModel):
+    """How the agent handles tier-gated actions — running code,
+    controlling the computer, installing packages.
+
+      • ``confirm`` — the agent asks before each tier-gated action.
+      • ``allow``   — auto-approve; nothing prompts (a trusted,
+                      unattended robot).
+
+    Chosen during first-boot setup and persisted here, so the posture
+    survives every restart. Change it any time by editing this field.
+    Tier-0 reads are always free; this governs tiers 1-4.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+    mode: Literal["confirm", "allow"] = "confirm"
+
+
 class Config(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -174,6 +208,8 @@ class Config(BaseModel):
     retention: RetentionConfig = Field(default_factory=RetentionConfig)
     deep_think: DeepThinkConfig = Field(default_factory=DeepThinkConfig)
     external_model: ExternalModelConfig = Field(default_factory=ExternalModelConfig)
+    warmup: WarmupConfig = Field(default_factory=WarmupConfig)
+    permissions: PermissionsConfig = Field(default_factory=PermissionsConfig)
 
     @field_validator("instance_name")
     @classmethod

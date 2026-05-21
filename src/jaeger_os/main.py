@@ -231,7 +231,11 @@ def _format_tool_result_as_answer(name: str, result: Any) -> str:
         return " ".join(bits)
     if name == "text_to_speech":
         if result.get("spoken") is True:
-            return ""  # audio has played — no extra text needed
+            # Echo the spoken line so a CLI turn isn't a bare tool entry
+            # with no answer. Shown verbatim — _fast_finalize passes
+            # text_to_speech through without an LLM rephrase.
+            spoken = (result.get("text") or "").strip()
+            return f"🔊 {spoken}" if spoken else "Spoken aloud."
         return f"Couldn't speak: {result.get('reason', 'unknown')}"
     if name == "open_on_host":
         if result.get("opened"):
@@ -356,6 +360,12 @@ _pipeline: dict[str, Any] = {
     # The active llama-cpp client (set by init_extensions). Plugins reach
     # back through this when they need to issue their own LLM calls.
     "client": None,
+    # OpenAI-format tool schemas from the most recent decide call.
+    # _fast_finalize passes these to its bounded chat call so it renders
+    # the SAME <system + tools> prompt prefix — without it the finalize
+    # evicts the tool-schema KV and every following turn cold-prefills
+    # ~60 schemas (the ~12s/turn regression).
+    "openai_tools": None,
     # /goal — session-scoped completion condition. When set, the TUI
     # REPL runs an evaluator after each turn; if the goal isn't met,
     # it auto-fires the next turn with the evaluator's reason as the
@@ -577,7 +587,12 @@ def _register_builtins(agent: Agent[None, str], client: Any) -> None:
     @requires_tier(PermissionTier.READ_ONLY, skill="time", operation="get_time",
                    summary="read the current time")
     def get_time(timezone: str | None = None) -> dict:
-        """Current date/time (optional IANA timezone)."""
+        """The current date, day of the week, year, and time — the ONLY
+        source of truth for "what day/date/year/time is it", "what's
+        today", and similar. Your training data is frozen in the past, so
+        a date or year answered from memory will be WRONG — always call
+        this for anything about the present moment. Optional IANA
+        timezone (e.g. 'Asia/Shanghai')."""
         return t.get_time(timezone=timezone)
 
     @agent.tool_plain
@@ -915,7 +930,11 @@ def _register_builtins(agent: Agent[None, str], client: Any) -> None:
     # ------------------------------------------------------------------
     @agent.tool_plain
     def text_to_speech(text: str = "", path: str = "") -> dict:
-        """Speak aloud through the default audio output via Kokoro TTS.
+        """Speak text aloud through the default audio output via Kokoro
+        TTS. Use ONLY when the user explicitly asks to HEAR something
+        ("say…", "out loud", "narrate/read X aloud", "speak"). This is
+        NOT your reply channel — ordinary questions ("tell me a joke",
+        "what's the weather") are answered in text, not spoken.
         Pass `text` for literal text, or `path` to narrate a file from
         <instance>/skills/ ("read X out loud", "narrate X" with a named
         file). `path` is sandbox-resolved and wins over `text` when both
@@ -1291,6 +1310,16 @@ def _fast_finalize_sync(
     ~1.5-2s for an unconstrained finalize). Falls back to the raw
     formatter on any client/model failure."""
     formatted = _format_tool_result_as_answer(tool_name, tool_result)
+    # Nothing to finalize — e.g. text_to_speech: the audio IS the output,
+    # so the formatted answer is empty. Running the LLM on an empty
+    # result makes it HALLUCINATE a fresh answer (a different joke than
+    # the one just spoken). Return the empty/short answer directly.
+    if not formatted.strip():
+        return formatted
+    # text_to_speech: the spoken line IS the answer, verbatim — a
+    # finalize pass would paraphrase the line the user just heard.
+    if tool_name == "text_to_speech":
+        return formatted
     if client is None:
         return formatted
     system = _pipeline.get("system_prompt") or ""
@@ -1306,6 +1335,10 @@ def _fast_finalize_sync(
             temperature=0.2,
             top_p=0.9,
             stream=False,
+            # Carry the decide call's tool schemas so this finalize
+            # renders the identical <system + tools> prefix and reuses
+            # the warm KV instead of evicting it.
+            tools=_pipeline.get("openai_tools"),
         )
         text = (getattr(result, "text", None) or "").strip()
         # Strip any drift tool-call markup the model leaked into the
@@ -1731,6 +1764,67 @@ def prewarm(client: Any) -> None:
     print(f"[jaeger] agent prewarmed in {time.perf_counter() - started:.1f}s", flush=True)
 
 
+def warm_plugins(config: Any) -> None:
+    """Boot-time plugin warmup — per ``config.warmup``, pre-load TTS /
+    STT / vision so the Jaeger is fully operational the instant boot
+    finishes, not on first use. Each warm is timed and best-effort: a
+    failure prints a warning and never blocks boot. Robots run TTS/STT
+    constantly, so those default on (see :class:`WarmupConfig`)."""
+    w = getattr(config, "warmup", None)
+    if w is None:
+        return
+    jobs: list[tuple[str, Any]] = []
+    if getattr(w, "tts", False):
+        from .core.tools.speak import warm_kokoro
+        jobs.append(("TTS (Kokoro)", warm_kokoro))
+    if getattr(w, "stt", False):
+        from .core.tools.listen import warm_listen
+        jobs.append(("STT (Whisper)", warm_listen))
+    if getattr(w, "vision", False):
+        from .core.tools.vision import warm_vision
+        jobs.append(("vision (Moondream2)", warm_vision))
+    for name, fn in jobs:
+        started = time.perf_counter()
+        try:
+            fn()
+            print(f"[jaeger] warmed {name} in "
+                  f"{time.perf_counter() - started:.1f}s", flush=True)
+        except Exception as exc:  # noqa: BLE001
+            print(f"[jaeger] warm {name} skipped: "
+                  f"{type(exc).__name__}: {exc}", flush=True)
+
+
+def _confirmation_provider(config: Any, layout: Any = None) -> Any:
+    """Pick the permission confirmation provider for ``config``.
+
+    'confirm' mode → the interactive console prompt. 'allow' mode →
+    auto-approve (a trusted, unattended robot). The mode is chosen at
+    first-boot setup and persisted in config.yaml, so the posture
+    survives every restart. The TUI swaps in its own spinner-aware
+    prompt for 'confirm' mode (see ``_install_confirmations``).
+
+    ``layout`` supplies the instance dir so the console provider can
+    load + persist per-skill grants (``<instance>/permissions.json``)."""
+    mode = getattr(getattr(config, "permissions", None), "mode", "confirm")
+    if mode == "allow":
+        from .core.permissions import AllowAllProvider
+        return AllowAllProvider()
+    return ConsoleConfirmationProvider(instance_dir=getattr(layout, "root", None))
+
+
+def _preflight_log() -> None:
+    """Run the environment preflight and print a concise warning block
+    if an optional dependency or system library is missing. Silent when
+    everything is ready. Best-effort — preflight never blocks boot."""
+    try:
+        from .core.preflight import boot_warning, check_environment
+        warning = boot_warning(check_environment())
+        if warning:
+            print(warning, flush=True)
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def run_command(client: Any, user_text: str, session_key: str | None = None) -> None:
     key = session_key or _DEFAULT_SESSION_KEY
     history = _get_session_history(key) if _pipeline["with_memory"] else None
@@ -1991,8 +2085,10 @@ class LlamaCppPythonClient:
     def model(self) -> "LlamaCppModel":
         """Fresh LlamaCppModel over the resident Llama. ``build_agent``
         calls this once per agent build; each agent gets its own wrapper
-        but they share the one loaded weights."""
-        return LlamaCppModel(self.llm)
+        but they share the one loaded weights. The model name is passed
+        through so the wrapper can pick the right native tool dialect
+        (Gemma 4 vs. Qwen3)."""
+        return LlamaCppModel(self.llm, model_name=getattr(self, "model_name", "local-gemma-4"))
 
     def describe(self) -> str:
         return f"local · llama-cpp · {getattr(self, 'model_name', '?')}"
@@ -2040,14 +2136,25 @@ class LlamaCppPythonClient:
         top_p: float = 0.95,
         stream: bool = False,
         grammar: str | None = None,
+        tools: list[dict[str, Any]] | None = None,
     ) -> _ChatResult:
-        """Minimal chat completion wrapper for ThinkingRunner.
-        Ignores `stream` and `grammar`. Returns text + wall-clock latency."""
+        """Minimal chat completion wrapper (ThinkingRunner, _fast_finalize).
+        Ignores `stream` and `grammar`. Returns text + wall-clock latency.
+
+        Pass ``tools`` to render the SAME ``<system + tools>`` prompt
+        prefix the agent's decide call uses — that keeps the tool-schema
+        KV cache resident across decide/finalize instead of evicting it
+        (a system-only finalize forces the next decide to cold-prefill
+        all ~60 tool schemas, ~12s)."""
         started = time.perf_counter()
-        completion = self.llm.create_chat_completion(
-            messages=messages, max_tokens=max_tokens,
-            temperature=temperature, top_p=top_p, stream=False,
-        )
+        kwargs: dict[str, Any] = {
+            "messages": messages, "max_tokens": max_tokens,
+            "temperature": temperature, "top_p": top_p, "stream": False,
+        }
+        if tools:
+            kwargs["tools"] = tools
+            kwargs["tool_choice"] = "auto"
+        completion = self.llm.create_chat_completion(**kwargs)
         elapsed = time.perf_counter() - started
         text = completion["choices"][0]["message"].get("content") or ""
         return _ChatResult(text=text.strip(), latency_s=elapsed)
@@ -2589,6 +2696,8 @@ def parse_args() -> argparse.Namespace:
                    help="Run (or re-run) the setup wizard, then exit.")
     p.add_argument("--self-test", action="store_true",
                    help="Run the sandbox/memory/skill smoke tests without loading the LLM.")
+    p.add_argument("--doctor", action="store_true",
+                   help="Check that every dependency + system library is ready, then exit.")
     p.add_argument("--no-warmup", action="store_true", help="Skip llama-cpp warmup.")
     p.add_argument("--no-cron", action="store_true", help="Don't start the cron runner.")
     p.add_argument("--set-credential", metavar="NAME",
@@ -2697,12 +2806,14 @@ def boot_for_tui(
         # Wire the interactive permission provider so tier-gated tools
         # (run_in_venv, install_package, …) prompt the user instead of
         # being auto-denied. On non-interactive stdin it denies safely.
-        install_policy(PermissionPolicy(confirmation=ConsoleConfirmationProvider()))
+        _preflight_log()
+        install_policy(PermissionPolicy(confirmation=_confirmation_provider(config, layout)))
 
         client = make_client(config, layout, warmup=warmup)
         _get_agent(client)
         if warmup:
             prewarm(client)
+            warm_plugins(config)
 
         llm_lock = threading.Lock()
         _pipeline["llm_lock"] = llm_lock
@@ -2915,6 +3026,31 @@ def main() -> int:
         from .interfaces.tui.__main__ import main as tui_main
         return tui_main()
     args = parse_args()
+    # --doctor: verify every dependency + system library, offer to
+    # install whatever is missing, then exit. Needs no instance/model.
+    if getattr(args, "doctor", False):
+        from .core.preflight import (
+            check_environment, fixable, format_report, install_missing, missing,
+        )
+        checks = check_environment()
+        print(format_report(checks))
+        cmds = fixable(checks)
+        if cmds and sys.stdin.isatty():
+            print("  These can be installed for you:")
+            for cmd in cmds:
+                print(f"    {' '.join(cmd)}")
+            try:
+                ans = input("  Install them now? [y/N]: ").strip().lower()
+            except (EOFError, KeyboardInterrupt):
+                ans = ""
+            if ans.startswith("y"):
+                print()
+                checks = install_missing(checks)
+                print(format_report(checks))
+                if missing(checks):
+                    print("  Anything still missing may just need a restart to "
+                          "register — re-run `jaeger-os --doctor` to confirm.")
+        return 1 if missing(checks) else 0
     # Headless daemon mode — boot, cron, work the Deep Think queue.
     if getattr(args, "daemon", False):
         return run_daemon(instance_name=args.instance)
@@ -3006,7 +3142,8 @@ def main() -> int:
 
         # Interactive permission provider — tier-gated tools prompt the
         # user rather than auto-denying. Safe on non-interactive stdin.
-        install_policy(PermissionPolicy(confirmation=ConsoleConfirmationProvider()))
+        _preflight_log()
+        install_policy(PermissionPolicy(confirmation=_confirmation_provider(config, layout)))
 
         client = make_client(config, layout, warmup=not args.no_warmup)
         # Force agent build now so skills load before the first prompt.
@@ -3015,6 +3152,7 @@ def main() -> int:
         # user-facing turn isn't cold. Same trick python_pydantic_ai uses.
         if not args.no_warmup:
             prewarm(client)
+            warm_plugins(config)
 
         # Cron runner: same llm_lock the chat loop uses, so a scheduled
         # prompt firing mid-conversation serializes cleanly.

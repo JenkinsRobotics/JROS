@@ -126,8 +126,20 @@ class KokoroTTS:
     # ── pipeline lifecycle ────────────────────────────────────────────
     def _ensure_pipeline(self) -> Any:
         if self._pipeline is None:
-            from kokoro import KPipeline
-            self._pipeline = KPipeline(lang_code=self.lang, repo_id="hexgrad/Kokoro-82M")
+            import warnings
+
+            # Kokoro's model build emits noisy torch UserWarnings
+            # (LSTM dropout) and FutureWarnings (weight_norm deprecation).
+            # They are harmless and not actionable by the user — silence
+            # them so a `speak` call doesn't spew a wall of stack-frame
+            # text into the TUI.
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", category=UserWarning)
+                warnings.simplefilter("ignore", category=FutureWarning)
+                from kokoro import KPipeline
+                self._pipeline = KPipeline(
+                    lang_code=self.lang, repo_id="hexgrad/Kokoro-82M",
+                )
         return self._pipeline
 
     def warm(self) -> dict[str, Any]:

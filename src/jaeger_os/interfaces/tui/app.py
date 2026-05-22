@@ -62,6 +62,22 @@ def _kfmt(n: int) -> str:
     return str(int(n))
 
 
+def _tool_label(tool: str) -> str:
+    """A human-legible label for the ``┊`` activity line, so the user can
+    follow what the agent is doing without knowing internal tool names.
+
+    The computer-use tools get a platform + mode tag — that is the
+    distinction the raw name hides: ``computer_bg_*`` drives the Mac
+    *silently* via the Accessibility API (no cursor, no focus steal),
+    while ``computer_*`` is the foreground path that operates the screen.
+    A tool not matched here falls back to its raw name."""
+    if tool.startswith("computer_bg_"):
+        return f"🖥 macOS·background · {tool[len('computer_bg_'):]}"
+    if tool.startswith("computer_"):
+        return f"🖥 macOS·foreground · {tool[len('computer_'):]}"
+    return tool
+
+
 def _dur(seconds: float) -> str:
     """Compact duration for the status bar: '4m', '1h 04m', '12s'."""
     s = int(seconds)
@@ -104,19 +120,31 @@ _DEFAULT_INSTANCE_DIR = (
 
 
 class _TuiConfirmationProvider:
-    """Confirmation prompt for the TUI.
+    """Confirmation prompt for the concurrent TUI.
 
-    A tier-gated tool (computer_use, run_in_venv, install_package, …)
-    asks the user for approval through this. It suspends the turn's
-    spinner so the prompt is visible, asks via the Rich console, then
-    resumes.
+    A tier-gated tool (browser, run_shell, computer_use, …) asks the
+    user for approval through this. The turn runs on a background worker
+    thread, so this **cannot read stdin directly** — the main thread's
+    live ``❯`` input line owns the terminal, and a competing
+    ``input()`` from the worker simply never receives the keystrokes
+    (the bug this class previously had: every answer came back empty, so
+    every tier-gated tool auto-denied).
+
+    The fix is hermes's approval-pipeline pattern: print the question,
+    post a pending request, and **block on a threading.Event**. The REPL
+    on the main thread routes the user's next typed line back as the
+    answer and sets the Event — the answer travels through the input
+    channel that actually works.
 
     Grants are **per skill** (:class:`~jaeger_os.core.permissions.PermissionGrants`):
-    *yes* approves the skill for the rest of the session, *always*
-    persists it to ``<instance>/permissions.json`` so it never asks
-    again across restarts. An already-granted skill never re-prompts —
-    a 'yes' is a yes.
+    *yes* approves the skill for the session, *always* persists it to
+    ``<instance>/permissions.json``. An already-granted skill never
+    re-prompts — answer *always* once and it is silent thereafter.
     """
+
+    # A turn must never hang forever on an unattended prompt — after
+    # this long with no answer, deny.
+    _ANSWER_TIMEOUT_S = 300.0
 
     def __init__(self, tui: "JaegerTUI") -> None:
         from jaeger_os.core.permissions import PermissionGrants
@@ -129,44 +157,45 @@ class _TuiConfirmationProvider:
         skill = getattr(request, "skill", "") or ""
         if self._grants.is_granted(skill):
             return True
-        # The turn runs on the worker thread; the prompt below needs
-        # stdin, which the main thread's live input loop owns. Route it
-        # through _run_on_terminal so prompt_toolkit suspends the input
-        # line for the duration of the question.
-        return self._tui._run_on_terminal(lambda: self._ask(request, skill))
-
-    def _ask(self, request: Any, skill: str) -> bool:
-        """The actual y/N/a question. Runs with exclusive terminal
-        access (see :meth:`JaegerTUI._run_on_terminal`)."""
-        console = self._tui.console
-        tier = getattr(request.tier, "name", str(request.tier))
-        console.print()
-        console.print(
-            f"[bold yellow]⚠ permission needed[/]  "
-            f"[cyan]{request.skill}.{request.operation}[/]  [dim]{tier}[/]"
-        )
-        if request.summary:
-            console.print(f"  [dim]{request.summary}[/]")
-        try:
-            ans = console.input(
-                f"  allow?  [bold]y[/]es (rest of session) / [bold]N[/]o / "
-                f"[bold]a[/]lways (remember [cyan]{skill or 'this'}[/]): "
-            ).strip().lower()
-        except (EOFError, KeyboardInterrupt):
-            console.print()
+        # Non-interactive stdin (piped / the synchronous REPL) — there
+        # is no live user to answer; fail safe, never block.
+        if not sys.stdin.isatty():
             return False
+
+        c = self._tui.console
+        tier = getattr(request.tier, "name", str(request.tier))
+        c.print()
+        c.print(f"[bold yellow]⚠ permission needed[/]  "
+                f"[cyan]{request.skill}.{request.operation}[/]  [dim]{tier}[/]")
+        if request.summary:
+            c.print(f"  [dim]{request.summary}[/]")
+        c.print(f"  [bold]answer at the ❯ prompt:[/]  [bold]y[/]es "
+                f"(this session)  ·  [bold]n[/]o  ·  [bold]a[/]lways "
+                f"(remember [cyan]{skill or 'this'}[/])")
+
+        # Post the request and block — the REPL wakes us with the answer.
+        box: dict[str, Any] = {"event": threading.Event(), "answer": None}
+        self._tui._pending_confirm = box
+        try:
+            answered = box["event"].wait(timeout=self._ANSWER_TIMEOUT_S)
+        finally:
+            self._tui._pending_confirm = None
+
+        if not answered:
+            c.print("  [dim]✗ no answer — denied.[/]")
+            return False
+        ans = (box["answer"] or "").strip().lower()
         # First-letter match: "always"/"allow"/"a" persist the grant;
-        # "yes"/"y" grant it for the session.
+        # "yes"/"y" grant it for the session; anything else denies.
         if ans.startswith("a"):
             self._grants.grant_persistent(skill)
-            console.print(
-                f"  [green]✓ remembered[/] — [cyan]{skill or 'this'}[/] "
-                f"won't ask again"
-            )
+            c.print(f"  [green]✓ remembered[/] — [cyan]{skill or 'this'}[/] "
+                    f"won't ask again")
             return True
         if ans.startswith("y"):
             self._grants.grant_session(skill)
             return True
+        c.print("  [dim]✗ denied.[/]")
         return False
 
 
@@ -216,6 +245,9 @@ class JaegerTUI:
         self._turn_started_at = 0.0              # for the live toolbar timer
         self._current_activity = ""             # live spinner label
         self._busy_mode = "interrupt"           # /busy: interrupt|queue|steer
+        # A tier-gated tool blocked on a y/n/a answer — the REPL routes
+        # the user's next line here. None when nothing is waiting.
+        self._pending_confirm: dict | None = None
         self._ptk_loop: Any = None              # prompt_toolkit's asyncio loop
         self._last_activity = time.monotonic()  # for auto-idle Deep Think
         self._idle_fired = False
@@ -462,8 +494,9 @@ class JaegerTUI:
         is printed into the scrollback with the elapsed time, hermes-
         style. Runs on the turn worker thread — the print scrolls above
         the live input line via ``patch_stdout``."""
+        label = _tool_label(tool)
         if phase == "start":
-            self._current_activity = tool
+            self._current_activity = label
             return
         # phase == "done"
         self._current_activity = "ruminating"
@@ -472,7 +505,7 @@ class JaegerTUI:
             return
         line = Text("  ┊ ", style=ACCENT)
         line.append("🔧 ", style="")
-        line.append(tool, style="cyan")
+        line.append(label, style="cyan")
         if detail:
             line.append(f"  {detail}", style="dim")
         if elapsed > 0:
@@ -1088,6 +1121,21 @@ class JaegerTUI:
         )
         self.run_deep_think()
 
+    def _resolve_pending_confirm(self, line: str) -> bool:
+        """Route a typed line to a tier-gated tool waiting for approval.
+
+        When a turn's tool is blocked in
+        :meth:`_TuiConfirmationProvider.confirm`, the user's next
+        non-slash line IS the y/n/a answer — hand it over and wake the
+        worker thread. Returns True when a confirmation was pending (and
+        the line was consumed), False otherwise."""
+        box = self._pending_confirm
+        if box is None:
+            return False
+        box["answer"] = line
+        box["event"].set()
+        return True
+
     def _submit_turn(self, source: str, text: str) -> None:
         """Hand a turn to the worker. If a turn is already running, route
         by the busy-input mode (hermes ``/busy``): interrupt the running
@@ -1259,6 +1307,12 @@ class JaegerTUI:
                     self.console.print("\n[dim]bye.[/]")
                     break
                 if raw is CTRL_C:                     # Ctrl-C
+                    if self._pending_confirm is not None:
+                        # A permission prompt is waiting — Ctrl-C denies
+                        # it and lets the turn unwind.
+                        self._resolve_pending_confirm("")
+                        self.console.print("[dim]⨯ permission denied.[/]")
+                        continue
                     if (self._turn_running.is_set()
                             or not self._turn_queue.empty()):
                         from jaeger_os.main import request_turn_cancel
@@ -1277,6 +1331,11 @@ class JaegerTUI:
                 if is_slash(line):
                     if self._dispatch_slash(line):
                         break
+                    continue
+                # A non-slash line while a tier-gated tool waits for
+                # approval IS the y/n/a answer — route it to the
+                # confirmation, do not start a new turn.
+                if self._resolve_pending_confirm(line):
                     continue
                 if _wants_voice_mode(line):
                     # "turn the mic on" typed as text → bring it up.

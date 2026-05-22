@@ -65,8 +65,8 @@ class SlashResult:
 # categorized list. A command absent here still shows under "Other"
 # (see _help) so a new SlashCommand is never silently undocumented.
 _HELP_CATEGORIES: tuple[tuple[str, tuple[str, ...]], ...] = (
-    ("Session",          ("help", "status", "statusbar", "usage", "config",
-                           "verbose", "reboot", "shutdown", "quit")),
+    ("Session",          ("help", "status", "peek", "statusbar", "usage",
+                           "config", "verbose", "reboot", "shutdown", "quit")),
     ("Conversation",     ("new", "history", "copy", "save", "undo", "retry",
                           "steer", "busy", "stop", "reset")),
     ("Model & Tools",    ("model", "models", "download", "tools", "voice")),
@@ -645,25 +645,11 @@ def _model_use(ctx: SlashContext, args: list[str]) -> SlashResult:
 
 
 def _models(ctx: SlashContext, args: str) -> SlashResult:  # noqa: ARG001
-    """List every model in the registry with cache status."""
-    from jaeger_os.core.model_resolver import list_registered_models
-    rows = list_registered_models()
-    if not rows:
-        ctx.console.print("[dim]No models registered.[/]")
-        return SlashResult()
-    table = Table(show_header=True, header_style="bold cyan")
-    table.add_column("Name")
-    table.add_column("Size")
-    table.add_column("Status")
-    table.add_column("HF source")
-    for m in rows:
-        size = f"{m['size_gb']:.1f} GB" if m.get("size_gb") else "—"
-        table.add_row(m["name"], size, m["status"], m["hf_repo"])
-    ctx.console.print(table)
-    ctx.console.print(
-        "[dim]Download with [bold]/download <name>[/].[/]"
-    )
-    return SlashResult()
+    """List EVERY model — the JROS registry, every local ``.gguf`` on
+    disk (repo, cache, LM Studio's folder), and the LM Studio / Ollama /
+    Ollama Cloud catalogues. Same aggregated view as ``/model list`` —
+    ``/models`` is the obvious name, so it shows the whole picture."""
+    return _model_list(ctx)
 
 
 def _download(ctx: SlashContext, args: str) -> SlashResult:
@@ -1638,6 +1624,47 @@ def _skills(ctx: SlashContext, args: str) -> SlashResult:  # noqa: ARG001
 # ── Registry ─────────────────────────────────────────────────────────
 
 
+def _peek(ctx: SlashContext, args: str) -> SlashResult:  # noqa: ARG001
+    """Peek into the in-flight turn — elapsed, tool calls, and whether it
+    looks healthy, stuck, or caught in a loop. Read-only and turn-safe:
+    it reads a snapshot the agent loop publishes, never touches the loop."""
+    tui = ctx.tui
+    if tui is None or not tui._turn_running.is_set():
+        ctx.console.print("[dim]No turn is running.[/]")
+        return SlashResult()
+    from jaeger_os.main import _pipeline
+    p = _pipeline.get("turn_progress") or {}
+    if not p:
+        ctx.console.print(
+            "[cyan]turn running[/] — still thinking; no tool calls yet.")
+        return SlashResult()
+
+    elapsed = p.get("elapsed_s", 0.0)
+    calls = p.get("tool_calls", 0)
+    repeated = p.get("repeated_max", 0)
+    failures = p.get("failures", 0)
+    last = p.get("last_tool", "")
+    phase = p.get("phase", "")
+
+    lines = [f"[bold cyan]turn running[/] — {elapsed:.0f}s · "
+             f"{calls} tool call{'' if calls == 1 else 's'}"]
+    if last:
+        state = "running now" if phase == "start" else "returned"
+        lines.append(f"  current: [bold]{last}[/] ({state})")
+    if repeated >= 3:
+        rt = p.get("repeated_tool") or "a tool"
+        lines.append(f"  [yellow]⚠ possible loop[/] — [bold]{rt}[/] called "
+                     f"{repeated}× with identical arguments")
+    if failures:
+        lines.append(f"  [yellow]{failures} tool failure(s)[/] so far")
+    if repeated < 3 and not failures:
+        lines.append("  [green]✓ looks healthy[/] — making progress")
+    lines.append("  [dim](^C stops the turn · /busy changes what Enter "
+                 "does mid-turn)[/]")
+    ctx.console.print("\n".join(lines))
+    return SlashResult()
+
+
 REGISTRY: tuple[SlashCommand, ...] = (
     SlashCommand("help",      "show this command list", _help),
     SlashCommand("tools",     "list available agent tools by category", _tools),
@@ -1646,7 +1673,7 @@ REGISTRY: tuple[SlashCommand, ...] = (
     SlashCommand("instance",  "show active instance; `/instance <name>` to hot-switch", _instance),
     SlashCommand("instances", "list every available instance", _instances),
     SlashCommand("model",     "show active model", _model),
-    SlashCommand("models",    "list registered models with cache status", _models),
+    SlashCommand("models",    "list every model — registry, local GGUF, LM Studio, Ollama, cloud", _models),
     SlashCommand("download",  "`/download <name>` — fetch a model from HF Hub", _download),
     SlashCommand("plugins",   "list bundled plugins with setup status", _plugins),
     SlashCommand("goal",      "show/set/clear an autonomous completion condition (Claude-Code-style)", _goal),
@@ -1654,6 +1681,7 @@ REGISTRY: tuple[SlashCommand, ...] = (
     SlashCommand("board",     "kanban task board: show/add/approve/done/move", _board),
     SlashCommand("voice",     "show/change voice settings (mic, wake word, follow-up, barge-in)", _voice),
     SlashCommand("status",    "show session info — model, instance, uptime, context, mic", _status),
+    SlashCommand("peek",      "peek into the running turn — healthy, stuck, or looping?", _peek),
     SlashCommand("statusbar", "toggle the bottom status bar", _statusbar),
     SlashCommand("busy",      "set what Enter does mid-turn: interrupt│queue│steer", _busy),
     SlashCommand("steer",     "`/steer <msg>` — steer the running turn (or run it now)", _steer),

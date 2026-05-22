@@ -123,3 +123,26 @@ def test_discovered_playbooks_carry_an_origin() -> None:
     skills = pb.discover_playbooks()
     assert all(s.origin in ("builtin", "user", "agent", "marketplace")
                for s in skills)
+
+
+def test_discover_playbooks_includes_instance_authored(tmp_path) -> None:
+    """An agent-authored playbook in the bound instance's skills/ dir
+    must be discovered — not just the bundled ones. (Agent writes are
+    sandboxed to the instance, so this is where its playbooks land.)"""
+    from jaeger_os.core import tools
+    from jaeger_os.core.instance import InstanceLayout
+
+    layout = InstanceLayout(root=tmp_path / "inst")
+    layout.root.mkdir(parents=True, exist_ok=True)
+    layout.ensure_dirs()
+    tools.bind(layout)
+    folder = layout.skills_dir / "my-playbook"
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / "SKILL.md").write_text(
+        "---\nname: my-playbook\ndescription: an instance-authored skill\n"
+        "---\nDo the thing.\n",
+        encoding="utf-8",
+    )
+    found = {s.name: s for s in pb.discover_playbooks()}
+    assert "my-playbook" in found
+    assert found["my-playbook"].description == "an instance-authored skill"

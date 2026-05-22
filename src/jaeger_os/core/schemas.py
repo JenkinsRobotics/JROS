@@ -71,6 +71,14 @@ class ModelConfig(BaseModel):
     n_ubatch: int = 512
     flash_attn: bool = True
     threads: int | None = None
+    extra_gguf_dirs: list[str] = Field(
+        default_factory=list,
+        description="Extra directories to scan for local .gguf models, "
+                    "beyond the repo models/, the JROS cache, and LM "
+                    "Studio. Add/remove with the model_location tool; "
+                    "persisted here so the agent can extend the scan set "
+                    "without editing core code.",
+    )
 
 
 class DisplayConfig(BaseModel):

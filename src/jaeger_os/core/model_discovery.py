@@ -64,11 +64,25 @@ def _scan_gguf(root: pathlib.Path, source: str) -> list[dict[str, Any]]:
     return out
 
 
+def _config_extra_dirs() -> list[str]:
+    """Custom GGUF directories from ``model.extra_gguf_dirs`` in the live
+    instance config — added by the user or the agent through the
+    ``model_location`` tool. Empty when no instance is bound."""
+    try:
+        from ..main import _pipeline
+        cfg = _pipeline.get("config")
+        return [str(d) for d in (getattr(cfg.model, "extra_gguf_dirs", [])
+                                 or [])]
+    except Exception:  # noqa: BLE001
+        return []
+
+
 def discover_local_gguf() -> list[dict[str, Any]]:
     """Every ``.gguf`` file on disk JROS could load in-process — the
-    repo ``models/`` dir, the JROS model cache, and LM Studio's model
-    folder. De-duplicated by absolute path; works with no server
-    running (it is a pure filesystem scan)."""
+    repo ``models/`` dir, the JROS model cache, LM Studio's model
+    folder, and any custom directories registered via ``model_location``
+    (``model.extra_gguf_dirs`` in config). De-duplicated by absolute
+    path; works with no server running (it is a pure filesystem scan)."""
     try:
         from .model_resolver import repo_models_dir, user_cache_dir
     except Exception:  # noqa: BLE001
@@ -83,6 +97,8 @@ def discover_local_gguf() -> list[dict[str, Any]]:
         pass
     for lm in _LMSTUDIO_DIRS:
         roots.append((pathlib.Path(lm).expanduser(), "lm studio"))
+    for custom in _config_extra_dirs():
+        roots.append((pathlib.Path(custom).expanduser(), "custom"))
     seen: dict[str, dict[str, Any]] = {}
     for root, source in roots:
         for m in _scan_gguf(root, source):

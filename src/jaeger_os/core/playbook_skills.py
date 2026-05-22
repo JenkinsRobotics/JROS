@@ -105,34 +105,56 @@ def _tags_of(fm: dict[str, Any]) -> list[str]:
     return []
 
 
+def _instance_skills_dir() -> Path | None:
+    """The bound instance's ``skills/`` dir — where agent-authored
+    playbooks live (the agent's writes are sandboxed to it). ``None``
+    when no instance is bound, or when it is the bundled dir itself."""
+    try:
+        from .tools._common import get_layout
+
+        d = get_layout().skills_dir.resolve()
+        return d if d != _SKILLS_DIR.resolve() else None
+    except Exception:  # noqa: BLE001 — no instance bound is fine
+        return None
+
+
 def discover_playbooks() -> list[PlaybookSkill]:
-    """Every playbook skill under ``skills/`` (recursive), sorted by name."""
-    out: list[PlaybookSkill] = []
-    if not _SKILLS_DIR.is_dir():
-        return out
-    for md in _SKILLS_DIR.rglob("SKILL.md"):
-        folder = md.parent
-        if _is_code_skill(folder):
+    """Every playbook skill — from the bundled ``skills/`` tree **and**
+    the bound instance's ``skills/`` — so a playbook the agent authored
+    itself is found, not just shipped ones. On a name collision the
+    instance copy wins, mirroring :mod:`skill_loader`."""
+    by_name: dict[str, PlaybookSkill] = {}
+    roots: list[Path] = [_SKILLS_DIR]
+    inst = _instance_skills_dir()
+    if inst is not None:
+        roots.append(inst)
+    for root in roots:                 # instance scanned last → it wins
+        if not root.is_dir():
             continue
-        try:
-            text = md.read_text(encoding="utf-8")
-        except OSError:
-            continue
-        fm = _parse_frontmatter(text)
-        try:
-            rel = folder.relative_to(_SKILLS_DIR)
-            category = rel.parts[0] if len(rel.parts) > 1 else "general"
-        except ValueError:
-            category = "general"
-        out.append(PlaybookSkill(
-            name=str(fm.get("name") or folder.name),
-            category=category,
-            description=str(fm.get("description") or "").strip(),
-            path=md,
-            tags=_tags_of(fm),
-            origin=read_skill_origin(folder),
-        ))
-    return sorted(out, key=lambda s: (s.category, s.name))
+        for md in root.rglob("SKILL.md"):
+            folder = md.parent
+            if _is_code_skill(folder):
+                continue
+            try:
+                text = md.read_text(encoding="utf-8")
+            except OSError:
+                continue
+            fm = _parse_frontmatter(text)
+            try:
+                rel = folder.relative_to(root)
+                category = rel.parts[0] if len(rel.parts) > 1 else "general"
+            except ValueError:
+                category = "general"
+            skill = PlaybookSkill(
+                name=str(fm.get("name") or folder.name),
+                category=category,
+                description=str(fm.get("description") or "").strip(),
+                path=md,
+                tags=_tags_of(fm),
+                origin=read_skill_origin(folder),
+            )
+            by_name[skill.name] = skill
+    return sorted(by_name.values(), key=lambda s: (s.category, s.name))
 
 
 def find_playbook(name: str) -> PlaybookSkill | None:

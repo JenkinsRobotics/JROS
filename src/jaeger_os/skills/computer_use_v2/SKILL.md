@@ -20,6 +20,13 @@ registers_tools:
   - computer_key(key) -> {ok, action, screen, verified}
   - computer_menu(menu, item) -> {ok, action, screen, verified}
   - computer_screenshot(path) -> {ok, path}
+  # Background mode — focus-preserving, no cursor, no focus steal (macos_background.py)
+  - computer_bg_apps() -> {ok, apps}
+  - computer_bg_windows(app) -> {ok, windows}
+  - computer_bg_move(app, x, y, window_index) -> {ok, position}
+  - computer_bg_resize(app, width, height, window_index) -> {ok, size}
+  - computer_bg_press(app, label, role) -> {ok, action}
+  - computer_bg_js(js, browser, window_index, tab_index) -> {ok, result}
 ---
 
 # computer_use_v2

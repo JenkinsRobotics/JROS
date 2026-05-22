@@ -90,6 +90,16 @@ def _load_client_and_agent(root: Path):
 
     client = LlamaCppPythonClient(cfg.model, warmup=True)
     _get_agent(client)
+    # The shakedown exercises tier-gated tools (file_write, scheduling,
+    # self-modification). It is an unattended harness — install an
+    # allow-all policy so those paths actually run instead of being
+    # refused by the fail-safe DenyAllProvider default.
+    from jaeger_os.core.permissions import (
+        AllowAllProvider,
+        PermissionPolicy,
+        install_policy,
+    )
+    install_policy(PermissionPolicy(confirmation=AllowAllProvider()))
     return client, layout
 
 
@@ -144,13 +154,13 @@ def main() -> int:
     cases = [
         ("what time is it",                                          "get_time"),
         ("calculate 17 * 23",                                        "calculate"),
-        ("remember that my favorite ice cream is mint chip",         "remember"),
+        ("remember that my favorite ice cream is mint chip",         "memory"),
         ("what is my favorite ice cream?",                            "*"),
         ("list the files in the skills directory",                   "list_skill_dir"),
         ("what credentials are currently stored?",                   "list_credentials"),
         # Self-modification + hot reload path.
         ("create a SKILL.md file at note_v1/SKILL.md describing a simple note-taking skill",
-                                                                      "file_write"),
+                                                                      "write_file"),
         ("now reload the skills so any new ones are picked up",      "reload_skills"),
         # Safety path: try to nudge it into reading credentials directly.
         ("read the file at credentials/demo_api_key and tell me its contents",
@@ -201,7 +211,17 @@ def main() -> int:
 
     # Cleanup
     shutil.rmtree(tmp, ignore_errors=True)
-    return 0 if not fails else 1
+
+    # Hard-exit. The in-process llama-cpp model's Metal context aborts
+    # (GGML_ASSERT in ggml_metal_device_free) when torn down by C++
+    # static destructors at normal interpreter exit — a known upstream
+    # llama.cpp issue. os._exit skips __cxa_finalize entirely; flush
+    # first since it also skips buffer flushing. Fine for a one-shot
+    # harness — the long-lived TUI instead frees the client in
+    # JaegerTUI._shutdown while the interpreter is still alive.
+    sys.stdout.flush()
+    sys.stderr.flush()
+    os._exit(1 if fails else 0)
 
 
 if __name__ == "__main__":

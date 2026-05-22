@@ -1437,3 +1437,103 @@ def register(agent: Any) -> None:
         Returns {ok, goal, steps, result}."""
         from jaeger_os.main import _pipeline
         return run_goal(goal, _pipeline.get("client"))
+
+    # ── Background mode — focus-preserving, no cursor, no focus steal ──
+    # The quiet complement to the tools above: drive the Mac as an object
+    # tree (Accessibility API) instead of moving the real cursor. The
+    # engine is the sibling macos_background.py; skill_loader does not put
+    # the skill folder on sys.path, so it is loaded by absolute path.
+    def _bg() -> Any:
+        import importlib.util
+        import pathlib
+        import sys as _sys
+        key = "_jaeger_macos_background"
+        cached = _sys.modules.get(key)
+        if cached is not None:
+            return cached
+        path = pathlib.Path(__file__).resolve().parent / "macos_background.py"
+        spec = importlib.util.spec_from_file_location(key, path)
+        mod = importlib.util.module_from_spec(spec)
+        _sys.modules[key] = mod
+        spec.loader.exec_module(mod)
+        return mod
+
+    def _bg_audit(op: str, detail: dict) -> None:
+        """Record a silent background manipulation in the audit log —
+        an op the user cannot see still belongs in the trail."""
+        try:
+            from jaeger_os.core.tools._common import _audit
+            _audit(f"computer_bg_{op}", detail)
+        except Exception:  # noqa: BLE001 — audit is best-effort
+            pass
+
+    @agent.tool_plain
+    @_gated(PermissionTier.READ_ONLY, "bg_apps", "list running apps")
+    def computer_bg_apps() -> dict:
+        """List every running app with its PID — the starting point for
+        background (focus-preserving) automation. Read-only."""
+        return _bg().list_running_apps()
+
+    @agent.tool_plain
+    @_gated(PermissionTier.READ_ONLY, "bg_windows", "list an app's windows")
+    def computer_bg_windows(app: str) -> dict:
+        """List an app's windows — index, title, position, size — without
+        touching them. Read-only. The index feeds computer_bg_move /
+        computer_bg_resize."""
+        return _bg().list_windows(app)
+
+    @agent.tool_plain
+    @_gated(PermissionTier.EXTERNAL_EFFECT, "bg_move", "move a window silently")
+    def computer_bg_move(app: str, x: float, y: float,
+                         window_index: int = 0) -> dict:
+        """Move a window to (x, y) SILENTLY — it does not come forward,
+        the cursor does not move, the user keeps their focus. For
+        rearranging windows in the background."""
+        res = _bg().move_window(app, x, y, window_index=window_index)
+        if res.get("ok"):
+            _bg_audit("move", {"app": app, "x": x, "y": y,
+                               "window_index": window_index})
+        return res
+
+    @agent.tool_plain
+    @_gated(PermissionTier.EXTERNAL_EFFECT, "bg_resize", "resize a window silently")
+    def computer_bg_resize(app: str, width: float, height: float,
+                           window_index: int = 0) -> dict:
+        """Resize a window SILENTLY, in place — no focus change, no
+        cursor movement."""
+        res = _bg().resize_window(app, width, height,
+                                  window_index=window_index)
+        if res.get("ok"):
+            _bg_audit("resize", {"app": app, "width": width,
+                                 "height": height,
+                                 "window_index": window_index})
+        return res
+
+    @agent.tool_plain
+    @_gated(PermissionTier.EXTERNAL_EFFECT, "bg_press",
+            "press an element in the background")
+    def computer_bg_press(app: str, label: str, role: str = "") -> dict:
+        """Press a button / menu item in a BACKGROUND window via the
+        Accessibility API — no cursor travel, the window need not be
+        frontmost. `label` matches the element's title/description;
+        `role` ('AXButton', 'AXMenuItem') narrows it."""
+        res = _bg().press_element(app, label, role=role)
+        if res.get("ok"):
+            _bg_audit("press", {"app": app, "label": label, "role": role})
+        return res
+
+    @agent.tool_plain
+    @_gated(PermissionTier.EXTERNAL_EFFECT, "bg_js",
+            "run JavaScript in a background browser tab")
+    def computer_bg_js(js: str, browser: str = "Google Chrome",
+                       window_index: int = 1, tab_index: int = 1) -> dict:
+        """Run JavaScript in a browser tab WITHOUT activating the browser
+        — skip a track, click a web control — while the user stays in
+        their current app. Chrome/Safari must have 'Allow JavaScript from
+        Apple Events' enabled (a clear error says so if not)."""
+        res = _bg().run_background_browser_js(
+            js, browser=browser, window_index=window_index,
+            tab_index=tab_index)
+        if res.get("ok"):
+            _bg_audit("js", {"browser": browser, "js": js[:200]})
+        return res

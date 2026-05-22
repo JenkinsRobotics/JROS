@@ -125,7 +125,7 @@ TOOLSETS: dict[str, frozenset[str]] = {
     }),
     "credentials": frozenset({"get_credential", "list_credentials"}),
     "plugins": frozenset({"list_plugins", "setup_plugin", "send_message"}),
-    "models": frozenset({"list_models", "download_model"}),
+    "models": frozenset({"list_models", "download_model", "model_location"}),
     "delegation": frozenset({"delegate_task"}),
 }
 

@@ -91,8 +91,8 @@ from .listen import listen
 # Dependency install + venv execution (Phase 1/2 of Deep Think)
 from .packages import install_package, list_venv_packages, run_in_venv
 
-# Model management — list (read-only) + download (tier-gated)
-from .models import download_model, list_models
+# Model management — list (read-only) + download + custom scan dirs
+from .models import download_model, list_models, model_location
 
 # Skill marketplace — package a skill into a shareable bundle
 from .skill_market import benchmark_skill, package_skill
@@ -159,7 +159,7 @@ __all__ = [
     # dependency install + venv execution
     "install_package", "list_venv_packages", "run_in_venv",
     # model management
-    "list_models", "download_model",
+    "list_models", "download_model", "model_location",
     # skill marketplace
     "package_skill", "benchmark_skill",
     # background processes

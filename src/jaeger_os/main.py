@@ -904,8 +904,11 @@ def _register_builtins(agent: Agent[None, str], client: Any) -> None:
     @requires_tier(PermissionTier.READ_ONLY, skill="files", operation="read_file",
                    summary="read a workspace file")
     def read_file(path: str, offset: int = 0, limit: int | None = None) -> dict:
-        """Read a text file from anywhere inside the instance dir except
-        credentials/. For a large file, page it: `offset` is the 0-based
+        """Read a text file from ANYWHERE on the machine — your own
+        source code, the whole repository you run from, the wider
+        system. Absolute paths and `~` work; reading is not sandboxed.
+        (Off-limits: the credentials/ store and OS secret files like
+        ~/.ssh.) For a large file, page it: `offset` is the 0-based
         first line, `limit` the line count (default: the whole file)."""
         return t.file_read(path=path, offset=offset, limit=limit)
 
@@ -913,18 +916,22 @@ def _register_builtins(agent: Agent[None, str], client: Any) -> None:
     @requires_tier(PermissionTier.READ_ONLY, skill="files", operation="list_skill_dir",
                    summary="list contents of the skills directory")
     def list_skill_dir(path: str = ".") -> dict:
-        """List workspace files. Use for "list the workspace", "show files",
-        "what files are here", or contents of skills/ (or a subdirectory)."""
+        """List a directory's contents. With no path, lists your instance
+        workspace; pass an ABSOLUTE path (or `~`) to browse ANY directory
+        — your repository, the wider system. Listing is not sandboxed.
+        Use for "list files", "show files", "what's in <dir>"."""
         return t.list_skill_dir(path=path)
 
     @agent.tool_plain
     @requires_tier(PermissionTier.READ_ONLY, skill="files", operation="search_files",
                    summary="search file contents under the skills directory")
     def search_files(query: str, path: str = ".", max_results: int = 50) -> dict:
-        """Recursively grep file CONTENTS under skills/ — case-insensitive
-        substring match. Use this to find where something is defined or
-        used instead of reading files one by one. Returns {file, line,
-        text} matches."""
+        """Recursively grep file CONTENTS — case-insensitive substring
+        match. With no path, searches the working directory; pass an
+        ABSOLUTE path to search ANY directory — e.g. your whole
+        repository. Searching is not sandboxed. Use this to find where
+        something is defined or used instead of reading files one by
+        one. Returns {file, line, text} matches."""
         return t.search_files(query=query, path=path, max_results=max_results)
 
     @agent.tool_plain
@@ -1103,6 +1110,15 @@ def _register_builtins(agent: Agent[None, str], client: Any) -> None:
         recommended; never speculatively. Recommend first, let the user
         decide, then call. Use list_models for valid names."""
         return t.download_model(name=name)
+
+    @agent.tool_plain
+    def model_location(action: str, path: str = "") -> dict:
+        """Register a custom directory JROS scans for local .gguf models
+        — so a folder you point it at (a non-standard LM Studio / Ollama
+        install, your own model stash) shows up in /models and the model
+        picker. action: 'add' / 'remove' / 'list'. Persisted to the
+        instance config; survives restarts."""
+        return t.model_location(action=action, path=path)
 
     @agent.tool_plain
     def package_skill(name: str) -> dict:
@@ -1969,6 +1985,10 @@ async def _run_via_iter(
     # Live tool-progress — the TUI registers this so it can render the
     # ``┊`` activity lines + the toolbar spinner as the turn runs.
     _tool_cb = _pipeline.get("tool_event_cb")
+    # Live, read-only turn snapshot for the `/peek` command — fresh each
+    # turn so a new turn never shows the last one's counters.
+    _turn_started = time.perf_counter()
+    _pipeline["turn_progress"] = None
 
     def _emit_tool(phase: str, name: str, detail: str = "",
                    elapsed: float = 0.0) -> None:
@@ -1977,6 +1997,30 @@ async def _run_via_iter(
                 _tool_cb(phase, name, detail, elapsed)
             except Exception:  # noqa: BLE001 — UI callback must never break a turn
                 pass
+        # Publish a snapshot of the turn's state so `/peek` can show
+        # whether it is healthy, looping, or struggling — without
+        # touching the loop. `call_signatures` already counts identical
+        # (tool, args) calls for the loop backstop; the top count is the
+        # loop signal.
+        try:
+            top_count = max(call_signatures.values(), default=0)
+            top_tool = ""
+            if call_signatures:
+                top_sig = max(call_signatures,
+                              key=lambda s: call_signatures[s])
+                top_tool = top_sig.split("|", 1)[0]
+            _pipeline["turn_progress"] = {
+                "active": True,
+                "elapsed_s": round(time.perf_counter() - _turn_started, 1),
+                "tool_calls": tool_calls_made,
+                "last_tool": name,
+                "phase": phase,
+                "repeated_max": top_count,
+                "repeated_tool": top_tool,
+                "failures": sum(failure_signatures.values()),
+            }
+        except Exception:  # noqa: BLE001 — telemetry must never break a turn
+            pass
 
     async with agent.iter(user_text, message_history=message_history or None) as run:
         async for node in run:

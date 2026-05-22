@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """Bench-style one-shot wrapper for NousResearch/hermes-agent.
 
-Invokes `hermes chat -Q -q <prompt>` as a subprocess against the local
-llama-cpp-python OpenAI-compatible server (started by ./start_llm.sh) and
-returns a dict with the same shape our other frameworks' `run_for_voice`
-produces, so the four agents can be compared in the same harness:
+Invokes `hermes chat -Q -q <prompt>` as a subprocess. Inference runs on
+Qwen3.5 (qwen3.5:397b) via Hermes' `ollama-cloud` provider — straight to
+Ollama Cloud, with no local model or daemon. The result is returned as a
+dict with the same shape `run_for_voice` produces, so this agent can be
+compared in the same harness:
 
     {
         "text": "<final answer>",
@@ -87,11 +88,10 @@ def run_prompt(
 
 
 _SESSION_RE = re.compile(r"^session_id:\s*(\S+)\s*$", re.MULTILINE)
-# Gemma's native channel markers can land on separate lines. Strip
-# `<|channel>NAME` (opening + label), `<channel|>` (closer), and
-# `<|/channel>` (alt closer) so the returned `text` is plain content.
-_CHANNEL_OPEN = re.compile(r"<\|channel>\s*[a-zA-Z_]+\s*", re.IGNORECASE)
-_CHANNEL_CLOSE = re.compile(r"<\s*/?\s*channel\s*\|?\s*>", re.IGNORECASE)
+# Qwen3.5 is a thinking model: reasoning can surface inside <think>...</think>
+# blocks. Hermes' quiet mode usually emits only the final answer, but strip
+# any stray think blocks so the returned `text` is plain content.
+_THINK_RE = re.compile(r"<think>.*?</think>", re.IGNORECASE | re.DOTALL)
 
 
 def _parse_quiet_output(stdout: str) -> tuple[str, str | None]:
@@ -101,8 +101,7 @@ def _parse_quiet_output(stdout: str) -> tuple[str, str | None]:
     if m:
         session_id = m.group(1)
         stdout = stdout[: m.start()] + stdout[m.end() :]
-    cleaned = _CHANNEL_OPEN.sub("", stdout)
-    cleaned = _CHANNEL_CLOSE.sub("", cleaned).strip()
+    cleaned = _THINK_RE.sub("", stdout).strip()
     return cleaned, session_id
 
 

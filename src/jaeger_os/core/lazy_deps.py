@@ -55,6 +55,11 @@ LAZY_DEPS: dict[str, FeatureSpec] = {
     "image.diffusers": FeatureSpec(
         "image.diffusers", "diffusers", ("diffusers", "torch"),
         "diffusers image generation (SDXL-Turbo)"),
+    "macos.background": FeatureSpec(
+        "macos.background", "ApplicationServices",
+        ("pyobjc-framework-ApplicationServices", "pyobjc-framework-Quartz",
+         "pyobjc-framework-Cocoa"),
+        "macOS background automation (PyObjC Accessibility bridge)"),
 }
 
 

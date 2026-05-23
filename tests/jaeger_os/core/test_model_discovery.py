@@ -52,10 +52,11 @@ def test_offline_server_probe_is_graceful() -> None:
 def test_discover_all_covers_every_source() -> None:
     d = discover_all()
     assert set(d) == {
-        "jaeger", "local_gguf", "ollama", "lmstudio", "ollama_cloud",
+        "jaeger", "local_gguf", "local_mlx", "ollama", "lmstudio", "ollama_cloud",
     }
     assert isinstance(d["jaeger"], list)
     assert isinstance(d["local_gguf"], list)
+    assert isinstance(d["local_mlx"], list)
     for src in ("ollama", "lmstudio", "ollama_cloud"):
         assert "online" in d[src] and "models" in d[src]
 

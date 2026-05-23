@@ -106,6 +106,68 @@ def discover_local_gguf() -> list[dict[str, Any]]:
     return list(seen.values())
 
 
+def discover_local_mlx() -> list[dict[str, Any]]:
+    """Every MLX-format model on disk. An MLX model is a *directory* (not
+    a single file like GGUF): the HF layout — ``config.json`` plus one or
+    more ``*.safetensors`` weight shards. LM Studio downloads its MLX
+    picks into ``~/.lmstudio/models/<author>/<name>/`` with this layout,
+    so the same scan picks them up. Returns the same shape ``local_gguf``
+    returns so the picker can route either kind through one code path."""
+    roots: list[tuple[pathlib.Path, str]] = []
+    for lm in _LMSTUDIO_DIRS:
+        roots.append((pathlib.Path(lm).expanduser(), "lm studio"))
+    # HF hub cache uses snapshots/ symlinks — scan but de-dup by resolved path.
+    hf_cache = pathlib.Path("~/.cache/huggingface/hub").expanduser()
+    if hf_cache.is_dir():
+        roots.append((hf_cache, "huggingface"))
+    try:
+        from .model_resolver import repo_models_dir, user_cache_dir
+        repo = repo_models_dir()
+        if repo is not None:
+            roots.append((repo, "repo models/"))
+        roots.append((user_cache_dir(), "jaeger cache"))
+    except Exception:  # noqa: BLE001
+        pass
+    for custom in _config_extra_dirs():
+        roots.append((pathlib.Path(custom).expanduser(), "custom"))
+
+    seen: set[str] = set()
+    out: list[dict[str, Any]] = []
+    for root, source in roots:
+        if not root.is_dir():
+            continue
+        # rglob is bounded by depth in practice — MLX models live at
+        # depth 2-4 under these roots (author/name/, or snapshots/<hash>/).
+        for cfg in root.rglob("config.json"):
+            mdir = cfg.parent
+            try:
+                resolved = str(mdir.resolve())
+            except OSError:
+                continue
+            if resolved in seen:
+                continue
+            # A real MLX model has weights next to config.json.
+            try:
+                weights = list(mdir.glob("*.safetensors"))
+            except OSError:
+                continue
+            if not weights:
+                continue
+            seen.add(resolved)
+            try:
+                size_bytes = sum(p.stat().st_size for p in weights)
+            except OSError:
+                size_bytes = 0
+            out.append({
+                "name": mdir.name,
+                "path": resolved,
+                "size_gb": round(size_bytes / (1024 ** 3), 2) if size_bytes else None,
+                "source": source,
+            })
+    out.sort(key=lambda m: m["name"].lower())
+    return out
+
+
 def discover_ollama_disk() -> list[dict[str, Any]]:
     """Ollama models read from the on-disk manifest tree
     (``~/.ollama/models/manifests``) — works even when the Ollama
@@ -215,7 +277,49 @@ def discover_all(ollama_cloud_key: str = "") -> dict[str, Any]:
     return {
         "jaeger": discover_jaeger(),
         "local_gguf": discover_local_gguf(),
+        "local_mlx": discover_local_mlx(),
         "ollama": ollama_live,
         "lmstudio": discover_lmstudio(),
         "ollama_cloud": discover_ollama_cloud(ollama_cloud_key),
     }
+
+
+# ── curated Ollama Cloud fallback ─────────────────────────────────────
+# Live ``GET https://ollama.com/v1/models`` is unstable in practice — it
+# 400s on some account configurations. The picker uses this list as a
+# stable bottom-rank in its merge (live ∪ user-history ∪ curated) so the
+# sub-menu is never empty just because the live endpoint is down. The
+# user's typed picks (recorded via core.external_model_history) override
+# this; this is the catalog floor.
+OLLAMA_CLOUD_CURATED: tuple[str, ...] = (
+    "qwen3.5:397b",
+    "qwen3-coder:480b",
+    "gpt-oss:120b",
+    "gpt-oss:20b",
+    "deepseek-v3.1:671b",
+    "kimi-k2:1t",
+)
+
+# Same role for the other API providers — a stable bottom-rank used by the
+# /model picker when the user has no history with the provider yet. Model
+# names date faster than Ollama Cloud's, so keep these short and limit to
+# the workhorses worth one click away.
+OPENAI_CURATED: tuple[str, ...] = (
+    "gpt-4o",
+    "gpt-4o-mini",
+    "o1",
+    "o3-mini",
+    "gpt-4.1",
+)
+
+ANTHROPIC_CURATED: tuple[str, ...] = (
+    "claude-opus-4-7",
+    "claude-sonnet-4-6",
+    "claude-haiku-4-5",
+)
+
+GEMINI_CURATED: tuple[str, ...] = (
+    "gemini-2.5-pro",
+    "gemini-2.5-flash",
+    "gemini-2.0-flash",
+)

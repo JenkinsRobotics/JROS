@@ -520,7 +520,12 @@ class JaegerTUI:
         if not body:
             return
         is_err = error is not None
-        if not is_err:
+        if is_err:
+            # Recognise common model-server failures and surface a clear,
+            # actionable hint instead of the raw HTTP body.
+            from jaeger_os.core.cloud_errors import friendly_error_text
+            body = friendly_error_text(body, model_name=self.model_name)
+        else:
             self._last_answer = body   # for /copy
         accent = "red" if is_err else ACCENT
         label = Text(f" ✦ {'error' if is_err else self._agent_name()} ",
@@ -561,6 +566,24 @@ class JaegerTUI:
         if elapsed > 0:
             line.append(f"  {elapsed:.1f}s", style="dim")
         self.console.print(line)
+
+    def _current_ctx_max(self) -> int:
+        """Active context-window size for the status-bar gauge denominator.
+
+        Reads ``config.model.ctx`` on every status render so a brain swap
+        is reflected immediately, without waiting for the next turn to
+        fire :meth:`_refresh_context_estimate`. Falls back to the cached
+        ``_context_max`` (or 8192) when the pipeline isn't ready yet."""
+        try:
+            from jaeger_os.main import _pipeline
+            cfg = _pipeline.get("config")
+            ctx = int(getattr(getattr(cfg, "model", None), "ctx", 0) or 0)
+            if ctx > 0:
+                self._context_max = ctx
+                return ctx
+        except Exception:  # noqa: BLE001
+            pass
+        return self._context_max or 8192
 
     def _refresh_context_estimate(self) -> None:
         """Update the context-token gauge from the session-history size
@@ -1017,7 +1040,7 @@ class JaegerTUI:
         frags.append((f"fg:{ACCENT_PTK} bold", f"✦ {self.model_name}"))
         frags.append(SEP)
 
-        mx = max(1, self._context_max)
+        mx = max(1, self._current_ctx_max())
         pct = min(100, int(self._context_tokens / mx * 100))
         fill = pct // 10
         bar = "█" * fill + "░" * (10 - fill)

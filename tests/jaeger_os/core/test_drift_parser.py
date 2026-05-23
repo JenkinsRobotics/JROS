@@ -90,3 +90,63 @@ def test_drift_extract_tool_call_block_with_gemma_quote_tokens():
     assert calls[0]["function"]["name"] == "computer_type_text"
     parsed = json.loads(calls[0]["function"]["arguments"])
     assert parsed["text"] == "https://example.com/x?q=a+b"
+
+
+# ── regression: the Gemma <tool_call> with nested f-string braces ─────
+
+
+def test_drift_extract_recovers_gemma_flat_format_with_fstring_braces():
+    """The transcript that revealed the bug: Gemma emits a `<tool_call>`
+    block whose JSON-ish content has nested f-string braces inside a
+    multi-line `content:` value (a Python script with `f"...{x}..."`). The
+    old lazy `\\{.*?\\}` regex stopped at the first inner `}`, json.loads
+    failed, the call was emitted as inert text — and the agent never
+    actually wrote the file. After the fix it must salvage the call."""
+    text = (
+        "<tool_call>\n"
+        '{"name": "write_file", '
+        '"path": "skills/jaeger_self_bench.py", '
+        '"content:<|"|>import time\n'
+        'TEST = []\n'
+        'def run():\n'
+        '    print(f"Starting with {len(TEST)} prompts...")\n'
+        '    for t in TEST:\n'
+        '        print(f"{t}")\n'
+        'if __name__ == "__main__":\n'
+        '    run()<|"|>}\n'
+        "</tool_call>"
+    )
+    calls = _extract_drift_tool_calls(text)
+    assert len(calls) == 1, f"expected one salvaged call, got {len(calls)}"
+    assert calls[0]["function"]["name"] == "write_file"
+    args = json.loads(calls[0]["function"]["arguments"])
+    assert args["path"] == "skills/jaeger_self_bench.py"
+    # The full multi-line content survives the parse, including the f-strings.
+    assert "for t in TEST" in args["content"]
+    assert 'print(f"{t}")' in args["content"]
+
+
+def test_drift_extract_flat_args_format_no_arguments_key():
+    """Gemma's flat envelope — name + args spread at top level, no
+    nested `arguments` key. Must still produce a usable tool call."""
+    text = (
+        '<tool_call>{"name": "read_file", "path": "/etc/hosts", '
+        '"offset": 0, "limit": 10}</tool_call>'
+    )
+    calls = _extract_drift_tool_calls(text)
+    assert len(calls) == 1
+    assert calls[0]["function"]["name"] == "read_file"
+    args = json.loads(calls[0]["function"]["arguments"])
+    assert args == {"path": "/etc/hosts", "offset": 0, "limit": 10}
+
+
+def test_drift_extract_nested_arguments_format_still_works():
+    """The Hermes-XML form — `{"name": "X", "arguments": {...}}` — must
+    keep working alongside the new flat-format support."""
+    text = ('<tool_call>{"name": "get_time", '
+            '"arguments": {"timezone": "Asia/Tokyo"}}</tool_call>')
+    calls = _extract_drift_tool_calls(text)
+    assert len(calls) == 1
+    assert calls[0]["function"]["name"] == "get_time"
+    args = json.loads(calls[0]["function"]["arguments"])
+    assert args == {"timezone": "Asia/Tokyo"}

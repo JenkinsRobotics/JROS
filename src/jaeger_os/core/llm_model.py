@@ -42,11 +42,64 @@ _DRIFT_PATTERNS = [
     # <|tool_call>call:name(key='value')<tool_call|>  (paren args — Gemma's
     # Python-kwargs variant, observed in Level-2 bench for recall/remember)
     re.compile(r"<\|tool_call>\s*call:\s*([a-zA-Z_][\w:/.\-]*)\s*\((.*?)\)\s*<tool_call\|>", re.DOTALL),
-    # <|tool_call|>{"name": "x", "arguments": {...}}<|/tool_call|>
-    re.compile(r"<\|tool_call\|>\s*(\{.*?\})\s*<\|/tool_call\|>", re.DOTALL),
-    # <tool_call>{"name": "x", "arguments": {...}}</tool_call>  (standard Hermes)
-    re.compile(r"<tool_call>\s*(\{.*?\})\s*</tool_call>", re.DOTALL),
+    # <|tool_call|>…<|/tool_call|>   (legacy Gemma JSON envelope)
+    # <tool_call>…</tool_call>       (standard Hermes JSON envelope)
+    # Capture EVERYTHING between the tags — not a brace block — so f-string
+    # braces inside a `content:"…"` value (e.g. ``f"...{x}..."``) do not stop
+    # the lazy quantifier early and shred the payload.
+    re.compile(r"<\|tool_call\|>\s*(.*?)\s*<\|/tool_call\|>", re.DOTALL),
+    re.compile(r"<tool_call>\s*(.*?)\s*</tool_call>", re.DOTALL),
 ]
+
+
+# Trailing comma in a JSON-ish blob (used by both _parse_drift_payload and
+# _repair_tool_call_arguments). Defined up here because the drift parser
+# below uses it before the repair helpers further down the file.
+_DRIFT_TRAILING_COMMA = re.compile(r",(\s*[}\]])")
+
+
+def _parse_drift_payload(raw: str) -> dict[str, Any] | None:
+    """Best-effort parse of the JSON-ish payload inside a
+    ``<tool_call>…</tool_call>`` block. Walks an increasingly tolerant
+    parser chain so we recover real tool calls from Gemma's malformed
+    emissions instead of letting the agent emit them as inert text:
+
+      1. Strict JSON after de-Gemma-quoting.
+      2. Strict-off JSON (tolerates literal control characters in strings).
+      3. Trailing-comma stripped, then strict-off JSON.
+      4. Jaeger's loose Gemma parser — accepts bare keys, Gemma quote
+         tokens, missing key-quotes — with surrounding quote chars stripped
+         from the keys / string values it leaves embedded.
+    """
+    text = (raw or "").strip()
+    if not text:
+        return None
+    degemma = _degemma_quotes(text)
+    candidates = [degemma]
+    stripped_commas = _DRIFT_TRAILING_COMMA.sub(r"\1", degemma)
+    if stripped_commas != degemma:
+        candidates.append(stripped_commas)
+    for candidate in candidates:
+        for strict in (True, False):
+            try:
+                parsed = json.loads(candidate, strict=strict)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(parsed, dict):
+                return parsed
+    # Fall back to the Gemma-native loose parser — it accepts bare keys and
+    # Gemma quote tokens, which is what survives when strict JSON cannot.
+    loose = _parse_gemma_args(text)
+    if not loose:
+        return None
+    cleaned: dict[str, Any] = {}
+    for key, value in loose.items():
+        if isinstance(key, str):
+            key = key.strip().strip('"').strip("'")
+        if isinstance(value, str):
+            value = value.strip().strip('"').strip("'")
+        cleaned[key] = value
+    return cleaned or None
 
 
 _NEXT_KWARG = re.compile(r"\s*,?\s*([a-zA-Z_]\w*)\s*=\s*")
@@ -316,23 +369,30 @@ def _extract_drift_tool_calls(text: str) -> list[dict[str, Any]]:
                 else:
                     args = _parse_gemma_args(groups[1])
             elif len(groups) == 1:
-                # JSON form: {"name": "x", "arguments": {...}}. Gemma
-                # sometimes wraps string values in its own quote tokens
-                # (<|"|> … <|"|>) instead of real JSON quotes, which makes
-                # json.loads fail and silently drops the whole tool call —
-                # normalize them to " before parsing.
-                raw = _degemma_quotes(groups[0])
-                try:
-                    payload = json.loads(raw)
-                except json.JSONDecodeError:
+                # JSON envelope — walks several tolerant parsers so we
+                # recover even when Gemma writes a malformed payload (key
+                # missing closing quote, value wrapped in `<|"|>` instead
+                # of `"`, etc.). Without this the call would be emitted as
+                # inert text and never fire.
+                payload = _parse_drift_payload(groups[0])
+                if not payload:
                     continue
-                name = payload.get("name", "")
-                args = payload.get("arguments", {}) or {}
+                name = (payload.pop("name", None)
+                        or payload.pop("tool", None)
+                        or "")
+                # Two emission styles for arguments:
+                #   • Hermes-XML:  {"name": "X", "arguments": {...}}
+                #   • Gemma flat:  {"name": "X", "path": "...", "content": ...}
+                # In the flat style every remaining top-level key IS an arg.
+                if "arguments" in payload:
+                    args = payload["arguments"] or {}
+                elif "args" in payload:
+                    args = payload["args"] or {}
+                else:
+                    args = payload
                 if isinstance(args, str):
-                    try:
-                        args = json.loads(_degemma_quotes(args))
-                    except json.JSONDecodeError:
-                        args = {}
+                    inner = _parse_drift_payload(args)
+                    args = inner if inner is not None else {}
             else:
                 continue
             if not name:

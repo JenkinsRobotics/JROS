@@ -100,20 +100,75 @@ def test_offline_servers_are_excluded():
     assert "lmstudio" not in slugs
 
 
-def test_cloud_apis_are_type_a_model():
+def test_cloud_apis_use_curated_floor_when_history_is_empty():
+    """OpenAI / Anthropic / Google now ship with curated catalogs — so the
+    sub-menu is pre-populated even when the user has no history yet."""
+    from jaeger_os.core.model_discovery import (
+        ANTHROPIC_CURATED, GEMINI_CURATED, OPENAI_CURATED,
+    )
     providers = _build_providers_list(_all_runtimes(), None)
-    for slug in ("openai", "anthropic", "gemini"):
-        assert _by_slug(providers, slug).get("type_a_model") is True
+    openai = _by_slug(providers, "openai")
+    anthropic = _by_slug(providers, "anthropic")
+    gemini = _by_slug(providers, "gemini")
+    for entry in (openai, anthropic, gemini):
+        assert entry.get("type_a_model") is not True
+    # Every curated entry surfaces in the right provider's sub-menu.
+    for name in OPENAI_CURATED:
+        assert name in openai["models"]
+    for name in ANTHROPIC_CURATED:
+        assert name in anthropic["models"]
+    for name in GEMINI_CURATED:
+        assert name in gemini["models"]
 
 
-def test_ollama_cloud_is_catalogue_when_models_present():
+def test_ollama_cloud_uses_curated_fallback_when_live_is_empty():
+    """Live ollama.com/v1/models 400s in practice — the curated floor
+    means the sub-menu is never empty just because the endpoint is flaky."""
+    from jaeger_os.core.model_discovery import OLLAMA_CLOUD_CURATED
+
+    cloud = _by_slug(_build_providers_list(_all_runtimes(), None), "ollama-cloud")
+    assert cloud.get("type_a_model") is not True
+    # Every curated model surfaces in the sub-menu.
+    for name in OLLAMA_CLOUD_CURATED:
+        assert name in cloud["models"]
+
+
+def test_ollama_cloud_merges_live_with_curated_dedup():
     found = _all_runtimes()
     found["ollama_cloud"] = {"online": True, "models": [{"name": "qwen3.5:397b"}]}
     cloud = _by_slug(_build_providers_list(found, None), "ollama-cloud")
-    assert cloud.get("type_a_model") is not True
-    assert "qwen3.5:397b" in cloud["models"]
+    # Live entry appears, curated entries appear, no duplicates.
+    assert cloud["models"].count("qwen3.5:397b") == 1
 
 
-def test_ollama_cloud_falls_back_to_type_a_model_when_empty():
+def test_cloud_providers_with_models_have_type_a_model_row_at_end():
+    """Whenever a cloud provider has any catalogue at all, the picker
+    must still offer a 'Type a different model…' row so the user can
+    reach a model that isn't curated."""
+    from jaeger_os.interfaces.tui.slash_commands import _TYPE_A_MODEL_LABEL
+
     cloud = _by_slug(_build_providers_list(_all_runtimes(), None), "ollama-cloud")
-    assert cloud.get("type_a_model") is True
+    assert cloud["models"][-1] == _TYPE_A_MODEL_LABEL
+
+
+def test_history_pre_populates_cloud_provider_with_recent_models(tmp_path):
+    """A model the user picked before should show up in the sub-menu the
+    next time the picker opens — newest first."""
+    from types import SimpleNamespace
+
+    from jaeger_os.core.external_model_history import record_use
+    from jaeger_os.interfaces.tui.slash_commands import _TYPE_A_MODEL_LABEL
+
+    memory_dir = tmp_path / "memory"
+    memory_dir.mkdir()
+    layout = SimpleNamespace(memory_dir=memory_dir)
+    record_use(layout, "openai", "gpt-4o")
+    record_use(layout, "openai", "gpt-5")
+
+    providers = _build_providers_list(_all_runtimes(), None, layout=layout)
+    openai = _by_slug(providers, "openai")
+    # No longer pure type_a_model — has the history models and a type-a row.
+    assert openai.get("type_a_model") is not True
+    assert openai["models"][0] == "gpt-5"        # newest first
+    assert openai["models"][1] == "gpt-4o"
+    assert openai["models"][-1] == _TYPE_A_MODEL_LABEL

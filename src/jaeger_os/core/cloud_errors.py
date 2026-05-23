@@ -71,6 +71,49 @@ def classify_exception(exc: BaseException) -> str:
     return UNKNOWN
 
 
+# Match the LMStudio / llama.cpp-server 400 we keep hitting: the loaded
+# context is smaller than the prompt the agent assembled. The raw error
+# (status_code: 400, model_name: …, body: "The number of tokens to keep
+# from the initial prompt is greater than the context length. …") is
+# opaque — surface a clear, server-side fix.
+_CONTEXT_OVERFLOW_HINTS = (
+    "tokens to keep",
+    "context length",
+    "context window",
+    "exceed context window",
+    "exceeds the maximum context",
+    "input is too long",
+)
+
+
+def friendly_error_text(error: str, *, model_name: str = "") -> str:
+    """Rewrite a raw model-server error message into a one-screen,
+    actionable hint when we recognise it. Returns ``error`` unchanged for
+    anything we don't know how to improve.
+
+    Today this catches one big offender: the LMStudio 400 that fires when
+    the loaded model's context is smaller than the prompt. Jaeger's status
+    bar shows its *local* ctx (``config.model.ctx``); LMStudio carries its
+    own per-load ctx and the two need to match.
+    """
+    text = (error or "").lower()
+    if not any(needle in text for needle in _CONTEXT_OVERFLOW_HINTS):
+        return error
+    who = model_name or "the loaded model"
+    return (
+        f"The model server loaded {who} with a context smaller than the "
+        "prompt needs.\n\n"
+        "Fix on the server side:\n"
+        "  • LMStudio — eject the model, then reload it and set Context "
+        "Length to at least 16384 (match config.model.ctx).\n"
+        "  • Ollama   — bump num_ctx in the model's Modelfile, or set the "
+        "OLLAMA_NUM_CTX environment variable.\n\n"
+        "Jaeger's status bar shows its OWN ctx setting; the server has its "
+        "own — the two have to match for a turn to fit.\n\n"
+        f"Raw error: {error}"
+    )
+
+
 def friendly_message(exc: BaseException, *, provider: str = "") -> str:
     """A one-line, plain message for the agent / user — no stack trace."""
     who = provider or "the model provider"

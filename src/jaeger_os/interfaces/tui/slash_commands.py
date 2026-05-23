@@ -69,7 +69,7 @@ _HELP_CATEGORIES: tuple[tuple[str, tuple[str, ...]], ...] = (
                            "config", "verbose", "reboot", "shutdown", "quit")),
     ("Conversation",     ("new", "history", "copy", "save", "undo", "retry",
                           "steer", "busy", "stop", "reset")),
-    ("Model & Tools",    ("model", "models", "download", "tools", "voice")),
+    ("Model & Tools",    ("model", "models", "download", "runtime", "tools", "voice")),
     ("Instances",        ("instance", "instances", "factoryreset")),
     ("Skills & Tasks",   ("skills", "deepthink", "board", "goal")),
     ("Memory & Plugins", ("facts", "plugins")),
@@ -320,16 +320,42 @@ def _resolve_cloud_key(ctx: SlashContext) -> str:
         return ""
 
 
+# Stage-2 row that lets the user type any model name — appended to every
+# cloud provider's model list so "I want a different one than the curated
+# / recent suggestions" is always one keystroke away.
+_TYPE_A_MODEL_LABEL = "✎ Type a different model…"
+
+
+def _merge_models(*sources: Any) -> list[str]:
+    """Concatenate model-name iterables in order, deduping by exact match."""
+    seen: set[str] = set()
+    out: list[str] = []
+    for src in sources:
+        for name in src or ():
+            if name and name not in seen:
+                seen.add(name)
+                out.append(name)
+    return out
+
+
 def _build_providers_list(
     found: dict[str, Any], ext_cfg: Any | None,
+    *, layout: Any = None,
 ) -> list[dict[str, Any]]:
     """Build the stage-1 provider list for the Hermes-style ``/model`` picker.
 
     Same shape as Hermes's provider catalogue — each entry is a dict with
     ``slug``, ``name``, optional ``models`` (display-name strings),
     optional ``total_models``, optional ``is_current``, and optional
-    ``type_a_model`` (True for cloud providers that have no catalogue,
+    ``type_a_model`` (True for cloud providers whose catalogue is empty,
     so Enter on them prompts the user to type a model name).
+
+    Cloud providers (ollama-cloud, openai, anthropic, gemini) merge:
+      ``user-history ∪ live-discovery ∪ curated-fallback``
+    and append a ``✎ Type a different model…`` row, so a one-off paste
+    becomes a one-click pick next time *and* a different one stays
+    reachable. ``layout`` (when supplied) is what reads the per-instance
+    history file.
     """
     current_provider = (
         ext_cfg.provider if ext_cfg is not None and getattr(ext_cfg, "enabled", False)
@@ -377,27 +403,47 @@ def _build_providers_list(
             "is_current": current_provider == "lmstudio",
         })
 
-    # Ollama Cloud — catalogue when present, else type-a-model
-    cloud_models = [m["name"] for m in (found.get("ollama_cloud") or {}).get("models") or []]
-    cloud_entry: dict[str, Any] = {
-        "slug": "ollama-cloud", "name": "Ollama Cloud",
-        "is_current": current_provider == "ollama-cloud",
-    }
-    if cloud_models:
-        cloud_entry["models"] = cloud_models
-    else:
-        cloud_entry["type_a_model"] = True
-    providers.append(cloud_entry)
+    # Lazy imports keep the module load cheap when no picker is opened.
+    try:
+        from jaeger_os.core.external_model_history import recent_models
+    except Exception:  # noqa: BLE001
+        def recent_models(*_a, **_k):  # type: ignore[no-redef]
+            return []
+    try:
+        from jaeger_os.core.model_discovery import (
+            ANTHROPIC_CURATED,
+            GEMINI_CURATED,
+            OLLAMA_CLOUD_CURATED,
+            OPENAI_CURATED,
+        )
+    except Exception:  # noqa: BLE001
+        OLLAMA_CLOUD_CURATED = ()  # type: ignore[assignment]
+        OPENAI_CURATED = ()         # type: ignore[assignment]
+        ANTHROPIC_CURATED = ()      # type: ignore[assignment]
+        GEMINI_CURATED = ()         # type: ignore[assignment]
 
-    # OpenAI / Anthropic / Google — always type-a-model
-    for slug, name in (("openai", "OpenAI"),
-                       ("anthropic", "Anthropic"),
-                       ("gemini", "Google")):
-        providers.append({
+    def _cloud_entry(slug: str, name: str, *, live: list[str] | None = None,
+                     curated: tuple[str, ...] = ()) -> dict[str, Any]:
+        history = recent_models(layout, slug) if layout is not None else []
+        models = _merge_models(history, live or [], curated)
+        entry: dict[str, Any] = {
             "slug": slug, "name": name,
-            "type_a_model": True,
             "is_current": current_provider == slug,
-        })
+        }
+        if models:
+            entry["models"] = models + [_TYPE_A_MODEL_LABEL]
+        else:
+            entry["type_a_model"] = True
+        return entry
+
+    cloud_live = [m["name"] for m in (found.get("ollama_cloud") or {}).get("models") or []]
+    providers.append(_cloud_entry(
+        "ollama-cloud", "Ollama Cloud",
+        live=cloud_live, curated=OLLAMA_CLOUD_CURATED,
+    ))
+    providers.append(_cloud_entry("openai",    "OpenAI",    curated=OPENAI_CURATED))
+    providers.append(_cloud_entry("anthropic", "Anthropic", curated=ANTHROPIC_CURATED))
+    providers.append(_cloud_entry("gemini",    "Google",    curated=GEMINI_CURATED))
 
     return providers
 
@@ -417,7 +463,9 @@ def _model_picker(ctx: SlashContext) -> SlashResult:
     with ctx.console.status("[dim]scanning for models…[/]"):
         found = discover_all(cloud_key)
     ext = getattr(cfg, "external_model", None)
-    providers = _build_providers_list(found, ext)
+    from jaeger_os.core.instance import InstanceLayout
+    layout = InstanceLayout(root=Path(str(ctx.instance_dir)))
+    providers = _build_providers_list(found, ext, layout=layout)
     if not providers:
         return SlashResult(message="[yellow]No models found.[/]")
 
@@ -439,7 +487,7 @@ def _model_picker(ctx: SlashContext) -> SlashResult:
     if result is None:
         return SlashResult(message="[dim]model unchanged.[/]")
     slug, model = result
-    if model is _PICKER_TYPE_A_MODEL:
+    if model is _PICKER_TYPE_A_MODEL or model == _TYPE_A_MODEL_LABEL:
         try:
             typed = ctx.console.input(f"  {slug} model: ").strip()
         except (EOFError, KeyboardInterrupt):
@@ -695,9 +743,9 @@ def _model_use(ctx: SlashContext, args: list[str]) -> SlashResult:
     from jaeger_os.core.instance import InstanceLayout
     from jaeger_os.core.schemas import dump_yaml
     name = Path(str(ctx.instance_dir)).name
+    layout = InstanceLayout(root=Path(str(ctx.instance_dir)))
     try:
-        dump_yaml(
-            InstanceLayout(root=Path(str(ctx.instance_dir))).config_path, cfg)
+        dump_yaml(layout.config_path, cfg)
     except Exception as exc:  # noqa: BLE001
         ctx.console.print(f"[red]Couldn't save config:[/] {exc}")
         return SlashResult()
@@ -708,7 +756,33 @@ def _model_use(ctx: SlashContext, args: list[str]) -> SlashResult:
     except Exception as exc:  # noqa: BLE001
         ctx.console.print(f"[red]Reboot failed:[/] {exc}")
         return SlashResult()
-    ctx.console.print(f"[green]✓ Brain is now {summary}.[/]")
+    # ``make_client`` silently falls back to the local model when an
+    # external endpoint fails its connectivity check. Tell the truth here
+    # rather than parroting the requested target — otherwise the user
+    # sees "✓ Brain is now external · ollama-cloud · X" while the actual
+    # brain is the local gguf the fallback loaded.
+    from jaeger_os.main import _pipeline as _pl
+    active_client = _pl.get("client")
+    targeted_external = target not in ("local", "llama-cpp", "llamacpp", "jaeger")
+    actually_local = getattr(active_client, "kind", "local") == "local"
+    if targeted_external and actually_local:
+        local_name = Path(str(cfg.model.model_path)).name
+        ctx.console.print(
+            f"[yellow]⚠ Couldn't reach {summary}.[/] "
+            f"Fell back to [bold]local · {local_name}[/]. "
+            f"[dim]Check the endpoint / credentials, then try again.[/]"
+        )
+    else:
+        ctx.console.print(f"[green]✓ Brain is now {summary}.[/]")
+        # Successful switch — remember which external model the user picked so
+        # the next /model picker pre-populates this provider's sub-menu with
+        # it. Local picks aren't tracked (the GGUF path lives in config).
+        if targeted_external and wanted:
+            try:
+                from jaeger_os.core.external_model_history import record_use
+                record_use(layout, target, wanted)
+            except Exception:  # noqa: BLE001
+                pass
     return SlashResult()
 
 
@@ -718,6 +792,59 @@ def _models(ctx: SlashContext, args: str) -> SlashResult:  # noqa: ARG001
     Ollama Cloud catalogues. Same aggregated view as ``/model list`` —
     ``/models`` is the obvious name, so it shows the whole picture."""
     return _model_list(ctx)
+
+
+def _runtime(ctx: SlashContext, args: str) -> SlashResult:  # noqa: ARG001
+    """One-screen inventory of the local inference engines available to
+    this machine — the same view LM Studio's Settings → Runtime panel
+    gives: engine, version, install/reach state, the model formats it
+    loads. Echoes ``core.runtimes.discover_runtimes`` so adding a new
+    engine to the inventory is a one-line change there, not here."""
+    from rich.table import Table
+
+    from jaeger_os.core.runtimes import discover_runtimes
+
+    with ctx.console.status("[dim]probing runtimes…[/]"):
+        runtimes = discover_runtimes()
+
+    ctx.console.print()
+    ctx.console.print("[bold]Engines & Frameworks[/]")
+    ctx.console.print()
+
+    table = Table(show_header=True, header_style="dim", box=None, padding=(0, 2))
+    table.add_column("Engine", no_wrap=True)
+    table.add_column("Version", no_wrap=True)
+    table.add_column("Status", no_wrap=True)
+    table.add_column("Formats", no_wrap=True)
+    table.add_column("Notes")
+
+    available_count = 0
+    for rt in runtimes:
+        if rt.available:
+            available_count += 1
+            status = "[green]✓ available[/]"
+            version = rt.version or "—"
+            notes = rt.description
+        else:
+            status = "[dim]✗ not installed[/]"
+            version = "[dim]—[/]"
+            notes = f"[dim]{rt.install_hint or rt.description}[/]"
+        table.add_row(
+            f"[bold]{rt.display_name}[/]",
+            version,
+            status,
+            ", ".join(rt.formats),
+            notes,
+        )
+
+    ctx.console.print(table)
+    ctx.console.print()
+    ctx.console.print(
+        f"[dim]{available_count} of {len(runtimes)} runtimes available. "
+        "GGUF runs in-process via llama-cpp-python; MLX requires the "
+        "``mlx-lm`` wheel; Ollama / LM Studio are HTTP servers.[/]"
+    )
+    return SlashResult()
 
 
 def _download(ctx: SlashContext, args: str) -> SlashResult:
@@ -1743,6 +1870,7 @@ REGISTRY: tuple[SlashCommand, ...] = (
     SlashCommand("model",     "show active model", _model),
     SlashCommand("models",    "list every model — registry, local GGUF, LM Studio, Ollama, cloud", _models),
     SlashCommand("download",  "`/download <name>` — fetch a model from HF Hub", _download),
+    SlashCommand("runtime",   "list local inference engines (llama.cpp, MLX, Ollama, LM Studio)", _runtime),
     SlashCommand("plugins",   "list bundled plugins with setup status", _plugins),
     SlashCommand("goal",      "show/set/clear an autonomous completion condition (Claude-Code-style)", _goal),
     SlashCommand("deepthink", "autonomous skill-development mode: add/list/approve/start", _deepthink),

@@ -143,3 +143,42 @@ def test_retry_call_fires_the_on_retry_hook():
         on_retry=lambda attempt, cls, delay: seen.append((attempt, cls)),
     )
     assert seen == [(1, RATE_LIMIT), (2, RATE_LIMIT)]
+
+
+# ── friendly_error_text — surface a clear hint for the LMStudio 400 ────
+
+
+def test_friendly_error_text_rewrites_context_length_400():
+    """The LMStudio HTTP 400 that fires when the loaded ctx is smaller
+    than the prompt — a recurring footgun — should turn into an
+    actionable hint instead of being shown verbatim."""
+    from jaeger_os.core.cloud_errors import friendly_error_text
+
+    raw = ("status_code: 400, model_name: gemma-4-26b-a4b, body: The "
+           "number of tokens to keep from the initial prompt is greater "
+           "than the context length. Try to load the model with a larger "
+           "context length, or provide a shorter input")
+    out = friendly_error_text(raw, model_name="gemma-4-26b-a4b")
+    assert "gemma-4-26b-a4b" in out
+    assert "LMStudio" in out
+    assert "16384" in out
+    # The original message stays attached so the user still sees the raw one.
+    assert raw in out
+
+
+def test_friendly_error_text_passes_unknown_errors_through():
+    from jaeger_os.core.cloud_errors import friendly_error_text
+
+    raw = "some other random error — definitely not about context"
+    assert friendly_error_text(raw) == raw
+
+
+def test_friendly_error_text_matches_alternate_phrasings():
+    from jaeger_os.core.cloud_errors import friendly_error_text
+    for needle in (
+        "exceeds the maximum context",
+        "exceed context window",
+        "input is too long",
+    ):
+        rewritten = friendly_error_text(f"...{needle}...")
+        assert "server side" in rewritten

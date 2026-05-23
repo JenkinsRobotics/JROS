@@ -2952,6 +2952,13 @@ def make_client(config: Any, layout: Any = None, *, warmup: bool = True) -> Any:
         except Exception as exc:  # noqa: BLE001
             print(f"[jaeger] external model error ({type(exc).__name__}: {exc}); "
                   "falling back to the local model.", flush=True)
+    # Local backend selection. ``config.model.backend`` selects which
+    # in-process engine loads the weights — llama-cpp-python for GGUF
+    # (the default), mlx for Apple-Silicon-optimised MLX models.
+    backend = (getattr(config.model, "backend", "") or "llama_cpp_python").lower()
+    if backend in ("mlx", "mlx-lm", "mlx_lm"):
+        from .core.mlx_client import MlxClient
+        return MlxClient(config.model.model_path, warmup=warmup)
     return LlamaCppPythonClient(config.model, warmup=warmup)
 
 

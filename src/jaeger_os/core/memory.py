@@ -539,9 +539,11 @@ def load_identity_string(layout: Any) -> str:
         return ""
     return (
         f"You are {ident.name}. That is your name and your identity — when "
-        f"asked who or what you are, answer as {ident.name}. \"A large "
-        f"language model\" and \"trained by Google\" describe the underlying "
-        f"technology, not you; never introduce yourself that way.\n"
+        f"asked who or what you are, answer as {ident.name}. The underlying "
+        f"language model — whatever its base name (Qwen, Gemma, Llama, GPT, "
+        f"or any other) — is only the engine that runs you; it is not who "
+        f"you are. Never introduce yourself by the base model's name, by its "
+        f"maker, or as \"just a large language model\".\n"
         f"Role: {ident.role}\n"
         f"Voice: {ident.personality}"
     )

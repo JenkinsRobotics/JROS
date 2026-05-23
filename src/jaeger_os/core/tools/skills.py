@@ -95,7 +95,7 @@ def skill(action: str, name: str = "", query: str = "",
         return run_curation(apply=False)
 
     if act in ("list", "all", ""):
-        skills = _pb.discover_playbooks()
+        skills = _pb.available_playbooks()
         return {
             "ok": True, "count": len(skills),
             "skills": [{"name": s.name, "category": s.category,
@@ -107,7 +107,7 @@ def skill(action: str, name: str = "", query: str = "",
         if not q:
             return {"ok": False, "error": "search needs a query"}
         hits = []
-        for s in _pb.discover_playbooks():
+        for s in _pb.available_playbooks():
             hay = (f"{s.name} {s.description} {s.category} "
                    f"{' '.join(s.tags)}").lower()
             if all(term in hay for term in q.split()):
@@ -151,6 +151,16 @@ def skill(action: str, name: str = "", query: str = "",
             "folder": str(folder),
             "files": _bucket_skill_files(folder),
         }
+        # Advisory prerequisites — surfaced only when declared so the model
+        # knows what to load (a toolset) or fall back from before following.
+        if s.platforms:
+            result["platforms"] = s.platforms
+        if s.requires_tools:
+            result["requires_tools"] = s.requires_tools
+        if s.requires_toolsets:
+            result["requires_toolsets"] = s.requires_toolsets
+        if s.fallback_for_tools:
+            result["fallback_for_tools"] = s.fallback_for_tools
         # Safety scan — a playbook is markdown the model is told to run.
         # Surface a warning so the model treats a flagged skill with
         # care; never blocks the read (the model still needs to see it).

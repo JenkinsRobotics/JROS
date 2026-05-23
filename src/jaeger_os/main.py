@@ -39,6 +39,7 @@ from pydantic_ai import Agent, CallToolsNode, ModelRequestNode
 from pydantic_ai.messages import (
     ModelRequest,
     ModelResponse,
+    SystemPromptPart,
     TextPart,
     ToolCallPart,
     ToolReturnPart,
@@ -74,6 +75,12 @@ from .core.schemas import CORE_VERSION, Config
 from .core.schemas import load_yaml
 from .core.skill_loader import load_and_register
 from .core.setup_wizard import run_wizard
+from .core.tool_guardrails import ToolGuardrail, call_signature, merge_guidance
+from .core.tool_result_budget import (
+    TurnResultBudget,
+    budget_from_env,
+    compact_history,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -635,20 +642,53 @@ def _episodic_to_messages(turns: list[dict[str, str]]) -> list[Any]:
     return out
 
 
+def _ensure_system_prompt(history: list[Any]) -> None:
+    """Guarantee the live system prompt leads ``history``, in place.
+
+    pydantic-ai injects the agent's system prompt only when message_history
+    is empty (``UserPromptNode`` in ``_agent_graph``: ``if not messages``).
+    A resumed session is rebuilt from the episodic log by
+    :func:`_episodic_to_messages`, which carries no ``SystemPromptPart`` — so
+    without this every resumed turn runs with no identity, no operating
+    rules, and no knowledge of what Jaeger is. The same gap reopens if the
+    overflow trim drops the message that carried the prompt.
+
+    Idempotent: a no-op when a system prompt already leads the history.
+    """
+    if not history:
+        return
+    system_prompt = _pipeline.get("system_prompt") or ""
+    if not system_prompt:
+        return
+    first = history[0]
+    first_parts = list(getattr(first, "parts", []) or [])
+    if any(isinstance(p, SystemPromptPart) for p in first_parts):
+        return
+    sys_part = SystemPromptPart(content=system_prompt)
+    if isinstance(first, ModelRequest):
+        # Prepend into the existing first request so the system prompt leads
+        # it — exactly how pydantic-ai builds a fresh conversation.
+        first.parts = [sys_part, *first_parts]
+    else:
+        # First message is a response (e.g. an odd-length overflow trim) —
+        # insert a standalone system-prompt request ahead of it.
+        history.insert(0, ModelRequest(parts=[sys_part]))
+
+
 def _get_session_history(session_key: str) -> list[Any]:
+    """The in-process conversation history for a session.
+
+    A session starts with a CLEAN slate. Prior sessions are NOT blindly
+    replayed into context — that bled stale, already-finished tasks from
+    past sessions into new ones (e.g. re-opening a calculator nobody asked
+    about). Past turns live in episodic memory; the agent retrieves what is
+    relevant on demand with `search_memory` / `memory(recall)`. The list
+    here accumulates only as the live session runs.
+    """
     history = _session_histories.get(session_key)
     if history is None:
         history = []
         _session_histories[session_key] = history
-    if session_key not in _session_loaded:
-        _session_loaded.add(session_key)
-        try:
-            recent = mem.load_recent_turns(n=5, session_key=session_key)
-            if recent:
-                history.extend(_episodic_to_messages(recent))
-                print(f"[jaeger] resumed {session_key!r}: {len(recent)//2} prior turn(s).", flush=True)
-        except Exception as exc:
-            print(f"[jaeger] resume for {session_key!r} skipped: {exc}", file=sys.stderr, flush=True)
     return history
 
 
@@ -1976,6 +2016,12 @@ async def _run_via_iter(
     call_signatures: dict[str, int] = {}
     failure_signatures: dict[str, int] = {}
     pending_tool_calls: dict[str, dict[str, Any]] = {}
+    # Loop guardrail — corrective guidance one step before the hard backstop.
+    guardrail = ToolGuardrail()
+    # Tool-result budget — persist oversized tool returns out of context.
+    budget = TurnResultBudget(_pipeline.get("layout"), budget_from_env())
+    # Fresh per-turn unchanged-read dedup state for file_read.
+    jaeger_tools.reset_read_tracker()
     halt_reason: str | None = None
     interrupted = False
     # User-interrupt scope — a threading.Event the TUI sets (Ctrl-C, or
@@ -2022,6 +2068,12 @@ async def _run_via_iter(
         except Exception:  # noqa: BLE001 — telemetry must never break a turn
             pass
 
+    # Resumed / trimmed histories are rebuilt without a SystemPromptPart, and
+    # pydantic-ai only injects the system prompt when message_history is empty
+    # — so re-seat it here or the turn runs with no identity or operating rules.
+    if message_history:
+        _ensure_system_prompt(message_history)
+
     async with agent.iter(user_text, message_history=message_history or None) as run:
         async for node in run:
             if cancel_event is not None and cancel_event.is_set():
@@ -2043,7 +2095,7 @@ async def _run_via_iter(
                 # P4 loop backstop — count every call, halt a spinning turn.
                 for tp in tool_parts:
                     tool_calls_made += 1
-                    sig = f"{tp.tool_name}|{tp.args!r}"
+                    sig = call_signature(tp.tool_name, tp.args)
                     call_signatures[sig] = call_signatures.get(sig, 0) + 1
                     pending_tool_calls[getattr(tp, "tool_call_id", "")] = {
                         "name": tp.tool_name,
@@ -2063,12 +2115,17 @@ async def _run_via_iter(
                             getattr(p, "tool_call_id", ""), {},
                         )
                         _tname = call.get("name") or getattr(p, "tool_name", "")
+                        _args = call.get("args") or {}
                         _started = call.get("started", 0.0)
                         _elapsed = ((time.perf_counter() - _started)
                                     if _started else 0.0)
                         _emit_tool("done", _tname, "", _elapsed)
+                        # The budget cap below changes only what the model
+                        # sees — failure detection + the guardrail must judge
+                        # the ORIGINAL result, so capture it first.
+                        original_content = p.content
                         fail_sig = _semantic_failure_signature(
-                            _tname, call.get("args") or {}, p.content,
+                            _tname, _args, original_content,
                         )
                         if fail_sig:
                             failure_signatures[fail_sig] = failure_signatures.get(fail_sig, 0) + 1
@@ -2079,6 +2136,30 @@ async def _run_via_iter(
                                         elapsed=_elapsed)
                         except Exception:  # noqa: BLE001
                             pass
+                        # Persist an oversized payload to a file, leaving a
+                        # compact preview in context.
+                        try:
+                            p.content = budget.process(
+                                p.content, str(_tname),
+                                getattr(p, "tool_call_id", "") or "",
+                            )
+                        except Exception as exc:  # noqa: BLE001 — never break a turn
+                            print(f"[jaeger] tool-result budget skipped: {exc}",
+                                  file=sys.stderr, flush=True)
+                        # When this call is starting to spin, attach corrective
+                        # guidance so the model can break the loop before the
+                        # hard backstop ends the turn.
+                        try:
+                            guidance = guardrail.observe(
+                                str(_tname), _args,
+                                original_content, fail_sig,
+                            )
+                        except Exception as exc:  # noqa: BLE001 — never break a turn
+                            guidance = None
+                            print(f"[jaeger] loop guardrail skipped: {exc}",
+                                  file=sys.stderr, flush=True)
+                        if guidance:
+                            p.content = merge_guidance(p.content, guidance)
                 halt_reason = _loop_halt_reason(
                     tool_calls_made, call_signatures, failure_signatures,
                 )
@@ -2640,6 +2721,9 @@ def _run_turn(client: Any, user_text: str, *, session_key: str) -> dict[str, Any
         overflow = len(history) - _MAX_HISTORY_MESSAGES
         if overflow > 0:
             del history[:overflow]
+        # Prune bulky payloads out of the messages that survive the trim so
+        # a long session does not carry every past result at full fidelity.
+        compact_history(history)
 
     runner = _pipeline["thinking_runner"]
     if runner is not None:

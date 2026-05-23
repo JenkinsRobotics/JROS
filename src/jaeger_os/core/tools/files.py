@@ -42,6 +42,36 @@ _SEARCH_SKIP = frozenset({
 })
 
 
+# --- Unchanged-read dedup ------------------------------------------------------
+# Re-reading a file that has not changed re-injects its whole content into the
+# context for no gain — a common spin. file_read tracks each (file, offset,
+# limit) read; once the same unchanged read has been served twice it returns a
+# stub instead. ``main._run_via_iter`` calls reset_read_tracker() once per turn
+# so dedup only ever fires within a single turn, never across turns.
+_READ_TRACKER: dict[tuple[str, int, int | None], dict[str, Any]] = {}
+_DEDUP_AFTER_READS = 2   # serve content for the first 2 reads; stub the 3rd+
+_READ_TRACKER_CAP = 512  # bound the tracker against a pathological turn
+
+
+def reset_read_tracker() -> None:
+    """Clear the unchanged-read dedup state. Called once per turn."""
+    _READ_TRACKER.clear()
+
+
+def _remember_read(
+    key: tuple[str, int, int | None], mtime: float, total_lines: int
+) -> None:
+    """Record that ``key`` was served fresh content at ``mtime``."""
+    prev = _READ_TRACKER.get(key)
+    if prev is not None and prev["mtime"] == mtime:
+        prev["count"] += 1
+        prev["total_lines"] = total_lines
+        return
+    if len(_READ_TRACKER) >= _READ_TRACKER_CAP:
+        _READ_TRACKER.clear()
+    _READ_TRACKER[key] = {"mtime": mtime, "count": 1, "total_lines": total_lines}
+
+
 def _maybe_syntax_check(path_rel: str, content: str) -> dict[str, Any] | None:
     """Run ``compile()`` on Python content so the agent sees syntax
     errors the same turn it wrote them (Phase 2 of the coding-quality
@@ -234,6 +264,10 @@ def file_read(path: str, offset: int = 0, limit: int | None = None) -> dict[str,
     ``limit`` the number of lines to return (default: the whole file).
     The result then also carries ``total_lines`` so you know how much
     is left.
+
+    Re-reading a file that has not changed since you last read it this
+    turn returns a short stub instead of the content again — use what
+    you already have, or pass a new offset/limit to see a different part.
     """
     layout = _require_layout()
     try:
@@ -246,27 +280,58 @@ def file_read(path: str, offset: int = 0, limit: int | None = None) -> dict[str,
         return {"read": False, "error": "not found", "path": path}
     if target.is_dir():
         return {"read": False, "error": "is a directory", "path": path}
+
+    rel = _display_path(target, layout)
+    off = max(0, int(offset or 0))
+    key = (str(target), off, limit)
+    try:
+        mtime: float | None = target.stat().st_mtime
+    except OSError:
+        mtime = None
+
+    # Unchanged-read dedup — stub a repeat read rather than re-inject the
+    # whole payload (see the _READ_TRACKER notes above).
+    if mtime is not None:
+        prev = _READ_TRACKER.get(key)
+        if (prev is not None and prev["mtime"] == mtime
+                and prev["count"] >= _DEDUP_AFTER_READS):
+            prev["count"] += 1
+            return {
+                "read": True, "path": rel, "unchanged": True,
+                "total_lines": prev.get("total_lines"),
+                "note": (
+                    "Content omitted — this file is byte-for-byte identical "
+                    f"to a read you already did this turn ({prev['count']} "
+                    "reads). Use the content you already have; re-reading it "
+                    "will not change anything. Pass a new offset/limit to "
+                    "see a different part."
+                ),
+            }
+
     try:
         full = target.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError) as exc:
         return {"read": False, "error": f"unreadable (binary?): {exc}",
                 "path": path}
-    rel = _display_path(target, layout)
 
-    if offset or limit is not None:
-        lines = full.splitlines(keepends=True)
-        start = max(0, int(offset))
-        end = len(lines) if limit is None else start + max(0, int(limit))
-        content = "".join(lines[start:end])
-        return {
+    lines = full.splitlines(keepends=True)
+    if off or limit is not None:
+        end = len(lines) if limit is None else off + max(0, int(limit))
+        content = "".join(lines[off:end])
+        result: dict[str, Any] = {
             "read": True, "path": rel, "content": content,
             "bytes": len(content.encode("utf-8")),
-            "offset": start, "total_lines": len(lines),
+            "offset": off, "total_lines": len(lines),
         }
-    return {
-        "read": True, "path": rel, "content": full,
-        "bytes": len(full.encode("utf-8")),
-    }
+    else:
+        result = {
+            "read": True, "path": rel, "content": full,
+            "bytes": len(full.encode("utf-8")),
+        }
+
+    if mtime is not None:
+        _remember_read(key, mtime, len(lines))
+    return result
 
 
 def list_skill_dir(path: str = ".") -> dict[str, Any]:

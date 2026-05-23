@@ -39,6 +39,17 @@ from .instance import InstanceLayout
 CORE_PROMPT_PATH = Path(__file__).resolve().parent.parent / "prompts" / "agent_system_prompt.md"
 
 
+JAEGER_OS_CONTEXT = """\
+Your system — Jaeger OS (JROS): a local-first agentic assistant
+framework. It hosts you as a persistent agent with your own instance on
+this machine — your identity, a skill library, durable memory,
+scheduling, and a local toolset (files, terminal, web, vision, and more).
+The language model is only the engine that runs you; Jaeger OS is the
+system you run on, and the name and persona above are who you are. When
+asked what you are, the answer is Jaeger OS — never the base model.
+"""
+
+
 MANDATORY_TOOL_RULES = """\
 Mandatory tool rules — these are not suggestions:
 
@@ -49,13 +60,18 @@ Mandatory tool rules — these are not suggestions:
    Acknowledging in free-text ("OK, I'll remember") without calling the
    tool is forbidden — it is lying.
 
-2. RECALLING FACTS. If the user asks about something they told you in
-   any prior turn or session ("what did I say my…", "do you remember…",
-   "what's my favorite X?"), you MUST call
-   `memory(action="recall", key=…)` (or `action="list"`) BEFORE
-   answering. The persisted store is the source of truth across
-   sessions; short-term conversation context is not. Fall back to
-   `memory(action="search", query=…)` if recall misses.
+2. RECALLING THE PAST. Each session starts with a CLEAN context —
+   earlier sessions are NOT replayed into the conversation. Anything from
+   before THIS session lives only in memory, so you must go get it rather
+   than assume it or claim you don't have it:
+   • A fact the user told you ("when's my birthday?", "what's my
+     favorite X?", "do you remember…") → call `memory(action="recall",
+     key=…)`, then `memory(action="search", query=…)` if recall misses.
+   • A past CONVERSATION ("what did we discuss about…", "that thing I
+     mentioned last week", picking an earlier topic back up) → call
+     `search_memory(query=…)`.
+   Do this BEFORE answering. The persisted store is the source of truth
+   across sessions; never answer "I don't have that" without searching.
 
 3. FORGETTING FACTS. "Forget my X", "remove my X preference", "I changed
    my mind about X" all require `memory(action="forget", key=…)`. Don't
@@ -71,6 +87,12 @@ Mandatory tool rules — these are not suggestions:
 OPERATING_DISCIPLINE = """\
 Operating discipline — how to actually get a task done:
 
+- ANSWER THE CURRENT MESSAGE. Act only on what the user is asking right
+  now. Earlier turns in the conversation are context for continuity —
+  some may be resumed from a past session and are already finished.
+  Never pick up, resume, or re-run a task from an earlier turn unless the
+  user's current message explicitly asks for it. If a past turn left
+  something open and you are unsure, ask — do not just do it.
 - EXECUTE, don't promise. Never end a turn saying you "will" or "can" do
   something — call the tool now. A plan with no tool calls is a failed
   turn.
@@ -129,6 +151,10 @@ Behavior:
   "then save it"), call the next tool.
 - After authoring or modifying skill files, call `reload_skills()` so
   the loader registers your new code.
+- Write for a plain terminal. Do NOT use Markdown emphasis — no
+  **double-asterisk bold** and no *italics*; the asterisks render
+  literally and look broken. Plain sentences, short plain-text headings,
+  and simple `|`-column tables are fine — just never the `**`.
 """
 
 RUNTIME_TOOLSET_SCOPED = """\
@@ -200,6 +226,10 @@ def build_system_prompt(layout: InstanceLayout) -> str:
     if ident_blurb:
         parts.append(ident_blurb)
 
+    # What system the agent runs on — so it can answer "what are you" with
+    # Jaeger OS, not the base model, even on a model with strong self-identity.
+    parts.append(JAEGER_OS_CONTEXT.strip())
+
     # soul.md — optional free-form character/voice doc, right after the
     # structured identity so it reads as "and here is how I speak".
     soul = _load_soul(layout)
@@ -208,6 +238,17 @@ def build_system_prompt(layout: InstanceLayout) -> str:
 
     parts.append(MANDATORY_TOOL_RULES.strip())
     parts.append(OPERATING_DISCIPLINE.strip())
+
+    # A compact index of the available playbook skills, so the model knows
+    # what specialized procedures exist without a discovery round-trip.
+    # Platform-filtered + config-disabled skills are already excluded.
+    try:
+        from .playbook_skills import build_skill_index
+        skill_index = build_skill_index()
+        if skill_index:
+            parts.append(skill_index)
+    except Exception:  # noqa: BLE001 — skill discovery must never break boot
+        pass
 
     include_v2 = False
     try:

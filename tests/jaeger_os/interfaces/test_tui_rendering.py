@@ -10,7 +10,12 @@ from __future__ import annotations
 
 from rich.console import Console
 
-from jaeger_os.interfaces.tui.app import JaegerTUI, _dur, _kfmt
+from jaeger_os.interfaces.tui.app import (
+    JaegerTUI,
+    _format_elapsed,
+    _kfmt,
+    _pct_color,
+)
 
 
 def _tui() -> JaegerTUI:
@@ -23,16 +28,39 @@ def _tui() -> JaegerTUI:
 
 
 def test_kfmt_compacts_thousands() -> None:
+    """Ported from Hermes's ``format_token_count_compact`` — K/M/B with
+    smart precision and trailing zeros trimmed."""
     assert _kfmt(27800) == "27.8K"
-    assert _kfmt(262144) == "262.1K"
+    assert _kfmt(262144) == "262K"
+    assert _kfmt(1_500_000) == "1.5M"
     assert _kfmt(980) == "980"
     assert _kfmt(0) == "0"
 
 
-def test_dur_is_compact() -> None:
-    assert _dur(12) == "12s"
-    assert _dur(240) == "4m"
-    assert _dur(3690) == "1h 01m"
+def test_format_elapsed_keeps_seconds_visible() -> None:
+    """Hermes-faithful: seconds stay visible at every scale, so the
+    status-bar timer increments smoothly (no ``65s → 1m`` jump that
+    drops the seconds digit)."""
+    assert _format_elapsed(12) == "12s"
+    assert _format_elapsed(65) == "1m 5s"
+    assert _format_elapsed(240) == "4m"            # 4 min exact → no seconds
+    assert _format_elapsed(3600) == "1h 0m"        # 1h exact   → no seconds
+    assert _format_elapsed(3690) == "1h 1m 30s"    # mixed      → keep seconds
+    assert _format_elapsed(90061) == "1d 1h 1m"    # days drop seconds
+
+
+def test_format_elapsed_with_emoji_picks_live_vs_frozen() -> None:
+    assert _format_elapsed(23, with_emoji=True) == "⏲ 23s"
+    assert _format_elapsed(23, live=True, with_emoji=True) == "⏱ 23s"
+
+
+def test_pct_color_follows_hermes_good_warn_bad_critical_bands() -> None:
+    assert "green" in _pct_color(0)
+    assert "green" in _pct_color(49)
+    assert "yellow" in _pct_color(50)
+    assert "yellow" in _pct_color(80)
+    assert "red" in _pct_color(81)
+    assert "bright" in _pct_color(95) and "red" in _pct_color(95)
 
 
 # ── turn header ──────────────────────────────────────────────────────
@@ -122,7 +150,9 @@ def test_status_line_has_the_hermes_segments() -> None:
     tui._last_turn_s = 23.0
     bar = tui._status_line()
     assert "qwen3.5:397b" in bar
-    assert "27.8K/262.1K" in bar
+    # Hermes's format_token_count_compact strips trailing zeros — 262144
+    # rounds to "262K" (no ".1"), 27800 keeps the digit as "27.8K".
+    assert "27.8K/262K" in bar
     assert "%" in bar and "█" in bar     # the context gauge
     assert "⏲ 23s" in bar
 

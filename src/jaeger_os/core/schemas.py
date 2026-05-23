@@ -105,6 +105,8 @@ class SkillsConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
     enabled_base_skills: list[str] = Field(default_factory=list,
         description="Empty = enable all; otherwise allowlist by skill folder name.")
+    disabled_playbooks: list[str] = Field(default_factory=list,
+        description="Playbook-skill names to hide from discovery and the prompt index.")
     hot_reload: bool = False
     run_smoke_tests: bool = True
     include_self_improvement_contract: bool = Field(

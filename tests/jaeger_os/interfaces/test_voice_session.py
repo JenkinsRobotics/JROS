@@ -36,13 +36,26 @@ def test_voice_config_defaults_everything_on() -> None:
 # ── wake-phrase derivation ───────────────────────────────────────────
 
 
-def test_wake_phrases_use_first_name() -> None:
-    # "Erin Jaeger" → call it by first name, "hey erin".
-    assert _wake_phrases("Erin Jaeger") == ("ok erin", "okay erin", "hey erin")
+def test_wake_phrases_cover_both_persona_and_system_names() -> None:
+    """'Erin Jaeger' must wake on either name — the persona ('hey erin') for
+    natural address, the system ('hey jaeger' + phonetic variants) because
+    JaegerOS is the platform regardless of the per-instance name."""
+    phrases = _wake_phrases("Erin Jaeger")
+    # persona
+    for prefix in ("ok", "okay", "hey"):
+        assert f"{prefix} erin" in phrases
+    # system + a phonetic variant Whisper commonly mishears
+    assert "hey jaeger" in phrases
+    assert "hey yeager" in phrases
+    # banner-facing phrase shows the persona, not a phonetic variant
+    assert phrases[-1] == "hey erin"
 
 
-def test_wake_phrases_single_name() -> None:
-    assert _wake_phrases("Jarvis") == ("ok jarvis", "okay jarvis", "hey jarvis")
+def test_wake_phrases_single_name_still_includes_system_default() -> None:
+    phrases = _wake_phrases("Jarvis")
+    assert "hey jarvis" in phrases
+    assert "hey jaeger" in phrases   # system always reachable
+    assert phrases[-1] == "hey jarvis"
 
 
 def test_wake_phrases_empty_or_jaeger_falls_back_to_defaults() -> None:

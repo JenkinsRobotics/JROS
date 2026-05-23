@@ -345,6 +345,117 @@ def _extract_drift_tool_calls(text: str) -> list[dict[str, Any]]:
     return out
 
 
+# --- Tool-call repair & normalization ------------------------------------------
+# Local GGUF chat handlers (Gemma 4, Qwen3) sometimes hand llama-cpp-python a
+# tool call it DOES parse into structured ``tool_calls`` — but with malformed
+# JSON arguments or a drifted tool name. The old path silently turned a JSON
+# parse failure into ``args = {}`` and passed the raw name through unchanged,
+# converting a parse failure into a confident-looking *wrong* tool attempt.
+# These helpers repair the common local-model drift conservatively before
+# pydantic-ai sees the call; genuine schema errors still fall through to
+# pydantic-ai's own validation retry.
+
+_TRAILING_COMMA = re.compile(r",(\s*[}\]])")
+
+
+def _coerce_args_dict(parsed: Any) -> dict[str, Any] | None:
+    """Coerce a ``json.loads`` result into a plain args dict, or ``None`` when
+    it cannot be one. Also unwraps the double-encoded ``'{"x": 1}'`` string
+    that local models occasionally emit for the ``arguments`` field."""
+    if isinstance(parsed, dict):
+        return parsed
+    if isinstance(parsed, str):
+        try:
+            inner = json.loads(parsed, strict=False)
+        except json.JSONDecodeError:
+            return None
+        if isinstance(inner, dict):
+            return inner
+    return None
+
+
+def _repair_tool_call_arguments(raw: str) -> tuple[dict[str, Any], bool]:
+    """Best-effort repair of a malformed tool-call ``arguments`` JSON string.
+
+    Returns ``(args, recovered)``. ``recovered`` is ``False`` only when every
+    pass failed and the caller is getting ``{}`` as a last resort — so the
+    caller can record the parse failure instead of swallowing it silently.
+
+    Conservative by design: it fixes drift local GGUF handlers actually emit —
+    Gemma special-token quotes, literal control characters inside strings,
+    trailing commas, a wholly single-quoted blob, Python ``None``/``null``
+    literals — then hands off to Jaeger's existing tolerant parsers rather than
+    guessing further.
+    """
+    s = (raw or "").strip()
+    if not s or s.lower() in ("none", "null"):
+        # An empty / null argument blob is a fully-recovered empty call.
+        return {}, True
+
+    cleaned = _degemma_quotes(s)
+    # Pass 1: strict-off JSON tolerates literal tabs/newlines inside string
+    # values; retry once with trailing commas stripped.
+    for candidate in (cleaned, _TRAILING_COMMA.sub(r"\1", cleaned)):
+        try:
+            parsed = json.loads(candidate, strict=False)
+        except json.JSONDecodeError:
+            continue
+        coerced = _coerce_args_dict(parsed)
+        if coerced is not None:
+            return coerced, True
+
+    # Pass 2: a wholly single-quoted blob — common local-model drift. Swap
+    # quotes only when no double quote is present, where the blind swap is
+    # safe; mixed-quote input is left for the tolerant parser below.
+    if "'" in cleaned and '"' not in cleaned:
+        try:
+            parsed = json.loads(cleaned.replace("'", '"'), strict=False)
+        except json.JSONDecodeError:
+            parsed = None
+        coerced = _coerce_args_dict(parsed)
+        if coerced is not None:
+            return coerced, True
+
+    # Pass 3: Jaeger's own tolerant parser — bare keys, nesting, Gemma quote
+    # tokens, and it already falls back to _parse_loose_args for the messiest
+    # input. Fed the raw string so its <|"|>-aware parser still has the tokens.
+    loose = _parse_gemma_args(s)
+    if loose:
+        return loose, True
+
+    return {}, False
+
+
+def _normalize_tool_name(name: str, valid: frozenset[str]) -> str:
+    """Map a drifted tool name onto a real one via exact alias / case /
+    separator variants. No fuzzy matching — an unrecognised name is returned
+    unchanged so pydantic-ai surfaces a clean 'unknown tool' error and the
+    model retries, rather than us silently dispatching a guess."""
+    raw = (name or "").strip()
+    if not raw or not valid or raw in valid:
+        return raw
+    candidates: list[str] = []
+
+    def _add(candidate: str) -> None:
+        if candidate and candidate not in candidates:
+            candidates.append(candidate)
+
+    lowered = raw.lower()
+    _add(lowered)
+    _add(lowered.replace("-", "_").replace(" ", "_").replace(".", "_"))
+    _add(re.sub(r"(?<!^)(?=[A-Z])", "_", raw).lower())
+    # A trailing `tool` / `_tool` the model sometimes tacks onto a class-like
+    # emission (e.g. ``ReadFileTool``, ``read_file_tool``).
+    for base in list(candidates):
+        for suffix in ("_tool", "-tool", "tool"):
+            if base.endswith(suffix) and len(base) > len(suffix):
+                _add(base[: -len(suffix)].rstrip("_-"))
+    for candidate in candidates:
+        if candidate in valid:
+            return candidate
+    return raw
+
+
 def _last_user_text(messages: list[dict[str, Any]]) -> str:
     for msg in reversed(messages):
         if msg.get("role") == "user":
@@ -541,6 +652,10 @@ class LlamaCppModel(Model):
         self._is_gemma = "gemma" in (model_name or "").lower()
         self.last_call_times: list[float] = []
         self.last_call_ttft: list[float] = []
+        # Tool-call arg blobs that survived every repair pass and still had to
+        # fall back to {} — recorded per turn so a parse failure is visible to
+        # diagnostics instead of silently swallowed.
+        self.last_arg_repair_failures: list[dict[str, Any]] = []
         # OpenAI-format tool defs are stable per agent. Cache by id() of the
         # function_tools list pydantic-ai hands us — saves rebuilding ~20
         # dicts every request.
@@ -550,6 +665,7 @@ class LlamaCppModel(Model):
     def reset_timings(self) -> None:
         self.last_call_times = []
         self.last_call_ttft = []
+        self.last_arg_repair_failures = []
 
     # --- Model property contract ---------------------------------------------------
     @property
@@ -619,7 +735,10 @@ class LlamaCppModel(Model):
         # We don't have true TTFT from non-streaming completions, so treat
         # total elapsed as a proxy. Streaming would let us record true TTFT.
         self.last_call_ttft.append(elapsed)
-        return self._to_model_response(completion)
+        return self._to_model_response(
+            completion,
+            valid_tool_names=frozenset(filter(None, (_tool_name(t) for t in tools))),
+        )
 
     async def request_stream(self, *args, **kwargs):  # type: ignore[override]
         # Streaming is more complex; for now, fall back to non-streaming.
@@ -791,7 +910,11 @@ class LlamaCppModel(Model):
         self._openai_tools_cache_value = result
         return result
 
-    def _to_model_response(self, completion: dict[str, Any]) -> ModelResponse:
+    def _to_model_response(
+        self,
+        completion: dict[str, Any],
+        valid_tool_names: frozenset[str] | None = None,
+    ) -> ModelResponse:
         choice = completion["choices"][0]
         msg = choice["message"]
         parts: list[Any] = []
@@ -818,15 +941,39 @@ class LlamaCppModel(Model):
         if content:
             parts.append(TextPart(content=content))
 
+        valid = valid_tool_names or frozenset()
+        seen_calls: set[tuple[str, str]] = set()
         for tc in raw_tool_calls:
             fn = tc.get("function") or {}
             raw_args = fn.get("arguments")
-            try:
-                args = json.loads(raw_args) if isinstance(raw_args, str) else (raw_args or {})
-            except json.JSONDecodeError:
+            if isinstance(raw_args, dict):
+                args: dict[str, Any] = raw_args
+            elif isinstance(raw_args, str):
+                try:
+                    parsed: Any = json.loads(raw_args)
+                except json.JSONDecodeError:
+                    parsed = None
+                coerced = _coerce_args_dict(parsed)
+                if coerced is not None:
+                    args = coerced
+                else:
+                    # llama-cpp-python parsed a structured call but its args
+                    # are not clean JSON — repair, don't silently drop to {}.
+                    args, recovered = _repair_tool_call_arguments(raw_args)
+                    if not recovered:
+                        self.last_arg_repair_failures.append({
+                            "tool": str(fn.get("name", "")),
+                            "raw": raw_args[:200],
+                        })
+            else:
                 args = {}
+            name = _normalize_tool_name(str(fn.get("name", "")), valid)
+            dedup_key = (name, json.dumps(args, sort_keys=True, default=str))
+            if dedup_key in seen_calls:
+                continue
+            seen_calls.add(dedup_key)
             parts.append(ToolCallPart(
-                tool_name=fn.get("name", ""),
+                tool_name=name,
                 args=args,
                 tool_call_id=tc.get("id") or str(uuid.uuid4()),
             ))

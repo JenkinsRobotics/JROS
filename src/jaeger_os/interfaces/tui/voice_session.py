@@ -47,18 +47,23 @@ def is_exit_phrase(text: str) -> bool:
 def _wake_phrases(name: str | None) -> tuple[str, ...]:
     """Wake phrases for the active instance's name (``hey/ok/okay <name>``).
 
-    Falls back to the plugin's jaeger-tuned defaults — which include
-    phonetic variants Whisper tends to mishear — when the name is empty
-    or already 'jaeger'."""
+    "Erin Jaeger" wakes on both ``hey erin`` (the persona) AND ``hey jaeger``
+    (the system) — JaegerOS is the platform regardless of the instance's
+    persona name, so addressing it by either is natural. The persona phrases
+    are listed last so :attr:`wake_word_phrase` shows the persona one in the
+    banner. The "jaeger" defaults carry phonetic variants (yeager / yager /
+    jager) that Whisper tends to mishear.
+    """
     from jaeger_os.plugins.whisper_stt._base import DEFAULT_WAKE_PHRASES
 
     clean = (name or "").strip().lower()
     if not clean or clean == "jaeger":
         return DEFAULT_WAKE_PHRASES
-    # Call it by first name — "Erin Jaeger" ⇒ wake on "hey erin". A short
-    # wake word is far easier for Whisper to catch reliably.
     first = clean.split()[0]
-    return tuple(f"{p} {first}" for p in ("ok", "okay", "hey"))
+    persona = tuple(f"{p} {first}" for p in ("ok", "okay", "hey"))
+    # System wake first → persona wake last, so wake_word_phrase picks the
+    # persona one ("hey erin") for the banner.
+    return DEFAULT_WAKE_PHRASES + persona
 
 
 class VoiceController:

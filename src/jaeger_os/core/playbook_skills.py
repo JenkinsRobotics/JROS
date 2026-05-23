@@ -15,6 +15,7 @@ knowledge + procedure the agent executes with `terminal` / `execute_code`.
 from __future__ import annotations
 
 import re
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -42,6 +43,14 @@ class PlaybookSkill:
     # Provenance: "builtin" (shipped), "user" (hand-written), "agent"
     # (the agent authored it), "marketplace" (installed from elsewhere).
     origin: str = "builtin"
+    # Discovery metadata (all optional). ``platforms`` empty = every OS;
+    # otherwise a skill is hidden on a platform it does not list. The
+    # ``requires_*`` / ``fallback_for_tools`` fields are advisory — surfaced
+    # on `skill view` so the model knows a skill's prerequisites.
+    platforms: list[str] = field(default_factory=list)
+    requires_tools: list[str] = field(default_factory=list)
+    requires_toolsets: list[str] = field(default_factory=list)
+    fallback_for_tools: list[str] = field(default_factory=list)
 
 
 def read_skill_origin(folder: Path) -> str:
@@ -105,6 +114,65 @@ def _tags_of(fm: dict[str, Any]) -> list[str]:
     return []
 
 
+def _str_list(fm: dict[str, Any], key: str) -> list[str]:
+    """A frontmatter field coerced to a list of non-empty strings. Accepts a
+    bare string (treated as a one-item list) or a list."""
+    val = fm.get(key)
+    if isinstance(val, str):
+        val = [val]
+    if not isinstance(val, list):
+        return []
+    return [str(v).strip() for v in val if str(v).strip()]
+
+
+# Platform names — ``macos`` is first-class; common aliases normalise to it.
+_PLATFORM_ALIASES = {
+    "mac": "macos", "macos": "macos", "osx": "macos", "darwin": "macos",
+    "linux": "linux",
+    "win": "windows", "windows": "windows",
+}
+
+
+def _normalize_platforms(raw: list[str]) -> list[str]:
+    """Map declared platform names onto canonical ``macos`` / ``linux`` /
+    ``windows``, dropping anything unrecognised."""
+    out: list[str] = []
+    for name in raw:
+        norm = _PLATFORM_ALIASES.get(name.strip().lower())
+        if norm and norm not in out:
+            out.append(norm)
+    return out
+
+
+def _current_platform() -> str:
+    """This host as a canonical platform name."""
+    plat = sys.platform
+    if plat == "darwin":
+        return "macos"
+    if plat.startswith("win"):
+        return "windows"
+    return "linux"
+
+
+def _platform_ok(skill: PlaybookSkill) -> bool:
+    """True when ``skill`` runs on this host — a skill that declares no
+    platforms runs everywhere."""
+    return not skill.platforms or _current_platform() in skill.platforms
+
+
+def _disabled_playbook_names() -> set[str]:
+    """Playbook names disabled via ``skills.disabled_playbooks`` in the bound
+    instance config. Empty when no instance is bound."""
+    try:
+        from .schemas import Config, load_yaml
+        from .tools._common import get_layout
+
+        cfg = load_yaml(get_layout().config_path, Config)
+        return {str(n) for n in cfg.skills.disabled_playbooks}
+    except Exception:  # noqa: BLE001 — no instance / no config is fine
+        return set()
+
+
 def _instance_skills_dir() -> Path | None:
     """The bound instance's ``skills/`` dir — where agent-authored
     playbooks live (the agent's writes are sandboxed to it). ``None``
@@ -152,9 +220,60 @@ def discover_playbooks() -> list[PlaybookSkill]:
                 path=md,
                 tags=_tags_of(fm),
                 origin=read_skill_origin(folder),
+                platforms=_normalize_platforms(_str_list(fm, "platforms")),
+                requires_tools=_str_list(fm, "requires_tools"),
+                requires_toolsets=_str_list(fm, "requires_toolsets"),
+                fallback_for_tools=_str_list(fm, "fallback_for_tools"),
             )
             by_name[skill.name] = skill
     return sorted(by_name.values(), key=lambda s: (s.category, s.name))
+
+
+def _select_available(
+    skills: list[PlaybookSkill], disabled: set[str]
+) -> list[PlaybookSkill]:
+    """Filter discovered skills to those the agent should see — drop those
+    for another OS and those disabled in config."""
+    return [s for s in skills if _platform_ok(s) and s.name not in disabled]
+
+
+def available_playbooks() -> list[PlaybookSkill]:
+    """Playbook skills the agent should actually see: every discovered skill
+    minus those for another platform and those disabled in the instance
+    config. The `skill` tool and the prompt index use this; the raw
+    :func:`discover_playbooks` is kept for internal callers (e.g. curation)."""
+    return _select_available(discover_playbooks(), _disabled_playbook_names())
+
+
+_SKILL_INDEX_MAX_CHARS = 1400
+
+
+def _format_skill_index(skills: list[PlaybookSkill]) -> str:
+    """Render a compact, prompt-ready index of ``skills`` — grouped by
+    category, names only. Empty string for an empty list."""
+    if not skills:
+        return ""
+    by_cat: dict[str, list[str]] = {}
+    for s in skills:
+        by_cat.setdefault(s.category, []).append(s.name)
+    lines = [
+        "Skill library — experienced playbooks for non-trivial tasks. Call "
+        'skill(action="view", name="…") to follow one, or '
+        'skill(action="search", query="…") to find one:',
+    ]
+    for cat in sorted(by_cat):
+        lines.append(f"- {cat}: {', '.join(sorted(by_cat[cat]))}")
+    text = "\n".join(lines)
+    if len(text) > _SKILL_INDEX_MAX_CHARS:
+        text = text[:_SKILL_INDEX_MAX_CHARS].rstrip() + "\n…(more — use skill search)"
+    return text
+
+
+def build_skill_index() -> str:
+    """A compact index of the available playbook skills for the system
+    prompt — so the model knows what procedures exist without a discovery
+    round-trip. Capped so it never crowds out the routing imperatives."""
+    return _format_skill_index(available_playbooks())
 
 
 def find_playbook(name: str) -> PlaybookSkill | None:
@@ -162,7 +281,7 @@ def find_playbook(name: str) -> PlaybookSkill | None:
     needle = (name or "").strip().lower()
     if not needle:
         return None
-    skills = discover_playbooks()
+    skills = available_playbooks()
     for s in skills:
         if s.name.lower() == needle:
             return s

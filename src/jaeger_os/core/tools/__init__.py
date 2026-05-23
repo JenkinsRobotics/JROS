@@ -43,6 +43,7 @@ from .files import (
     file_read,
     file_write,
     list_skill_dir,
+    reset_read_tracker,
     search_files,
 )
 
@@ -130,7 +131,7 @@ __all__ = [
     "SandboxError", "_audit", "_require_layout", "_resolve_under", "git_autocommit",
     # files
     "file_write", "file_read", "list_skill_dir", "append_file", "delete_file",
-    "edit_file", "search_files",
+    "edit_file", "search_files", "reset_read_tracker",
     # time_and_math
     "get_time", "calculate", "system_status",
     # memory

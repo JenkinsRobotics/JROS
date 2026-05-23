@@ -56,9 +56,27 @@ _TURN_UNSAFE_SLASH = frozenset({
 
 
 def _kfmt(n: int) -> str:
-    """Compact token count: 27800 → '27.8K', 980 → '980'."""
-    if n >= 1000:
-        return f"{n / 1000:.1f}K"
+    """Compact token count — Hermes's ``format_token_count_compact``
+    (``agent/usage_pricing.py``) ported verbatim: K / M / B with smart
+    precision (2 decimals < 10, 1 < 100, 0 otherwise) and trailing zeros
+    stripped. ``27800 → '27.8K'``, ``980 → '980'``, ``1500000 → '1.5M'``.
+    """
+    abs_value = abs(int(n))
+    if abs_value < 1_000:
+        return str(int(n))
+    sign = "-" if n < 0 else ""
+    for threshold, suffix in ((1_000_000_000, "B"), (1_000_000, "M"), (1_000, "K")):
+        if abs_value >= threshold:
+            scaled = abs_value / threshold
+            if scaled < 10:
+                text = f"{scaled:.2f}"
+            elif scaled < 100:
+                text = f"{scaled:.1f}"
+            else:
+                text = f"{scaled:.0f}"
+            if "." in text:
+                text = text.rstrip("0").rstrip(".")
+            return f"{sign}{text}{suffix}"
     return str(int(n))
 
 
@@ -78,14 +96,46 @@ def _tool_label(tool: str) -> str:
     return tool
 
 
-def _dur(seconds: float) -> str:
-    """Compact duration for the status bar: '4m', '1h 04m', '12s'."""
-    s = int(seconds)
-    if s < 60:
-        return f"{s}s"
-    if s < 3600:
-        return f"{s // 60}m"
-    return f"{s // 3600}h {s % 3600 // 60:02d}m"
+def _format_elapsed(seconds: float, *, live: bool = False, with_emoji: bool = False) -> str:
+    """Hermes-faithful elapsed-time format (ported from
+    ``_format_prompt_elapsed`` in ``hermes-agent/cli.py``). Keeps seconds
+    visible at every scale so the value increments smoothly:
+
+      ``59s → 1m → 1m 1s → 59m 59s → 1h → 1h 0m 1s → 23h 59m 59s → 1d``
+
+    ``with_emoji=True`` prefixes ``⏱`` while the turn is live, ``⏲`` when
+    frozen — width-1 glyphs so monospace alignment holds.
+    """
+    elapsed = max(0.0, float(seconds))
+    days = int(elapsed // 86400)
+    remaining = elapsed % 86400
+    hours = int(remaining // 3600)
+    remaining = remaining % 3600
+    minutes = int(remaining // 60)
+    secs = int(remaining % 60)
+    if days > 0:
+        time_str = f"{days}d {hours}h {minutes}m"
+    elif hours > 0:
+        time_str = f"{hours}h {minutes}m {secs}s" if secs else f"{hours}h {minutes}m"
+    elif minutes > 0:
+        time_str = f"{minutes}m {secs}s" if secs else f"{minutes}m"
+    else:
+        time_str = f"{secs}s"
+    if with_emoji:
+        return f"{'⏱' if live else '⏲'} {time_str}"
+    return time_str
+
+
+# Hermes's ``_status_bar_context_style`` — context-percent → color band.
+# < 50% healthy (green) · ≤ 80% warn (yellow) · ≤ 95% bad (red) · ≥ 95% critical.
+def _pct_color(pct: int) -> str:
+    if pct >= 95:
+        return "fg:ansibrightred bold"
+    if pct > 80:
+        return "fg:ansired"
+    if pct >= 50:
+        return "fg:ansiyellow"
+    return "fg:ansigreen bold"
 
 
 # Typed phrases that enter continuous voice mode instead of being sent
@@ -943,36 +993,64 @@ class JaegerTUI:
         except Exception:  # noqa: BLE001
             return 0
 
-    def _status_line(self) -> str:
-        """The hermes-style status bar content (no chrome) —
-        ``✦ model │ 27.8K/262K │ [█░░░] 11% │ 4m │ ⏲ 23s``. Rendered
-        into the prompt by :meth:`_prompt_message`."""
+    def _status_fragments(self) -> list[tuple[str, str]]:
+        """Status-bar segments as prompt_toolkit ``(style, text)`` fragments.
+
+        Layout mirrors Hermes's ``_get_status_bar_fragments``:
+
+          ``✦ model │ 27.8K/262K │ [█░░░░░░░░░] 11% │ 1h 4m 12s │ ⏲ 23s``
+
+        Each segment carries its own color — model in the Jaeger accent,
+        token ratio + times in dim, the bar+percent in Hermes's
+        good/warn/bad/critical colour band keyed on context usage.
+        """
         running = self._turn_running.is_set()
-        segs: list[str] = []
-        # Live turn spinner — first segment while the agent works.
+        SEP: tuple[str, str] = ("fg:ansibrightblack", "  │  ")
+        frags: list[tuple[str, str]] = []
+
         if running:
             frame = _SPINNER_FRAMES[int(time.time() * 8) % len(_SPINNER_FRAMES)]
-            segs.append(f"{frame} {self._current_activity or 'ruminating'}")
-        # Model.
-        segs.append(f"✦ {self.model_name}")
-        # Context gauge — k-formatted count, a 10-cell bar, a percentage.
+            frags.append((f"fg:{ACCENT_PTK}",
+                          f"{frame} {self._current_activity or 'ruminating'}"))
+            frags.append(SEP)
+
+        frags.append((f"fg:{ACCENT_PTK} bold", f"✦ {self.model_name}"))
+        frags.append(SEP)
+
         mx = max(1, self._context_max)
         pct = min(100, int(self._context_tokens / mx * 100))
         fill = pct // 10
         bar = "█" * fill + "░" * (10 - fill)
-        segs.append(f"{_kfmt(self._context_tokens)}/{_kfmt(mx)}")
-        segs.append(f"[{bar}] {pct}%")
-        # Uptime.
-        segs.append(_dur(time.perf_counter() - self._started_at))
-        # Response time — live elapsed while running, else the last turn.
+        frags.append(("fg:ansibrightblack",
+                      f"{_kfmt(self._context_tokens)}/{_kfmt(mx)}"))
+        frags.append(SEP)
+        frags.append((_pct_color(pct), f"[{bar}] {pct}%"))
+        frags.append(SEP)
+
+        frags.append(("fg:ansibrightblack",
+                      _format_elapsed(time.perf_counter() - self._started_at)))
+        frags.append(SEP)
+
         if running:
-            segs.append(f"⏲ {time.perf_counter() - self._turn_started_at:.0f}s")
+            frags.append(("fg:ansibrightblack", _format_elapsed(
+                time.perf_counter() - self._turn_started_at,
+                live=True, with_emoji=True,
+            )))
         elif self._last_turn_s > 0:
-            segs.append(f"⏲ {self._last_turn_s:.0f}s")
-        # Mic, only when live.
+            frags.append(("fg:ansibrightblack",
+                          _format_elapsed(self._last_turn_s, with_emoji=True)))
+        else:
+            frags.append(("fg:ansibrightblack", "⏲ 0s"))
+
         if self._voice is not None and self._voice.running:
-            segs.append("🎙 on")
-        return "  │  ".join(segs)
+            frags.append(SEP)
+            frags.append(("fg:ansibrightblack", "🎙 on"))
+        return frags
+
+    def _status_line(self) -> str:
+        """Plain-text status line — visible characters only, no styles.
+        Single source of truth is :meth:`_status_fragments`."""
+        return "".join(text for _style, text in self._status_fragments())
 
     def _prompt_message(self) -> Any:
         """The prompt_toolkit prompt — the pinned status bar drawn a few
@@ -993,7 +1071,9 @@ class JaegerTUI:
             width = max(20, shutil.get_terminal_size((80, 24)).columns)
             rule = "─" * width
             frags.append((f"fg:{ACCENT_PTK}", rule + "\n"))
-            frags.append(("fg:ansibrightblack", "  " + self._status_line() + "\n"))
+            frags.append(("", "  "))
+            frags.extend(self._status_fragments())
+            frags.append(("", "\n"))
             frags.append((f"fg:{ACCENT_PTK}", rule + "\n"))
         frags.append((f"fg:{ACCENT_PTK} bold", "❯ "))
         return frags

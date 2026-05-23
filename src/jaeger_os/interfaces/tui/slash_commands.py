@@ -320,77 +320,145 @@ def _resolve_cloud_key(ctx: SlashContext) -> str:
         return ""
 
 
+def _build_providers_list(
+    found: dict[str, Any], ext_cfg: Any | None,
+) -> list[dict[str, Any]]:
+    """Build the stage-1 provider list for the Hermes-style ``/model`` picker.
+
+    Same shape as Hermes's provider catalogue — each entry is a dict with
+    ``slug``, ``name``, optional ``models`` (display-name strings),
+    optional ``total_models``, optional ``is_current``, and optional
+    ``type_a_model`` (True for cloud providers that have no catalogue,
+    so Enter on them prompts the user to type a model name).
+    """
+    current_provider = (
+        ext_cfg.provider if ext_cfg is not None and getattr(ext_cfg, "enabled", False)
+        else "local"
+    )
+    providers: list[dict[str, Any]] = []
+
+    # llama.cpp (in-process) — Jaeger registry + every GGUF on disk
+    # (incl. ones LM Studio downloaded). De-dup by display name.
+    local_names: list[str] = []
+    seen: set[str] = set()
+    for m in found.get("jaeger", []) or []:
+        if m.get("path") and m["name"] not in seen:
+            seen.add(m["name"])
+            local_names.append(m["name"])
+    for m in found.get("local_gguf", []) or []:
+        if m["name"] not in seen:
+            seen.add(m["name"])
+            local_names.append(m["name"])
+    if local_names:
+        providers.append({
+            "slug": "local",
+            "name": "llama.cpp (in-process)",
+            "models": local_names,
+            "is_current": current_provider == "local",
+        })
+
+    # Ollama — local HTTP server
+    ollama = found.get("ollama") or {}
+    if ollama.get("online") and ollama.get("models"):
+        providers.append({
+            "slug": "ollama",
+            "name": "Ollama",
+            "models": [m["name"] for m in ollama["models"]],
+            "is_current": current_provider == "ollama",
+        })
+
+    # LM Studio — local HTTP server
+    lmstudio = found.get("lmstudio") or {}
+    if lmstudio.get("online") and lmstudio.get("models"):
+        providers.append({
+            "slug": "lmstudio",
+            "name": "LM Studio",
+            "models": [m["name"] for m in lmstudio["models"]],
+            "is_current": current_provider == "lmstudio",
+        })
+
+    # Ollama Cloud — catalogue when present, else type-a-model
+    cloud_models = [m["name"] for m in (found.get("ollama_cloud") or {}).get("models") or []]
+    cloud_entry: dict[str, Any] = {
+        "slug": "ollama-cloud", "name": "Ollama Cloud",
+        "is_current": current_provider == "ollama-cloud",
+    }
+    if cloud_models:
+        cloud_entry["models"] = cloud_models
+    else:
+        cloud_entry["type_a_model"] = True
+    providers.append(cloud_entry)
+
+    # OpenAI / Anthropic / Google — always type-a-model
+    for slug, name in (("openai", "OpenAI"),
+                       ("anthropic", "Anthropic"),
+                       ("gemini", "Google")):
+        providers.append({
+            "slug": slug, "name": name,
+            "type_a_model": True,
+            "is_current": current_provider == slug,
+        })
+
+    return providers
+
+
 def _model_picker(ctx: SlashContext) -> SlashResult:
-    """The interactive ``/model`` picker — a centered arrow-key box of
-    every selectable model. Enter switches; Esc cancels. The currently
-    active model is pre-highlighted."""
+    """The interactive ``/model`` picker — a Hermes-style two-stage drill
+    (Stage 1 picks a provider, Stage 2 picks a model under it). Enter
+    drills / commits; ``← Back`` returns to Stage 1; Cancel / Esc closes."""
+    from pathlib import Path
+
     from jaeger_os.core.model_discovery import discover_all
     from jaeger_os.main import _pipeline
-    from .picker import pick
+    from .picker import _PICKER_TYPE_A_MODEL, pick_provider_model
 
     cfg = _pipeline.get("config")
     cloud_key = _resolve_cloud_key(ctx)
     with ctx.console.status("[dim]scanning for models…[/]"):
         found = discover_all(cloud_key)
-    options: list[tuple[Any, str]] = []
-    seen: set[str] = set()
-
-    def _add(value: Any, tag: str, name: str, extra: str = "") -> None:
-        if name in seen:
-            return
-        seen.add(name)
-        options.append((value, f"{('[' + tag + ']'):<11} {name}  {extra}"))
-
-    # The configured external (cloud) model — always selectable, and
-    # pre-highlighted when it is the active brain.
     ext = getattr(cfg, "external_model", None)
-    active: Any = None
-    if ext is not None and getattr(ext, "model", ""):
-        active = (ext.provider, ext.model)
-        mark = "● active" if getattr(ext, "enabled", False) else "configured"
-        _add(active, ext.provider, ext.model, mark)
-
-    for m in found.get("jaeger", []):
-        if m.get("path"):
-            _add(("local", m["name"]), "local", m["name"], "registered")
-    for m in found.get("local_gguf", []):
-        sz = f"{m['size_gb']}GB" if m.get("size_gb") else ""
-        _add(("local", m["path"]), "gguf", m["name"], f"{sz} {m.get('source','')}")
-    for m in found.get("ollama", {}).get("models", []):
-        _add(("ollama", m["name"]), "ollama", m["name"])
-    for m in found.get("lmstudio", {}).get("models", []):
-        _add(("lmstudio", m["name"]), "lmstudio", m["name"])
-    for m in found.get("ollama_cloud", {}).get("models", []):
-        _add(("ollama-cloud", m["name"]), "cloud", m["name"])
-    # Cloud APIs have no cheap model list to enumerate — offer a
-    # "type a model" entry for each so they're reachable from the picker.
-    for _prov, _label in (("ollama-cloud", "Ollama Cloud"),
-                          ("openai", "OpenAI"),
-                          ("anthropic", "Anthropic · Claude"),
-                          ("gemini", "Google Gemini")):
-        options.append((("__type__", _prov),
-                        f"{'[cloud]':<11} {_label} — type a model…"))
-
-    if not options:
+    providers = _build_providers_list(found, ext)
+    if not providers:
         return SlashResult(message="[yellow]No models found.[/]")
-    choice = pick(
-        " Select a model ", options,
-        text="↑/↓ move · Enter select · Esc cancel",
-        default=active,
+
+    if ext is not None and getattr(ext, "enabled", False) and getattr(ext, "model", ""):
+        cur_provider = ext.provider
+        cur_model = ext.model
+    else:
+        cur_provider = "local"
+        cur_model = (
+            Path(str(cfg.model.model_path)).name
+            if cfg is not None and getattr(cfg, "model", None) else ""
+        )
+
+    result = pick_provider_model(
+        providers,
+        current_provider=cur_provider,
+        current_model=cur_model,
     )
-    if choice is None:
+    if result is None:
         return SlashResult(message="[dim]model unchanged.[/]")
-    target, name = choice
-    if target == "__type__":
-        provider = name
+    slug, model = result
+    if model is _PICKER_TYPE_A_MODEL:
         try:
-            typed = ctx.console.input(f"  {provider} model: ").strip()
+            typed = ctx.console.input(f"  {slug} model: ").strip()
         except (EOFError, KeyboardInterrupt):
             return SlashResult(message="[dim]cancelled.[/]")
         if not typed:
             return SlashResult(message="[yellow]No model entered.[/]")
-        return _model_use(ctx, [provider, typed])
-    return _model_use(ctx, [target, name])
+        return _model_use(ctx, [slug, typed])
+    # Local picks display a name but the switch argument is the GGUF path
+    # when the model came from the disk scan (the on-disk file the agent
+    # loads in-process), or the registry name when it's a Jaeger-registered
+    # model. Map back here.
+    if slug == "local":
+        path_map = {
+            m["name"]: m["path"]
+            for m in (found.get("local_gguf") or [])
+            if m.get("path")
+        }
+        return _model_use(ctx, ["local", path_map.get(model, model)])
+    return _model_use(ctx, [slug, model])
 
 
 def _model_list(ctx: SlashContext) -> SlashResult:

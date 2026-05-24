@@ -103,6 +103,95 @@ def _walk_messages_for_calls(result: Any) -> tuple[list[str], list[dict], list[A
     return names, args, results
 
 
+def _run_turn_via_new_agent(
+    client: Any,
+    prompt: str,
+    *,
+    session_key: str,
+) -> TurnRow:
+    """Phase-6 bench dispatch — drive the turn through ``JaegerAgent``
+    instead of pydantic-ai. Returns the same :class:`TurnRow` shape so
+    the level scorers don't need to know which loop ran."""
+    from jaeger_os.agent.runtime_bridge import build_jaeger_agent, drive_one_turn
+    from jaeger_os.main import SKIP_FINAL_TOOLS, _get_agent, _pipeline
+
+    # Drive ``_get_agent`` once so the tool registry is mirrored. The
+    # per-session ``JaegerAgent`` cache lives here in the bench rather
+    # than in ``main.py`` so per-process state stays clean across
+    # different bench runs.
+    if not hasattr(_run_turn_via_new_agent, "_agents"):
+        _run_turn_via_new_agent._agents = {}  # type: ignore[attr-defined]
+    cache: dict[str, Any] = _run_turn_via_new_agent._agents  # type: ignore[attr-defined]
+
+    if session_key not in cache:
+        _get_agent(client)  # triggers the mirror inside _get_agent
+        cache[session_key] = build_jaeger_agent(
+            client,
+            system_prompt=_pipeline["system_prompt"],
+            skip_final_tools=SKIP_FINAL_TOOLS,
+        )
+    jaeger_agent = cache[session_key]
+
+    started = time.perf_counter()
+    error: str | None = None
+    out: dict[str, Any] = {}
+    try:
+        with open(os.devnull, "w") as devnull, redirect_stdout(devnull):
+            out = drive_one_turn(jaeger_agent, prompt)
+    except Exception as exc:  # noqa: BLE001
+        error = f"{type(exc).__name__}: {exc}"
+    elapsed = time.perf_counter() - started
+
+    # Walk the freshly appended messages to extract (tool, args, result)
+    # triples in dispatch order.  Mirrors ``_walk_messages_for_calls``'s
+    # contract on the new ``Message`` shape — see Phase-0 audit §6.
+    tools: list[str] = []
+    args: list[dict] = []
+    results: list[Any] = []
+    new_msgs = out.get("new_messages") or []
+    pending: dict[str, dict[str, Any]] = {}
+    for msg in new_msgs:
+        if msg.get("role") == "assistant":
+            for tc in (msg.get("tool_calls") or []):
+                tool_args = tc.get("arguments") or {}
+                pending[tc.get("id") or ""] = {
+                    "name": tc.get("name") or "",
+                    "args": tool_args if isinstance(tool_args, dict) else {},
+                }
+        elif msg.get("role") == "tool":
+            call = pending.pop(msg.get("tool_call_id") or "", None)
+            content = msg.get("content")
+            try:
+                import json
+                parsed_result = json.loads(content) if isinstance(content, str) else content
+            except (TypeError, ValueError):
+                parsed_result = content
+            if call is None:
+                tools.append(msg.get("name") or "?")
+                args.append({})
+            else:
+                tools.append(call["name"])
+                args.append(call["args"])
+            results.append(parsed_result)
+
+    return TurnRow(
+        prompt=prompt,
+        answer=out.get("answer", "") or "",
+        tools_called=tools,
+        tool_args=args,
+        tool_results=results,
+        elapsed_s=elapsed,
+        error=error,
+        session_key=session_key,
+        extras={
+            "framework_path": "jaeger_os_agent",
+            "iterations": out.get("iterations"),
+            "halt_reason": out.get("halt_reason"),
+            "skipped_final": out.get("skipped"),
+        },
+    )
+
+
 def run_turn(
     client: Any,
     prompt: str,
@@ -114,7 +203,18 @@ def run_turn(
 
     Uses ``session_key`` to carry conversation history across turns
     (Level 3 multi-turn relies on this; Level 1/2 use unique keys per
-    prompt so turns don't pollute each other)."""
+    prompt so turns don't pollute each other).
+
+    Phase-6.2 cutover: every turn now drives the framework-free
+    :class:`JaegerAgent` loop. The returned :class:`TurnRow` shape is
+    identical to what the legacy pydantic-ai path produced so level
+    scorers don't need to know which loop ran."""
+    return _run_turn_via_new_agent(client, prompt, session_key=session_key)
+
+    # Below: the legacy pydantic-ai dispatch is unreachable post-6.2 and
+    # gets deleted in the next cleanup pass alongside ``_run_via_iter``
+    # in ``main.py``. Kept here only because ``_walk_messages_for_calls``
+    # is exported for any out-of-tree caller that still needs it.
     from jaeger_os.main import (
         _format_tool_result_as_answer,
         _get_agent,

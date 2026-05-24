@@ -47,6 +47,7 @@ from pydantic_ai.messages import (
 )
 from pydantic_ai.usage import RequestUsage
 
+from .agent.tool_registry import register_tool_from_function
 from .core import credentials as creds
 from .core import log_rotation
 from .core import memory as mem
@@ -342,12 +343,49 @@ def _format_tool_result_as_answer(name: str, result: Any) -> str:
 # Pipeline state
 # ---------------------------------------------------------------------------
 _DEFAULT_SESSION_KEY = "cli"
+
+
+def _parse_toolsets_env() -> frozenset[str] | None:
+    """Parse ``JAEGER_TOOLSETS=name1,name2`` into a frozenset, or
+    return ``None`` when unset / empty (= expose every tool, legacy
+    default). Unknown names raise eagerly so a typo doesn't silently
+    leave the agent with no tools.
+
+    Convenience env-var hookup pending a proper ``config.toolsets:``
+    field. Most users will graduate to setting the toolset via a
+    slash command (``/toolsets``) once that lands."""
+    raw = os.environ.get("JAEGER_TOOLSETS", "").strip()
+    if not raw:
+        return None
+    names = frozenset(n.strip() for n in raw.split(",") if n.strip())
+    if not names:
+        return None
+    # Validate eagerly via ``resolve_toolsets`` — its KeyError carries
+    # the offending name. Catch it here so we can decorate the error
+    # with the env-var context.
+    from .agent.toolsets import resolve_toolsets
+    try:
+        resolve_toolsets(names)
+    except KeyError as exc:
+        raise ValueError(
+            f"JAEGER_TOOLSETS contains an unknown toolset {exc}; "
+            f"see ``jaeger_os.agent.JAEGER_TOOLSETS`` for valid names."
+        ) from exc
+    return names
 _MAX_HISTORY_MESSAGES = 20
 
 _pipeline: dict[str, Any] = {
     "layout": None,
     "config": None,
     "system_prompt": "",
+    # Phase-7: when set to a non-empty set, the agent loop's tool
+    # catalogue is filtered to just those Hermes-style toolset names.
+    # ``None`` (default) means "every registered tool" — useful while
+    # we measure context savings against the legacy default. Read by
+    # ``_run_turn_via_jaeger_agent`` / ``prewarm`` / ``delegate_task``
+    # whenever a fresh ``JaegerAgent`` is built. Override at boot via
+    # the ``JAEGER_TOOLSETS`` env var (comma-separated names).
+    "toolsets": None,
     "llm_lock": None,
     "show_latency": False,
     "show_tool_activity": True,
@@ -863,15 +901,19 @@ def _sanitize_history_messages(
 # ---------------------------------------------------------------------------
 # Agent construction
 # ---------------------------------------------------------------------------
-def _register_builtins(agent: Agent[None, str], client: Any) -> None:
-    """Wire all the built-in Jaeger tools onto the agent.
+def _register_builtins(client: Any) -> None:
+    """Wire all the built-in Jaeger tools into the framework-free
+    :mod:`jaeger_os.agent.tool_registry`.
 
-    Skill-loader-managed skills come AFTER this — instance skills can
-    override built-ins by registering a higher version of the same name.
+    Phase-6.2 cutover: the decorator is now ``@register_tool_from_function``
+    (was ``@agent.tool_plain``); tool bodies and the ``@requires_tier``
+    safety decorator are unchanged. Skill-loader-managed skills come
+    AFTER this — instance skills can override built-ins by registering
+    a higher version of the same name (last-write-wins in the registry).
     """
     t = jaeger_tools
 
-    @agent.tool_plain
+    @register_tool_from_function
     @requires_tier(PermissionTier.READ_ONLY, skill="time", operation="get_time",
                    summary="read the current time")
     def get_time(timezone: str | None = None) -> dict:
@@ -883,7 +925,7 @@ def _register_builtins(agent: Agent[None, str], client: Any) -> None:
         timezone (e.g. 'Asia/Shanghai')."""
         return t.get_time(timezone=timezone)
 
-    @agent.tool_plain
+    @register_tool_from_function
     @requires_tier(PermissionTier.READ_ONLY, skill="math", operation="calculate",
                    summary="evaluate an arithmetic expression")
     def calculate(expression: str) -> dict:
@@ -892,7 +934,7 @@ def _register_builtins(agent: Agent[None, str], client: Any) -> None:
         For "square root of N" call calculate("sqrt(N)")."""
         return t.calculate(expression=expression)
 
-    @agent.tool_plain
+    @register_tool_from_function
     @requires_tier(PermissionTier.READ_ONLY, skill="host", operation="system_status",
                    summary="read machine + instance dir status")
     def system_status() -> dict:
@@ -901,7 +943,7 @@ def _register_builtins(agent: Agent[None, str], client: Any) -> None:
         "list the workspace", "show files", or "what files are here"."""
         return t.system_status()
 
-    @agent.tool_plain
+    @register_tool_from_function
     @requires_tier(PermissionTier.WRITE_LOCAL, skill="files",
                    operation="write_file",
                    summary="write a file in the skills workspace")
@@ -910,7 +952,7 @@ def _register_builtins(agent: Agent[None, str], client: Any) -> None:
         if it already exists."""
         return t.file_write(path=path, content=content)
 
-    @agent.tool_plain
+    @register_tool_from_function
     @requires_tier(PermissionTier.WRITE_LOCAL, skill="files",
                    operation="append_file",
                    summary="append to a file in the skills workspace")
@@ -918,7 +960,7 @@ def _register_builtins(agent: Agent[None, str], client: Any) -> None:
         """Append text to an existing skills/ file."""
         return t.append_file(path=path, content=content)
 
-    @agent.tool_plain
+    @register_tool_from_function
     @requires_tier(PermissionTier.WRITE_LOCAL, skill="files",
                    operation="patch",
                    summary="edit a file in the skills workspace")
@@ -932,7 +974,7 @@ def _register_builtins(agent: Agent[None, str], client: Any) -> None:
         occurrence."""
         return t.edit_file(path=path, old=old, new=new, replace_all=replace_all)
 
-    @agent.tool_plain
+    @register_tool_from_function
     @requires_tier(PermissionTier.WRITE_LOCAL, skill="files",
                    operation="delete_file",
                    summary="delete a file from the skills workspace")
@@ -940,7 +982,7 @@ def _register_builtins(agent: Agent[None, str], client: Any) -> None:
         """Delete a file from the skills/ directory."""
         return t.delete_file(path=path)
 
-    @agent.tool_plain
+    @register_tool_from_function
     @requires_tier(PermissionTier.READ_ONLY, skill="files", operation="read_file",
                    summary="read a workspace file")
     def read_file(path: str, offset: int = 0, limit: int | None = None) -> dict:
@@ -952,7 +994,7 @@ def _register_builtins(agent: Agent[None, str], client: Any) -> None:
         first line, `limit` the line count (default: the whole file)."""
         return t.file_read(path=path, offset=offset, limit=limit)
 
-    @agent.tool_plain
+    @register_tool_from_function
     @requires_tier(PermissionTier.READ_ONLY, skill="files", operation="list_skill_dir",
                    summary="list contents of the skills directory")
     def list_skill_dir(path: str = ".") -> dict:
@@ -962,7 +1004,7 @@ def _register_builtins(agent: Agent[None, str], client: Any) -> None:
         Use for "list files", "show files", "what's in <dir>"."""
         return t.list_skill_dir(path=path)
 
-    @agent.tool_plain
+    @register_tool_from_function
     @requires_tier(PermissionTier.READ_ONLY, skill="files", operation="search_files",
                    summary="search file contents under the skills directory")
     def search_files(query: str, path: str = ".", max_results: int = 50) -> dict:
@@ -974,7 +1016,7 @@ def _register_builtins(agent: Agent[None, str], client: Any) -> None:
         one. Returns {file, line, text} matches."""
         return t.search_files(query=query, path=path, max_results=max_results)
 
-    @agent.tool_plain
+    @register_tool_from_function
     def remember(key: str, value: str, category: str = "") -> dict:
         """MANDATORY when the user states a preference, identity fact,
         plan, or anything they might recall later. Call this proactively
@@ -989,7 +1031,7 @@ def _register_builtins(agent: Agent[None, str], client: Any) -> None:
         not this."""
         return t.remember(key=key, value=value, category=category)
 
-    @agent.tool_plain
+    @register_tool_from_function
     @requires_tier(PermissionTier.READ_ONLY, skill="memory", operation="recall",
                    summary="recall a fact by key")
     def recall(key: str) -> dict:
@@ -1000,14 +1042,14 @@ def _register_builtins(agent: Agent[None, str], client: Any) -> None:
         Fuzzy match supported, so close-but-not-exact keys still hit."""
         return t.recall(key=key)
 
-    @agent.tool_plain
+    @register_tool_from_function
     def forget(key: str) -> dict:
         """MANDATORY when the user asks to remove a stored fact
         ("forget my X", "remove my X preference", "I changed my mind
         about X"). Call this — don't just acknowledge in text."""
         return t.forget(key=key)
 
-    @agent.tool_plain
+    @register_tool_from_function
     def set_name(name: str) -> dict:
         """Change your OWN name. Use when the user renames you ("your
         name is …", "I'll call you …", "rename yourself"). Writes your
@@ -1015,7 +1057,7 @@ def _register_builtins(agent: Agent[None, str], client: Any) -> None:
         name — remember() is for facts about the USER."""
         return t.set_name(name=name)
 
-    @agent.tool_plain
+    @register_tool_from_function
     def update_soul(content: str) -> dict:
         """Rewrite your soul.md — who you are: character, values, voice,
         self-narrative. Your current soul is in your system prompt; read
@@ -1023,7 +1065,7 @@ def _register_builtins(agent: Agent[None, str], client: Any) -> None:
         durable facts about YOURSELF go here, not in remember()."""
         return t.update_soul(content=content)
 
-    @agent.tool_plain
+    @register_tool_from_function
     @requires_tier(PermissionTier.READ_ONLY, skill="memory", operation="list_facts",
                    summary="list every stored fact")
     def list_facts() -> dict:
@@ -1032,7 +1074,7 @@ def _register_builtins(agent: Agent[None, str], client: Any) -> None:
         Use this before falling back to free-text 'I don't know'."""
         return t.list_facts()
 
-    @agent.tool_plain
+    @register_tool_from_function
     def memory(action: str, key: str = "", value: str = "",
                query: str = "", category: str = "") -> dict:
         """The agent's memory — ONE tool for everything it must recall
@@ -1051,29 +1093,29 @@ def _register_builtins(agent: Agent[None, str], client: Any) -> None:
         return t.memory(action=action, key=key, value=value,
                         query=query, category=category)
 
-    @agent.tool_plain
+    @register_tool_from_function
     def schedule_prompt(cron_expr: str, prompt: str, name: str | None = None) -> dict:
         """Schedule a prompt for unattended execution on a cron expression."""
         return t.schedule_prompt(cron_expr=cron_expr, prompt=prompt, name=name)
 
-    @agent.tool_plain
+    @register_tool_from_function
     def list_schedules() -> dict:
         """List every active scheduled prompt."""
         return t.list_schedules()
 
-    @agent.tool_plain
+    @register_tool_from_function
     def cancel_schedule(name: str) -> dict:
         """Cancel a previously-scheduled prompt by name."""
         return t.cancel_schedule(name=name)
 
-    @agent.tool_plain
+    @register_tool_from_function
     def web_search(query: str, max_results: int = 5) -> dict:
         """Web search (multi-backend, no API key). Returns titles + URLs
         + snippets. Use this to FIND relevant pages, then web_extract to
         actually READ one."""
         return t.web_search(query=query, max_results=max_results)
 
-    @agent.tool_plain
+    @register_tool_from_function
     def web_extract(url: str, max_chars: int = 8000) -> dict:
         """Fetch a web page and return its readable text. This is the
         research tool — web_search finds which pages matter, web_extract
@@ -1082,12 +1124,12 @@ def _register_builtins(agent: Agent[None, str], client: Any) -> None:
         before writing code for an unfamiliar task."""
         return t.web_fetch(url=url, max_chars=max_chars)
 
-    @agent.tool_plain
+    @register_tool_from_function
     def get_weather(location: str) -> dict:
         """Look up current weather via wttr.in (no API key)."""
         return t.get_weather(location=location)
 
-    @agent.tool_plain
+    @register_tool_from_function
     @requires_tier(PermissionTier.WRITE_LOCAL, skill="code",
                    operation="execute_code",
                    summary="run Python code in the skills workspace")
@@ -1101,7 +1143,7 @@ def _register_builtins(agent: Agent[None, str], client: Any) -> None:
         packages installed via install_package."""
         return t.run_python(code=code, timeout_s=timeout_s)
 
-    @agent.tool_plain
+    @register_tool_from_function
     def terminal(command: str, timeout_s: float = 60.0) -> dict:
         """Run a non-Python command-line program — git, npm, brew,
         ffmpeg. For Python code use execute_code; for files use
@@ -1110,7 +1152,7 @@ def _register_builtins(agent: Agent[None, str], client: Any) -> None:
         genuinely needs a shell program."""
         return t.run_shell(command=command, timeout_s=timeout_s)
 
-    @agent.tool_plain
+    @register_tool_from_function
     def install_package(package: str) -> dict:
         """Install a third-party Python package into this instance's
         own venv (isolated from the framework). Use when a skill you're
@@ -1120,14 +1162,14 @@ def _register_builtins(agent: Agent[None, str], client: Any) -> None:
         code that imports it."""
         return t.install_package(package=package)
 
-    @agent.tool_plain
+    @register_tool_from_function
     def list_venv_packages() -> dict:
         """List packages installed in this instance's venv. Read-only —
         check here before install_package to see if a dependency is
         already available."""
         return t.list_venv_packages()
 
-    @agent.tool_plain
+    @register_tool_from_function
     def run_in_venv(code: str, timeout_s: float = 30.0) -> dict:
         """Execute Python against this instance's venv interpreter so
         packages installed via install_package ARE importable. Sandboxed
@@ -1135,14 +1177,14 @@ def _register_builtins(agent: Agent[None, str], client: Any) -> None:
         for code that depends on installed libraries."""
         return t.run_in_venv(code=code, timeout_s=timeout_s)
 
-    @agent.tool_plain
+    @register_tool_from_function
     def list_models() -> dict:
         """List the LLM models in the registry with role (realtime /
         coder) and cache status. Read-only — use this to tell the user
         what's available, or to back a model recommendation."""
         return t.list_models()
 
-    @agent.tool_plain
+    @register_tool_from_function
     def download_model(name: str) -> dict:
         """Download a registered model from HuggingFace Hub. PRIVILEGED
         tier — routes through confirmation. Only call this when the user
@@ -1151,7 +1193,7 @@ def _register_builtins(agent: Agent[None, str], client: Any) -> None:
         decide, then call. Use list_models for valid names."""
         return t.download_model(name=name)
 
-    @agent.tool_plain
+    @register_tool_from_function
     def model_location(action: str, path: str = "") -> dict:
         """Register a custom directory JROS scans for local .gguf models
         — so a folder you point it at (a non-standard LM Studio / Ollama
@@ -1160,7 +1202,7 @@ def _register_builtins(agent: Agent[None, str], client: Any) -> None:
         instance config; survives restarts."""
         return t.model_location(action=action, path=path)
 
-    @agent.tool_plain
+    @register_tool_from_function
     def package_skill(name: str) -> dict:
         """Bundle a skill you built into a portable, shareable .zip with
         a generated manifest (name, version, deps, smoke-test status).
@@ -1170,7 +1212,7 @@ def _register_builtins(agent: Agent[None, str], client: Any) -> None:
         yet — see docs/marketplace_spec.md)."""
         return t.package_skill(name=name)
 
-    @agent.tool_plain
+    @register_tool_from_function
     def benchmark_skill(name: str) -> dict:
         """Run a skill's scored benchmark (tests/benchmark.py) and track
         the delta vs. its last run. Use this when revising a skill:
@@ -1179,7 +1221,7 @@ def _register_builtins(agent: Agent[None, str], client: Any) -> None:
         repo's level benchmarks, scoped to one skill."""
         return t.benchmark_skill(name=name)
 
-    @agent.tool_plain
+    @register_tool_from_function
     def propose_deep_think_task(description: str) -> dict:
         """Queue a skill-development task for Deep Think to work later.
         Use when you notice something worth building/fixing that's too
@@ -1188,12 +1230,12 @@ def _register_builtins(agent: Agent[None, str], client: Any) -> None:
         user decides."""
         return t.propose_deep_think_task(description=description)
 
-    @agent.tool_plain
+    @register_tool_from_function
     def list_deep_think_queue() -> dict:
         """Read the Deep Think task queue with status counts. Read-only."""
         return t.list_deep_think_queue()
 
-    @agent.tool_plain
+    @register_tool_from_function
     def kanban(action: str, card_id: str = "", title: str = "",
                description: str = "", column: str = "", tag: str = "",
                priority: str = "", note: str = "") -> dict:
@@ -1211,7 +1253,7 @@ def _register_builtins(agent: Agent[None, str], client: Any) -> None:
                         description=description, column=column, tag=tag,
                         priority=priority, note=note)
 
-    @agent.tool_plain
+    @register_tool_from_function
     @requires_tier(PermissionTier.EXTERNAL_EFFECT, skill="browser",
                    operation="browser",
                    summary="drive a real web browser")
@@ -1232,7 +1274,7 @@ def _register_builtins(agent: Agent[None, str], client: Any) -> None:
         return t.browser(action=action, url=url, element=element,
                          text=text, direction=direction, key=key)
 
-    @agent.tool_plain
+    @register_tool_from_function
     def skill(action: str, name: str = "", query: str = "",
               file: str = "") -> dict:
         """Discover and read playbook skills — experienced procedures for
@@ -1247,14 +1289,14 @@ def _register_builtins(agent: Agent[None, str], client: Any) -> None:
         On-demand — skills are NOT all in your prompt; find what you need."""
         return t.skill(action=action, name=name, query=query, file=file)
 
-    @agent.tool_plain
+    @register_tool_from_function
     def board_view(column: str = "", tag: str = "") -> dict:
         """Read the kanban task board — what work is queued (ready),
         in_progress, blocked, or done. Optionally filter by `column` or
         `tag`. Deep Think jobs show here too (tag 'deepthink')."""
         return t.board_view(column=column, tag=tag)
 
-    @agent.tool_plain
+    @register_tool_from_function
     def board_add(
         title: str, description: str = "",
         tags: list[str] | None = None, priority: str = "med",
@@ -1265,14 +1307,14 @@ def _register_builtins(agent: Agent[None, str], client: Any) -> None:
         return t.board_add(title=title, description=description,
                            tags=tags, priority=priority)
 
-    @agent.tool_plain
+    @register_tool_from_function
     def board_move(card_id: str, column: str) -> dict:
         """Move a board card: `in_progress` when you start it, `done`
         when finished, `blocked` when it needs the user. You cannot move
         a card `backlog → ready` — that is the user's approval step."""
         return t.board_move(card_id=card_id, column=column)
 
-    @agent.tool_plain
+    @register_tool_from_function
     def board_update(
         card_id: str, title: str = "", description: str = "",
         priority: str = "", add_tag: str = "", note: str = "",
@@ -1285,7 +1327,7 @@ def _register_builtins(agent: Agent[None, str], client: Any) -> None:
                               description=description, priority=priority,
                               add_tag=add_tag, note=note, result=result)
 
-    @agent.tool_plain
+    @register_tool_from_function
     def todo(todos: list[dict] | None = None, merge: bool = False) -> dict:
         """Your session task list — a scratchpad to plan and track a
         multi-step job. Use it for ANY task with 3+ steps, or when the
@@ -1305,7 +1347,7 @@ def _register_builtins(agent: Agent[None, str], client: Any) -> None:
         board. When every item is completed, the task is done."""
         return t.todo(todos=todos, merge=merge)
 
-    @agent.tool_plain
+    @register_tool_from_function
     def load_toolset(name: str = "") -> dict:
         """Make a group of extra tools visible. You start each turn with
         a small CORE toolset; everything else is grouped — built-in
@@ -1331,7 +1373,7 @@ def _register_builtins(agent: Agent[None, str], client: Any) -> None:
             "available": all_toolsets(),
         }
 
-    @agent.tool_plain
+    @register_tool_from_function
     def start_background(code: str, name: str = "") -> dict:
         """Launch Python code as a background process that OUTLIVES this
         turn. Use this — not run_python / run_in_venv (which are capped
@@ -1341,13 +1383,13 @@ def _register_builtins(agent: Agent[None, str], client: Any) -> None:
         check_background, end with stop_background."""
         return t.start_background(code=code, name=name)
 
-    @agent.tool_plain
+    @register_tool_from_function
     def list_background() -> dict:
         """List every background process with live status (running /
         exited / stopped, exit code, elapsed)."""
         return t.list_background()
 
-    @agent.tool_plain
+    @register_tool_from_function
     def check_background(process_id: str, lines: int = 20) -> dict:
         """Status of one background process + the last `lines` lines of
         its output (default 20, max 2000 — raise it for fuller output).
@@ -1355,22 +1397,22 @@ def _register_builtins(agent: Agent[None, str], client: Any) -> None:
         what it produced."""
         return t.check_background(process_id=process_id, lines=lines)
 
-    @agent.tool_plain
+    @register_tool_from_function
     def stop_background(process_id: str) -> dict:
         """Terminate a running background process by id."""
         return t.stop_background(process_id=process_id)
 
-    @agent.tool_plain
+    @register_tool_from_function
     def clarify(question: str) -> dict:
         """Ask the user a clarifying question instead of guessing."""
         return t.ask_user(question=question)
 
-    @agent.tool_plain
+    @register_tool_from_function
     def help_me() -> dict:
         """Capability overview — call when asked 'what can you do?'."""
         return t.help_me()
 
-    @agent.tool_plain
+    @register_tool_from_function
     def get_credential(name: str) -> dict:
         """Look up a secret (API key, token) by name from the instance's
         credentials/ store. NEVER read credential files directly — this is
@@ -1379,7 +1421,7 @@ def _register_builtins(agent: Agent[None, str], client: Any) -> None:
         """
         return creds.get_credential_tool_result(_pipeline["layout"], name=name)
 
-    @agent.tool_plain
+    @register_tool_from_function
     def list_credentials() -> dict:
         """List the names of every credential currently stored. Values
         are never returned by this tool — use get_credential(name) for
@@ -1390,7 +1432,7 @@ def _register_builtins(agent: Agent[None, str], client: Any) -> None:
     # Parity ports from python_pydantic_ai — TTS, vision, host, sub-agent,
     # semantic memory. Each tool's docstring is what the LLM sees.
     # ------------------------------------------------------------------
-    @agent.tool_plain
+    @register_tool_from_function
     def text_to_speech(text: str = "", path: str = "") -> dict:
         """Speak text aloud through the default audio output via Kokoro
         TTS. Use ONLY when the user explicitly asks to HEAR something
@@ -1403,7 +1445,7 @@ def _register_builtins(agent: Agent[None, str], client: Any) -> None:
         are given. Supports minimal SSML: <break time="200ms"/>, <breath/>."""
         return t.speak(text=text, path=path)
 
-    @agent.tool_plain
+    @register_tool_from_function
     def vision_analyze(image_path: str, question: str = "Describe this image in one short sentence.") -> dict:
         """Look at a workspace image and answer a question about it.
         Default backbone: Moondream2 (~1.9B VLM, Apache-2.0). image_path is
@@ -1411,7 +1453,7 @@ def _register_builtins(agent: Agent[None, str], client: Any) -> None:
         the VLM on CPU."""
         return t.look_at(image_path=image_path, question=question)
 
-    @agent.tool_plain
+    @register_tool_from_function
     @requires_tier(PermissionTier.WRITE_LOCAL, skill="vision",
                    operation="image_generate",
                    summary="generate an image into the skills workspace")
@@ -1431,7 +1473,7 @@ def _register_builtins(agent: Agent[None, str], client: Any) -> None:
             guidance_scale=guidance_scale, seed=seed,
         )
 
-    @agent.tool_plain
+    @register_tool_from_function
     @requires_tier(PermissionTier.EXTERNAL_EFFECT, skill="host",
                    operation="open_on_host",
                    summary="open a URL / file / app on the host")
@@ -1444,7 +1486,7 @@ def _register_builtins(agent: Agent[None, str], client: Any) -> None:
         targets are sandbox-resolved under <instance>/skills/."""
         return t.open_on_host(target=target, kind=kind)
 
-    @agent.tool_plain
+    @register_tool_from_function
     def search_memory(query: str, k: int = 5) -> dict:
         """Semantic search over this instance's episodic conversation log.
         Use when `recall` (exact key) misses — e.g. "what did we talk
@@ -1452,7 +1494,7 @@ def _register_builtins(agent: Agent[None, str], client: Any) -> None:
         past turns with cosine-similarity scores."""
         return t.search_memory(query=query, k=k)
 
-    @agent.tool_plain
+    @register_tool_from_function
     def delegate_task(subtasks: list[str]) -> dict:
         """Hand focused subtasks to fresh sub-agents. Pass a list: one
         item runs a single sub-agent; 2+ items fan out across up to 2
@@ -1469,7 +1511,7 @@ def _register_builtins(agent: Agent[None, str], client: Any) -> None:
             return _delegate_internal(client, clean[0])
         return _delegate_parallel(client, clean)
 
-    @agent.tool_plain
+    @register_tool_from_function
     @requires_tier(PermissionTier.EXTERNAL_EFFECT, skill="messaging",
                    operation="send_message",
                    summary="send a message on an external channel")
@@ -1505,7 +1547,7 @@ def _register_builtins(agent: Agent[None, str], client: Any) -> None:
         except Exception as exc:
             return {"sent": False, "error": f"bridge.send failed: {type(exc).__name__}: {exc}"}
 
-    @agent.tool_plain
+    @register_tool_from_function
     def reload_skills() -> dict:
         """Re-scan core skills/ + instance skills/ and register any
         newly-authored or newly-versioned skills onto this agent.
@@ -1539,7 +1581,7 @@ def _register_builtins(agent: Agent[None, str], client: Any) -> None:
             "total_registered": len(after),
         }
 
-    @agent.tool_plain
+    @register_tool_from_function
     def list_plugins() -> dict:
         """Enumerate the bundled jaeger_os plugins (discord, telegram,
         imessage, whisper_stt, kokoro_tts, mcp) with install + credential
@@ -1548,7 +1590,7 @@ def _register_builtins(agent: Agent[None, str], client: Any) -> None:
         plugin for."""
         return t.list_plugins()
 
-    @agent.tool_plain
+    @register_tool_from_function
     def setup_plugin(name: str) -> dict:
         """Return step-by-step setup instructions for the named plugin
         (e.g. ``discord``, ``telegram``, ``whisper_stt``). Surfaces
@@ -1558,7 +1600,7 @@ def _register_builtins(agent: Agent[None, str], client: Any) -> None:
         credentials themselves."""
         return t.setup_plugin(name=name)
 
-    @agent.tool_plain
+    @register_tool_from_function
     def listen(seconds: int = 5) -> dict:
         """Record N seconds of microphone audio and return the transcript.
 
@@ -1600,17 +1642,23 @@ def _delegate_internal(client: Any, subtask: str) -> dict[str, Any]:
     _delegate_depth.value = depth + 1
     started = time.perf_counter()
     try:
-        agent = _get_agent(client)
-        # Serialize model access through the shared llm_lock. Sequential
-        # delegate was already one-at-a-time, but delegate_parallel runs
-        # _delegate_internal from worker threads — llama-cpp can't decode
-        # two prompts at once, so the lock is mandatory there.
+        # Phase-6.2 cutover: delegate now drives the new JaegerAgent
+        # loop. A fresh ``JaegerAgent`` per subtask keeps history scoped
+        # to the delegate's work (a child agent doesn't inherit the
+        # parent's context — the spec calls this out).
+        from .agent.runtime_bridge import build_jaeger_agent, drive_one_turn
+        sub_agent = build_jaeger_agent(
+            client,
+            system_prompt=_pipeline["system_prompt"],
+            toolsets=_pipeline.get("toolsets"),
+            skip_final_tools=SKIP_FINAL_TOOLS,
+        )
         lock = _pipeline.get("llm_lock")
         if lock is not None:
             with lock:
-                iter_out = asyncio.run(_run_via_iter(agent, clean, None, client=client))
+                iter_out = drive_one_turn(sub_agent, clean)
         else:
-            iter_out = asyncio.run(_run_via_iter(agent, clean, None, client=client))
+            iter_out = drive_one_turn(sub_agent, clean)
     except Exception as exc:
         _delegate_depth.value = depth
         return {"delegated": False, "error": f"{type(exc).__name__}: {exc}"}
@@ -1618,11 +1666,13 @@ def _delegate_internal(client: Any, subtask: str) -> dict[str, Any]:
         _delegate_depth.value = depth
 
     elapsed = time.perf_counter() - started
-    if iter_out.get("skipped"):
-        answer = iter_out.get("skipped_text") or ""
-    else:
-        result = iter_out.get("result")
-        answer = (getattr(result, "output", None) if result else "") or ""
+    # ``drive_one_turn`` returns a shape that includes ``answer``,
+    # ``skipped``, ``tool_activity``, etc.  Translate to the legacy
+    # ``iter_out`` keys the surrounding code below expects.
+    # ``drive_one_turn`` already populates ``answer`` for both the
+    # skip-final shortcut and the full loop path — no separate result
+    # object to interrogate.
+    answer = iter_out.get("answer") or ""
     return {
         "delegated": True,
         "subtask": clean,
@@ -1754,7 +1804,7 @@ def build_agent(client: Any, system_prompt: str, mcp_specs: list[Any] | None = N
         retries=2,
         tools=_build_mcp_tools(mcp_specs or []),
     )
-    _register_builtins(agent, client)
+    _register_builtins(client)
     return agent
 
 
@@ -2517,13 +2567,22 @@ def _agent_key(client: Any) -> tuple:
 
 
 def _get_agent(client: Any) -> Agent[None, str]:
+    """Phase-6.2 cutover: still constructs a (now-empty) pydantic-ai
+    ``Agent`` for shape compatibility with the few remaining callers
+    that reach for ``agent.model`` etc., but the real work happens via
+    ``_register_builtins`` (writes into the framework-free registry)
+    and the skill loader (same). The returned ``Agent`` carries the
+    model + system prompt; **no tools live on it any more** — they all
+    live in :mod:`jaeger_os.agent.tool_registry`.
+
+    Will be deleted entirely once every legacy call site is gone."""
     key = _agent_key(client)
     if key not in _agent_cache:
         _agent_cache.clear()
         agent = build_agent(client, _pipeline["system_prompt"], _pipeline.get("mcp_specs"))
         # Skill loader registers base + instance skills AFTER built-ins,
-        # so an instance skill named `get_time_v2` would override the
-        # built-in (intentional; honors the v2 override-via-versioning rule).
+        # so an instance skill named `get_time_v2` overrides the built-in
+        # (last-write-wins in the registry).
         load_and_register(
             agent,
             _pipeline["layout"],
@@ -2553,11 +2612,19 @@ def prewarm(client: Any) -> None:
         return
     started = time.perf_counter()
     try:
-        agent = _get_agent(client)
-        # A trivial free-text prompt: pays decode for system prompt +
-        # tool schema prefill + a handful of generation tokens. Result
-        # discarded — no history, no log.
-        agent.run_sync("Respond with just the word ready.")
+        # Phase-6.2: prewarm through the new ``JaegerAgent`` directly.
+        # ``_get_agent`` still runs to fire tool + skill registration into
+        # the framework-free registry; we then build a one-shot agent and
+        # discard it — the warmup just primes the llama-cpp KV cache.
+        _get_agent(client)
+        from .agent.runtime_bridge import build_jaeger_agent, drive_one_turn
+        warm_agent = build_jaeger_agent(
+            client,
+            system_prompt=_pipeline["system_prompt"],
+            toolsets=_pipeline.get("toolsets"),
+            skip_final_tools=SKIP_FINAL_TOOLS,
+        )
+        drive_one_turn(warm_agent, "Respond with just the word ready.")
     except Exception as exc:
         print(f"[jaeger] prewarm skipped: {exc}", flush=True)
         return
@@ -2626,13 +2693,117 @@ def _preflight_log() -> None:
         pass
 
 
+# Phase-6 migration: per-session ``JaegerAgent`` instances live here
+# while the new path is opt-in. Keyed by session so multi-turn context
+# accumulates the same way the legacy pydantic-ai history dict does.
+_jaeger_agents_by_session: dict[str, Any] = {}
+
+
+def _run_turn_via_jaeger_agent(
+    client: Any,
+    user_text: str,
+    *,
+    session_key: str,
+) -> dict[str, Any]:
+    """Phase-6 parallel implementation of :func:`_run_turn` that drives
+    the loop through :class:`JaegerAgent`. Returns the exact same dict
+    shape so ``run_command`` / ``run_for_voice`` don't need to know
+    which loop ran."""
+    from .agent.runtime_bridge import build_jaeger_agent, drive_one_turn
+
+    key = session_key
+    # First call per session builds + caches a JaegerAgent. Force the
+    # pydantic-ai agent to build too so its tool registrations + the
+    # bridge's mirror both fire.
+    if key not in _jaeger_agents_by_session:
+        _get_agent(client)  # populates the new registry via _get_agent's mirror
+        _jaeger_agents_by_session[key] = build_jaeger_agent(
+            client,
+            system_prompt=_pipeline["system_prompt"],
+            toolsets=_pipeline.get("toolsets"),
+            skip_final_tools=SKIP_FINAL_TOOLS,
+        )
+    jaeger_agent = _jaeger_agents_by_session[key]
+
+    lock = _pipeline["llm_lock"]
+    started = time.perf_counter()
+    try:
+        if lock is not None:
+            with lock:
+                result = drive_one_turn(jaeger_agent, user_text)
+        else:
+            result = drive_one_turn(jaeger_agent, user_text)
+    except Exception as exc:  # noqa: BLE001 — match legacy crash surface
+        elapsed = time.perf_counter() - started
+        report = LatencyReport(elapsed, 0, 0.0, 0.0, 0.0, 0.0, 0.0)
+        write_log({
+            "user": user_text, "session_key": key, "error": str(exc),
+            "latency": asdict(report), "framework_path": "jaeger_os_agent",
+        })
+        return {"text": "", "error": str(exc), "tool_activity": [],
+                "first_decision": None, "skipped_final": False,
+                "spoke_via_tool": False, "elapsed_s": elapsed, "report": report}
+
+    answer = (result["answer"] or "").strip()
+    tool_activity = result["tool_activity"]
+    first_decision = result["first_decision"]
+    elapsed = result["elapsed_s"]
+    skipped = result["skipped"]
+
+    # No per-call ``model.last_call_times`` on the new path yet — the
+    # report's breakdown is filled in Phase 7 when the adapter exposes
+    # call timings the same way ``LlamaCppModel`` does.
+    report = LatencyReport(
+        total=elapsed,
+        tool_calls=len(tool_activity),
+        decision=0.0, decision_ttft=0.0,
+        tool=0.0, final=0.0, final_ttft=0.0,
+    )
+
+    write_log({
+        "user": user_text, "session_key": key, "answer": answer,
+        "tool_calls": len(tool_activity), "tool_activity": tool_activity,
+        "decision": first_decision, "skipped_final": skipped,
+        "latency": asdict(report),
+        "iterations": result["iterations"],
+        "halt_reason": result["halt_reason"],
+        "framework_path": "jaeger_os_agent",
+    })
+
+    # Trim per-session message history at the legacy limit so an
+    # apples-to-apples L3 multi-turn bench measures the same memory
+    # window. The factor of two accounts for tool-result pairs that
+    # the legacy path counted as one slot.
+    overflow = len(jaeger_agent.messages) - _MAX_HISTORY_MESSAGES * 2
+    if overflow > 0:
+        del jaeger_agent.messages[:overflow]
+
+    runner = _pipeline["thinking_runner"]
+    if runner is not None:
+        runner.queue(user_text, run_id=os.environ.get("BENCH_RUN_ID"))
+
+    return {
+        "text": answer, "error": None, "tool_activity": tool_activity,
+        "first_decision": first_decision, "skipped_final": skipped,
+        "spoke_via_tool": any("🔊" in line for line in tool_activity),
+        "elapsed_s": elapsed, "report": report,
+    }
+
+
 def _run_turn(client: Any, user_text: str, *, session_key: str) -> dict[str, Any]:
     """The unified agent turn — the one path every entry point shares.
 
     Runs the loop, extracts the answer + tool activity, writes the log,
     updates session memory, and returns a structured result dict.
     ``run_command`` and ``run_for_voice`` are thin output adapters over
-    this — see them below. Never prints; never raises."""
+    this — see them below. Never prints; never raises.
+
+    Phase-6.2 cutover: the loop is now ``JaegerAgent`` unconditionally.
+    The legacy pydantic-ai code paths below the early-return are
+    unreachable and will be deleted in the next cleanup pass."""
+    return _run_turn_via_jaeger_agent(client, user_text, session_key=session_key)
+    # ── legacy pydantic-ai path (unreachable) ──────────────────────
+
     key = session_key
     history = _get_session_history(key) if _pipeline["with_memory"] else None
     effective_text = (
@@ -3444,6 +3615,11 @@ def boot_for_tui(
         _pipeline["show_help_on_start"] = False
         _pipeline["system_prompt"] = prompt_module.build_system_prompt(layout)
         _pipeline["with_memory"] = with_memory
+        # Phase-7: optional toolset restriction at boot. ``JAEGER_TOOLSETS=...``
+        # (comma-separated) keeps only the named Hermes-style groups in the
+        # agent's catalogue; unset → every registered tool. Validates eagerly
+        # so a typo surfaces at boot, not on the first turn.
+        _pipeline["toolsets"] = _parse_toolsets_env()
 
         # Wire the interactive permission provider so tier-gated tools
         # (run_in_venv, install_package, …) prompt the user instead of

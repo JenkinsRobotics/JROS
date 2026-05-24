@@ -1,0 +1,9 @@
+{
+  "captured_at": "2026-05-24T00:40:12Z",
+  "git_sha": "7b3be09",
+  "host": "Darwin 25.3.0 arm64",
+  "host_memory_bytes": 34359738368,
+  "model": "local · /Users/jonathanjenkins/.lmstudio/models/lmstudio-community/Qwen3.5-9B-GGUF/Qwen3.5-9B-Q4_K_M.gguf (ctx=16384)",
+  "framework": "pydantic-ai",
+  "note": "Baseline before the JaegerAgent refactor (Phase 1+)."
+}

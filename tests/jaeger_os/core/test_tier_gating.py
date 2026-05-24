@@ -24,12 +24,14 @@ from jaeger_os.core.permissions import (
 
 
 def _registered_tools():
-    """Build the real agent and return its {name: function} tool map."""
-    from pydantic_ai import Agent
+    """Register the built-ins into the framework-free tool registry
+    and return its ``{name: fn}`` map. Post Phase-6.2 this is the
+    canonical surface — there's no pydantic-ai ``Agent`` to interrogate."""
+    from jaeger_os.agent import clear_registry, get_tools
     from jaeger_os.main import _register_builtins
-    agent = Agent("test")
-    _register_builtins(agent, client=None)
-    return {n: t.function for n, t in agent._function_toolset.tools.items()}
+    clear_registry()
+    _register_builtins(client=None)
+    return {t.name: t.fn for t in get_tools()}
 
 
 # ── write / effect tools must be gated ───────────────────────────────

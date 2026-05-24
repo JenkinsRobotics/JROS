@@ -186,41 +186,63 @@ class _ToolCapturingAgent:
     """Wraps the agent during a skill's ``register()`` so we record
     exactly which tools the skill adds — that captured set IS the
     skill's toolset (a skill is a self-describing bundle of tools).
-    Every other attribute passes straight through to the real agent."""
+    Every other attribute passes straight through to the real agent.
+
+    Phase-6.2 cutover: ``tool_plain`` and ``tool`` no longer write to
+    the pydantic-ai agent — they write into
+    :mod:`jaeger_os.agent.tool_registry` via
+    :func:`register_tool_from_function`. The wrapped ``self._agent`` is
+    still used for non-tool attribute pass-through (skill code that
+    reads ``agent.model``, etc.). The skill source stays unchanged —
+    ``@agent.tool_plain`` still does the right thing, just into the
+    new registry."""
 
     def __init__(self, agent: Any) -> None:
         self._agent = agent
         self.captured: list[str] = []
 
-    def _wrap(self, real: Callable[..., Any]) -> Callable[..., Any]:
+    def _register(
+        self, fn: Callable[..., Any], **kwargs: Any,
+    ) -> Callable[..., Any]:
+        """Lift one skill function into the framework-free registry.
+        Captures the name so the skill becomes its own named toolset."""
+        from jaeger_os.agent.tool_registry import register_tool_from_function
+        name = getattr(fn, "__name__", None)
+        if name:
+            self.captured.append(name)
+        # ``register_tool_from_function`` synthesizes the args model from
+        # the function signature — works for the vast majority of skill
+        # tools, which use plain type hints. Skills that need a custom
+        # args model can call ``register_tool_instance`` directly.
+        register_tool_from_function(fn, **kwargs)
+        return fn
+
+    def _wrap(self, _legacy_real: Callable[..., Any] | None) -> Callable[..., Any]:
         def deco(*args: Any, **kwargs: Any) -> Any:
             # Bare-decorator form: @agent.tool_plain  → args == (fn,)
             if len(args) == 1 and not kwargs and callable(args[0]):
-                name = getattr(args[0], "__name__", None)
-                if name:
-                    self.captured.append(name)
-                return real(args[0])
+                return self._register(args[0])
             # Parametrised form: @agent.tool_plain(retries=…) returns a
-            # decorator. Wrap that decorator too, otherwise the skill's tools
-            # are registered but missing from its loadable toolset.
-            maybe_decorator = real(*args, **kwargs)
-            if callable(maybe_decorator):
-                def capture_parametrized(fn: Callable[..., Any]) -> Any:
-                    name = getattr(fn, "__name__", None)
-                    if name:
-                        self.captured.append(name)
-                    return maybe_decorator(fn)
-                return capture_parametrized
-            return maybe_decorator
+            # decorator. Honour the kwargs that map to our decorator's
+            # surface (``name`` / ``description``); silently drop the
+            # pydantic-ai-specific knobs (``retries``) since the new
+            # loop owns retry semantics.
+            our_kwargs: dict[str, Any] = {}
+            for k in ("name", "description"):
+                if k in kwargs:
+                    our_kwargs[k] = kwargs[k]
+            def capture_parametrized(fn: Callable[..., Any]) -> Any:
+                return self._register(fn, **our_kwargs)
+            return capture_parametrized
         return deco
 
     @property
     def tool_plain(self) -> Callable[..., Any]:
-        return self._wrap(self._agent.tool_plain)
+        return self._wrap(None)
 
     @property
     def tool(self) -> Callable[..., Any]:
-        return self._wrap(self._agent.tool)
+        return self._wrap(None)
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self._agent, name)

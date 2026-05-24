@@ -8,7 +8,7 @@ substring; the test asserts that marker is gone after redaction.
 
 from __future__ import annotations
 
-from jaeger_os.core.redact import mask_secret, redact_obj, redact_text
+from jaeger_os.core.safety.redact import mask_secret, redact_obj, redact_text
 
 
 # ── redact_text — secrets are masked ────────────────────────────────

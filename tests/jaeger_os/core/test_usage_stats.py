@@ -9,8 +9,9 @@ from __future__ import annotations
 
 import pytest
 
-from jaeger_os.core import tools, usage_stats
-from jaeger_os.core.instance import InstanceLayout
+from jaeger_os.core import tools
+from jaeger_os.core.runtime import usage_stats
+from jaeger_os.core.instance.instance import InstanceLayout
 
 
 @pytest.fixture()

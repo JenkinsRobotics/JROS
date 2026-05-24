@@ -21,7 +21,7 @@ from jaeger_os.agent import (
     ProviderAdapter,
     clear_registry,
 )
-from jaeger_os.agent.jaeger_agent import JaegerAgent as _JA
+from jaeger_os.agent.loop.jaeger_agent import JaegerAgent as _JA
 
 
 class _ScriptedAdapter(ProviderAdapter):

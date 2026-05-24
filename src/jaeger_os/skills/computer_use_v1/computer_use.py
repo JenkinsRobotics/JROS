@@ -298,7 +298,7 @@ def register(agent: Any) -> None:
 
     READ_ONLY: screenshot, read_screen, open_app. EXTERNAL_EFFECT (every
     call confirmation-gated): click, type_text, press_key, menu_select."""
-    from jaeger_os.core.permissions import PermissionTier, requires_tier
+    from jaeger_os.core.safety.permissions import PermissionTier, requires_tier
 
     def _gated(tier: PermissionTier, op: str, summary: str):
         return requires_tier(tier, skill="computer_use", operation=op,

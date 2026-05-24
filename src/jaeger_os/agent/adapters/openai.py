@@ -33,9 +33,9 @@ import threading
 import time
 from typing import Any
 
-from ..interrupt import interruptible_call
-from ..message_types import Message, ToolCall
-from ..tool_schema import ToolDef
+from jaeger_os.agent.loop.interrupt import interruptible_call
+from jaeger_os.agent.schemas.message_types import Message, ToolCall
+from jaeger_os.agent.schemas.tool_schema import ToolDef
 from .base import ProviderAdapter
 
 
@@ -153,7 +153,7 @@ class OpenAIAdapter(ProviderAdapter):
 
     The adapter is intentionally thin — no retry / no fallback / no
     rate-limit handling. Retries belong in
-    :mod:`jaeger_os.core.cloud_errors`; fallback belongs in
+    :mod:`jaeger_os.core.runtime.cloud_errors`; fallback belongs in
     ``JaegerAgent.fallback_adapters``.
     """
 

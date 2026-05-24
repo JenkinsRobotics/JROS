@@ -23,7 +23,7 @@ from jaeger_os.agent import (
     clear_registry,
     register_tool,
 )
-from jaeger_os.agent.loop_backstop import MAX_IDENTICAL_CALLS
+from jaeger_os.agent.loop.loop_backstop import MAX_IDENTICAL_CALLS
 
 
 # ── stub adapter ───────────────────────────────────────────────────

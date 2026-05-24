@@ -11,15 +11,15 @@ from __future__ import annotations
 
 import pytest
 
-from jaeger_os.core import model_discovery
+from jaeger_os.core.models import model_discovery
 from jaeger_os.core import tools
-from jaeger_os.core.instance import InstanceLayout
-from jaeger_os.core.permissions import (
+from jaeger_os.core.instance.instance import InstanceLayout
+from jaeger_os.core.safety.permissions import (
     AllowAllProvider,
     PermissionPolicy,
     use_policy,
 )
-from jaeger_os.core.schemas import Config, ModelConfig, dump_yaml
+from jaeger_os.core.instance.schemas import Config, ModelConfig, dump_yaml
 
 
 @pytest.fixture()

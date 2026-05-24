@@ -7,8 +7,8 @@ here; these cover the persistent pieces around it.
 
 from __future__ import annotations
 
-from jaeger_os.core.permissions import AllowAllProvider, ConsoleConfirmationProvider
-from jaeger_os.core.schemas import Config, ModelConfig, PermissionsConfig
+from jaeger_os.core.safety.permissions import AllowAllProvider, ConsoleConfirmationProvider
+from jaeger_os.core.instance.schemas import Config, ModelConfig, PermissionsConfig
 from jaeger_os.interfaces.tui.slash_commands import _factory_reset_instance
 from jaeger_os.main import _confirmation_provider
 

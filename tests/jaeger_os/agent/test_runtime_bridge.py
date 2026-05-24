@@ -24,7 +24,7 @@ from jaeger_os.agent import (
     clear_registry,
     register_tool,
 )
-from jaeger_os.agent.runtime_bridge import (
+from jaeger_os.agent.loop.runtime_bridge import (
     _adapter_for_client,
     build_jaeger_agent,
     drive_one_turn,
@@ -241,7 +241,7 @@ def test_drive_one_turn_surfaces_halt_reason_when_loop_caps():
     def _impl(value: str = "x") -> dict:
         return {"ok": True}
 
-    from jaeger_os.agent.loop_backstop import MAX_IDENTICAL_CALLS
+    from jaeger_os.agent.loop.loop_backstop import MAX_IDENTICAL_CALLS
     script: list[dict[str, Any]] = []
     for _ in range(MAX_IDENTICAL_CALLS + 2):
         script.append({

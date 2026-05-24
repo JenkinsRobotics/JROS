@@ -52,7 +52,7 @@ def _resolve_voice() -> str:
         layout = _require_layout()
     except Exception:
         return KOKORO_VOICE
-    from ..schemas import Identity, load_yaml
+    from jaeger_os.core.instance.schemas import Identity, load_yaml
     try:
         identity = load_yaml(layout.identity_path, Identity)
     except Exception:

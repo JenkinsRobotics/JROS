@@ -1305,7 +1305,7 @@ def register(agent: Any) -> None:
     READ_ONLY: look, open, screenshot. EXTERNAL_EFFECT (confirmation-gated
     under the single ``computer_use`` skill — one grant covers all):
     click, type, key, menu."""
-    from jaeger_os.core.permissions import PermissionTier, requires_tier
+    from jaeger_os.core.safety.permissions import PermissionTier, requires_tier
 
     def _gated(tier: PermissionTier, op: str, summary: str):
         return requires_tier(tier, skill="computer_use", operation=op,

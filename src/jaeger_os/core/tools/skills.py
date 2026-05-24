@@ -13,7 +13,7 @@ from __future__ import annotations
 import pathlib
 from typing import Any
 
-from .. import playbook_skills as _pb
+from jaeger_os.core.skills import playbook_skills as _pb
 
 # Cap a single skill's instructions so one huge SKILL.md can't blow the
 # context window. Skills run long but rarely past this.
@@ -85,13 +85,13 @@ def skill(action: str, name: str = "", query: str = "",
     act = (action or "").strip().lower()
 
     if act in ("stats", "usage"):
-        from ..usage_stats import top_skills, top_tools
+        from jaeger_os.core.runtime.usage_stats import top_skills, top_tools
         return {"ok": True, "tools": top_tools(12), "skills": top_skills(12)}
 
     if act in ("curate", "curation", "cleanup"):
         # Read-only dry run — surfaces stale / unused agent-authored
         # skills. Archiving is a deliberate, separate step (curator A2).
-        from ..curator import run_curation
+        from jaeger_os.core.skills.curator import run_curation
         return run_curation(apply=False)
 
     if act in ("list", "all", ""):
@@ -133,13 +133,13 @@ def skill(action: str, name: str = "", query: str = "",
         # Expand {{date}} / {{instance_name}} / {{skill_folder}} … template
         # placeholders before the model sees the body (audit A6).
         try:
-            from ..skill_preprocessing import preprocess_skill
+            from jaeger_os.core.skills.skill_preprocessing import preprocess_skill
             content = preprocess_skill(
                 content, skill_name=s.name, skill_folder=folder)
         except Exception:  # noqa: BLE001 — never let preprocessing break view
             pass
         try:
-            from ..usage_stats import record_skill
+            from jaeger_os.core.runtime.usage_stats import record_skill
             record_skill(s.name)
         except Exception:  # noqa: BLE001
             pass
@@ -165,7 +165,7 @@ def skill(action: str, name: str = "", query: str = "",
         # Surface a warning so the model treats a flagged skill with
         # care; never blocks the read (the model still needs to see it).
         try:
-            from ..skills_guard import scan_skill
+            from jaeger_os.core.safety.skills_guard import scan_skill
             scan = scan_skill(s.path.parent, name=s.name)
             if not scan.is_clean:
                 result["safety"] = scan.verdict

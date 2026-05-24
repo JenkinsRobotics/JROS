@@ -20,8 +20,9 @@ import time
 
 import pytest
 
-from jaeger_os.core import tool_interrupt, tools
-from jaeger_os.core.tool_interrupt import ToolInterrupted, run_interruptible
+from jaeger_os.core.runtime import tool_interrupt
+from jaeger_os.core import tools
+from jaeger_os.core.runtime.tool_interrupt import ToolInterrupted, run_interruptible
 
 
 @pytest.fixture(autouse=True)
@@ -139,7 +140,7 @@ def test_run_python_uninterrupted_still_works() -> None:
 
 
 def test_run_shell_honors_interrupt() -> None:
-    from jaeger_os.core.permissions import (
+    from jaeger_os.core.safety.permissions import (
         AllowAllProvider,
         PermissionPolicy,
         use_policy,

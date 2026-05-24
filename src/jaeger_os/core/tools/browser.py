@@ -24,7 +24,7 @@ import queue
 import threading
 from typing import Any
 
-from ..tool_interrupt import is_interrupted
+from jaeger_os.core.runtime.tool_interrupt import is_interrupted
 
 
 def _headless() -> bool:

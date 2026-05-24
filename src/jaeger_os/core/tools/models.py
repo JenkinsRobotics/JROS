@@ -21,14 +21,14 @@ from __future__ import annotations
 
 from typing import Any
 
-from ..permissions import PermissionTier, requires_tier
+from jaeger_os.core.safety.permissions import PermissionTier, requires_tier
 
 
 def list_models() -> dict[str, Any]:
     """List every model in the registry with its role (realtime / coder)
     and cache status (ready / not downloaded). Read-only — use this to
     tell the user what's available or to back a recommendation."""
-    from ..model_resolver import MODEL_REGISTRY, list_registered_models
+    from jaeger_os.core.models.model_resolver import MODEL_REGISTRY, list_registered_models
     rows = list_registered_models()
     for r in rows:
         entry = MODEL_REGISTRY.get(r["name"], {})
@@ -54,8 +54,8 @@ def download_model(name: str) -> dict[str, Any]:
     ``name`` must be a key in the model registry — call ``list_models``
     to see valid names. Returns ``{ok, model, path}`` on success or
     ``{ok: False, error: ...}``."""
-    from ..model_resolver import MODEL_REGISTRY
-    from ..model_resolver import download_model as _download
+    from jaeger_os.core.models.model_resolver import MODEL_REGISTRY
+    from jaeger_os.core.models.model_resolver import download_model as _download
 
     key = (name or "").strip()
     if key not in MODEL_REGISTRY:
@@ -96,7 +96,7 @@ def model_location(action: str, path: str = "") -> dict[str, Any]:
     scan set: config + a tool, no core-file editing."""
     import pathlib
 
-    from jaeger_os.core.schemas import dump_yaml
+    from jaeger_os.core.instance.schemas import dump_yaml
 
     from ._common import _require_layout
 

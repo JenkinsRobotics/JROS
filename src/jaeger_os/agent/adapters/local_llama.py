@@ -10,7 +10,7 @@ The remaining 5%:
     works verbatim.
   • Gemma 4 / Qwen3-Coder routinely emit tool calls as TEXT inside
     ``<tool_call>…</tool_call>`` blocks even when ``tools=[...]`` is
-    passed structurally — :mod:`jaeger_os.agent.drift_parser` salvages
+    passed structurally — :mod:`jaeger_os.agent.parsing.drift_parser` salvages
     those after the parent's parse step.
 
 Construction stays light: nothing loads at import time. A real
@@ -23,8 +23,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from ..drift_parser import extract_tool_calls
-from ..message_types import Message
+from jaeger_os.agent.parsing.drift_parser import extract_tool_calls
+from jaeger_os.agent.schemas.message_types import Message
 from .openai import OpenAIAdapter
 
 
@@ -91,7 +91,7 @@ class _LlamaChatFacade:
         # Sanitisation is idempotent so calling it twice is safe.
         tools = kwargs.get("tools")
         if isinstance(tools, list):
-            from .. import schema_sanitizer
+            from jaeger_os.agent.parsing import schema_sanitizer
             kwargs["tools"] = schema_sanitizer.sanitize_tool_schemas(tools)
         return self._llama.create_chat_completion(**kwargs)
 
@@ -163,7 +163,7 @@ class LocalLlamaAdapter(OpenAIAdapter):
         agents or unit tests inject a stub.
       * ``llama_kwargs`` — overrides for the ``Llama`` constructor
         (``n_ctx``, ``n_gpu_layers``, …). Defaults match the legacy
-        :class:`jaeger_os.core.llm_client.LlamaCppPythonClient` so
+        :class:`jaeger_os.core.models.llm_client.LlamaCppPythonClient` so
         benchmarks compare apples to apples.
       * Everything else (``model``, ``max_tokens``, ``temperature``)
         flows to :class:`OpenAIAdapter` unchanged.

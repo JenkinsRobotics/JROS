@@ -26,9 +26,9 @@ import time
 from typing import Any
 
 from ._common import _require_layout
-from ..permissions import PermissionTier, requires_tier
-from ..tool_interrupt import ToolInterrupted, run_interruptible
-from ..venv import (
+from jaeger_os.core.safety.permissions import PermissionTier, requires_tier
+from jaeger_os.core.runtime.tool_interrupt import ToolInterrupted, run_interruptible
+from jaeger_os.core.runtime.venv import (
     ensure_venv,
     install_into_venv,
     list_installed,

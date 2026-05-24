@@ -15,7 +15,7 @@ import time
 import pytest
 
 from jaeger_os.core import tools
-from jaeger_os.core.instance import InstanceLayout
+from jaeger_os.core.instance.instance import InstanceLayout
 
 
 @pytest.fixture()

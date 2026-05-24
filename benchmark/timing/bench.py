@@ -163,9 +163,9 @@ def run_jaeger_os(
     times. Returns one dict per turn; caller appends to
     bench_history."""
     from jaeger_os.core import tools as jaeger_tools
-    from jaeger_os.core.instance import InstanceLayout
-    from jaeger_os.core.prompts import build_system_prompt
-    from jaeger_os.core.schemas import (
+    from jaeger_os.core.instance.instance import InstanceLayout
+    from jaeger_os.core.prompts.prompts import build_system_prompt
+    from jaeger_os.core.instance.schemas import (
         CORE_VERSION,
         Config,
         DisplayConfig,

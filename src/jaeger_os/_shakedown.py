@@ -22,8 +22,8 @@ from pathlib import Path
 
 
 def _stage_instance(root: Path) -> None:
-    from jaeger_os.core.instance import InstanceLayout
-    from jaeger_os.core.schemas import (
+    from jaeger_os.core.instance.instance import InstanceLayout
+    from jaeger_os.core.instance.schemas import (
         Config, DisplayConfig, Identity, Manifest, ModelConfig, SkillsConfig,
         dump_json, dump_yaml,
     )
@@ -71,12 +71,12 @@ def _stage_instance(root: Path) -> None:
 
 def _load_client_and_agent(root: Path):
     from jaeger_os.core import tools as jaeger_tools
-    from jaeger_os.core.instance import InstanceLayout
+    from jaeger_os.core.instance.instance import InstanceLayout
     from jaeger_os.main import (
         LlamaCppPythonClient, _get_agent, _pipeline,
     )
-    from jaeger_os.core.prompts import build_system_prompt
-    from jaeger_os.core.schemas import Config, load_yaml
+    from jaeger_os.core.prompts.prompts import build_system_prompt
+    from jaeger_os.core.instance.schemas import Config, load_yaml
 
     layout = InstanceLayout(root=root)
     cfg: Config = load_yaml(layout.config_path, Config)
@@ -94,7 +94,7 @@ def _load_client_and_agent(root: Path):
     # self-modification). It is an unattended harness — install an
     # allow-all policy so those paths actually run instead of being
     # refused by the fail-safe DenyAllProvider default.
-    from jaeger_os.core.permissions import (
+    from jaeger_os.core.safety.permissions import (
         AllowAllProvider,
         PermissionPolicy,
         install_policy,
@@ -145,7 +145,7 @@ def main() -> int:
 
     # Stage a credential first via the public API so we can test get_credential.
     from jaeger_os.core import credentials as creds
-    from jaeger_os.core.instance import InstanceLayout
+    from jaeger_os.core.instance.instance import InstanceLayout
     layout = InstanceLayout(root=root)
     creds.set_credential(layout, "demo_api_key", "sk_test_abc123")
 

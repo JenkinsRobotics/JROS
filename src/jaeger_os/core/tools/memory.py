@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from .. import memory as mem
+from jaeger_os.core.memory import memory as mem
 
 
 # ---------------------------------------------------------------------------

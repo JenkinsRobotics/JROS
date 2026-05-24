@@ -11,8 +11,8 @@ from __future__ import annotations
 
 import pytest
 
-from jaeger_os.core import lazy_deps
-from jaeger_os.core.lazy_deps import (
+from jaeger_os.core.models import lazy_deps
+from jaeger_os.core.models.lazy_deps import (
     FeatureUnavailable,
     LAZY_DEPS,
     available,

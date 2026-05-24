@@ -10,8 +10,8 @@ from __future__ import annotations
 
 import json
 
-import jaeger_os.core.osv_check as osv
-from jaeger_os.core.osv_check import check_pypi_package, pypi_base_name
+import jaeger_os.core.safety.osv_check as osv
+from jaeger_os.core.safety.osv_check import check_pypi_package, pypi_base_name
 
 
 # ── name parsing ─────────────────────────────────────────────────────

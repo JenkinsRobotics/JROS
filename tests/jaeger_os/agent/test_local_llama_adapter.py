@@ -306,7 +306,7 @@ def test_in_process_call_forces_stale_timeout_to_none():
 
     captured: dict[str, Any] = {}
     real_interruptible = __import__(
-        "jaeger_os.agent.interrupt", fromlist=["interruptible_call"]
+        "jaeger_os.agent.loop.interrupt", fromlist=["interruptible_call"]
     ).interruptible_call
 
     def _spy(fn, ev, **kw):

@@ -28,7 +28,7 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-from .instance import InstanceLayout
+from jaeger_os.core.instance.instance import InstanceLayout
 
 
 _NAME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_.-]{0,63}$")

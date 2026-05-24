@@ -10,8 +10,8 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
-from jaeger_os.core import curator
-from jaeger_os.core.playbook_skills import PlaybookSkill
+from jaeger_os.core.skills import curator
+from jaeger_os.core.skills.playbook_skills import PlaybookSkill
 
 _NOW = datetime(2026, 5, 21, 12, 0, tzinfo=timezone.utc)
 

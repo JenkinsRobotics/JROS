@@ -131,7 +131,7 @@ def _tools(ctx: SlashContext, args: str) -> SlashResult:  # noqa: ARG001
 
 def _facts(ctx: SlashContext, args: str) -> SlashResult:  # noqa: ARG001
     """List stored facts from jaeger's memory layer."""
-    from jaeger_os.core import memory as memory_mod
+    from jaeger_os.core.memory import memory as memory_mod
     try:
         rows = memory_mod.list_facts()
     except RuntimeError as exc:
@@ -175,7 +175,7 @@ def _instance(ctx: SlashContext, args: str) -> SlashResult:
 def _instances(ctx: SlashContext, args: str) -> SlashResult:  # noqa: ARG001
     """List every discoverable instance with its identity + status."""
     from jaeger_os.main import _list_instances
-    from jaeger_os.core.schemas import Identity, load_yaml
+    from jaeger_os.core.instance.schemas import Identity, load_yaml
     rows = _list_instances()
     if not rows:
         ctx.console.print("[dim]No instances found.[/]")
@@ -308,8 +308,8 @@ def _resolve_cloud_key(ctx: SlashContext) -> str:
     """The stored external-model API key, if any — used to discover the
     Ollama Cloud catalogue. Empty string when none is configured."""
     try:
-        from jaeger_os.core.external_model import resolve_api_key
-        from jaeger_os.core.instance import InstanceLayout
+        from jaeger_os.core.models.external_model import resolve_api_key
+        from jaeger_os.core.instance.instance import InstanceLayout
         from jaeger_os.main import _pipeline
         ext = getattr(_pipeline.get("config"), "external_model", None)
         if ext is None:
@@ -405,12 +405,12 @@ def _build_providers_list(
 
     # Lazy imports keep the module load cheap when no picker is opened.
     try:
-        from jaeger_os.core.external_model_history import recent_models
+        from jaeger_os.core.models.external_model_history import recent_models
     except Exception:  # noqa: BLE001
         def recent_models(*_a, **_k):  # type: ignore[no-redef]
             return []
     try:
-        from jaeger_os.core.model_discovery import (
+        from jaeger_os.core.models.model_discovery import (
             ANTHROPIC_CURATED,
             GEMINI_CURATED,
             OLLAMA_CLOUD_CURATED,
@@ -454,7 +454,7 @@ def _model_picker(ctx: SlashContext) -> SlashResult:
     drills / commits; ``← Back`` returns to Stage 1; Cancel / Esc closes."""
     from pathlib import Path
 
-    from jaeger_os.core.model_discovery import discover_all
+    from jaeger_os.core.models.model_discovery import discover_all
     from jaeger_os.main import _pipeline
     from .picker import _PICKER_TYPE_A_MODEL, pick_provider_model
 
@@ -463,7 +463,7 @@ def _model_picker(ctx: SlashContext) -> SlashResult:
     with ctx.console.status("[dim]scanning for models…[/]"):
         found = discover_all(cloud_key)
     ext = getattr(cfg, "external_model", None)
-    from jaeger_os.core.instance import InstanceLayout
+    from jaeger_os.core.instance.instance import InstanceLayout
     layout = InstanceLayout(root=Path(str(ctx.instance_dir)))
     providers = _build_providers_list(found, ext, layout=layout)
     if not providers:
@@ -511,7 +511,7 @@ def _model_picker(ctx: SlashContext) -> SlashResult:
 
 def _model_list(ctx: SlashContext) -> SlashResult:
     """Print every model as a plain text catalogue (``/model list``)."""
-    from jaeger_os.core.model_discovery import discover_all
+    from jaeger_os.core.models.model_discovery import discover_all
     from jaeger_os.main import _pipeline
     cfg = _pipeline.get("config")
     ctx.console.print(
@@ -599,8 +599,8 @@ def _ensure_cloud_key(ctx: SlashContext, cfg: Any, provider: str) -> bool:
     which the caller sets to the provider's own credential name — so
     each provider keeps a separate stored key."""
     from jaeger_os.core import credentials as creds
-    from jaeger_os.core.external_model import resolve_api_key
-    from jaeger_os.core.instance import InstanceLayout
+    from jaeger_os.core.models.external_model import resolve_api_key
+    from jaeger_os.core.instance.instance import InstanceLayout
 
     layout = InstanceLayout(root=Path(str(ctx.instance_dir)))
     try:
@@ -666,7 +666,7 @@ def _model_use(ctx: SlashContext, args: list[str]) -> SlashResult:
             # Pick a specific .gguf — match the discovered list by name
             # (or take a literal path / registry key), then point the
             # in-process llama-cpp backend at it.
-            from jaeger_os.core.model_discovery import discover_local_gguf
+            from jaeger_os.core.models.model_discovery import discover_local_gguf
             chosen = wanted
             for m in discover_local_gguf():
                 cand = {m["name"], m["name"].removesuffix(".gguf")}
@@ -679,7 +679,7 @@ def _model_use(ctx: SlashContext, args: list[str]) -> SlashResult:
             summary = f"local · {Path(str(cfg.model.model_path)).name}"
     elif target in ("ollama", "lmstudio", "lm-studio"):
         provider = "ollama" if target == "ollama" else "lmstudio"
-        from jaeger_os.core.model_discovery import (
+        from jaeger_os.core.models.model_discovery import (
             discover_lmstudio, discover_ollama,
         )
         disc = (discover_ollama() if provider == "ollama"
@@ -740,8 +740,8 @@ def _model_use(ctx: SlashContext, args: list[str]) -> SlashResult:
         return SlashResult()
 
     # Persist to config.yaml, then reboot so make_client rebuilds the brain.
-    from jaeger_os.core.instance import InstanceLayout
-    from jaeger_os.core.schemas import dump_yaml
+    from jaeger_os.core.instance.instance import InstanceLayout
+    from jaeger_os.core.instance.schemas import dump_yaml
     name = Path(str(ctx.instance_dir)).name
     layout = InstanceLayout(root=Path(str(ctx.instance_dir)))
     try:
@@ -779,7 +779,7 @@ def _model_use(ctx: SlashContext, args: list[str]) -> SlashResult:
         # it. Local picks aren't tracked (the GGUF path lives in config).
         if targeted_external and wanted:
             try:
-                from jaeger_os.core.external_model_history import record_use
+                from jaeger_os.core.models.external_model_history import record_use
                 record_use(layout, target, wanted)
             except Exception:  # noqa: BLE001
                 pass
@@ -802,7 +802,7 @@ def _runtime(ctx: SlashContext, args: str) -> SlashResult:  # noqa: ARG001
     engine to the inventory is a one-line change there, not here."""
     from rich.table import Table
 
-    from jaeger_os.core.runtimes import discover_runtimes
+    from jaeger_os.core.models.runtimes import discover_runtimes
 
     with ctx.console.status("[dim]probing runtimes…[/]"):
         runtimes = discover_runtimes()
@@ -857,7 +857,7 @@ def _download(ctx: SlashContext, args: str) -> SlashResult:
             "Run /models for the catalog."
         )
         return SlashResult()
-    from jaeger_os.core.model_resolver import MODEL_REGISTRY, download_model
+    from jaeger_os.core.models.model_resolver import MODEL_REGISTRY, download_model
     if name not in MODEL_REGISTRY:
         ctx.console.print(
             f"[red]Unknown model {name!r}.[/] Known: "
@@ -1099,8 +1099,8 @@ def _goal(ctx: SlashContext, args: str) -> SlashResult:
 
 def _deep_think_queue(ctx: SlashContext):
     """Build the DeepThinkQueue for the active instance."""
-    from jaeger_os.core.deep_think import queue_for_layout
-    from jaeger_os.core.instance import InstanceLayout
+    from jaeger_os.core.background.deep_think import queue_for_layout
+    from jaeger_os.core.instance.instance import InstanceLayout
     import pathlib
     layout = InstanceLayout(root=pathlib.Path(str(ctx.instance_dir)))
     return queue_for_layout(layout)
@@ -1218,8 +1218,8 @@ def _board_for_ctx(ctx: SlashContext):
     """Build the kanban Board for the active instance."""
     import pathlib
 
-    from jaeger_os.core.board import board_for_layout
-    from jaeger_os.core.instance import InstanceLayout
+    from jaeger_os.core.background.board import board_for_layout
+    from jaeger_os.core.instance.instance import InstanceLayout
     layout = InstanceLayout(root=pathlib.Path(str(ctx.instance_dir)))
     return board_for_layout(layout)
 
@@ -1238,7 +1238,7 @@ def _board(ctx: SlashContext, args: str) -> SlashResult:
        ``/board block <id>``       mark a card blocked
        ``/board move <id> <col>``  move a card to any column
     """
-    from jaeger_os.core.board import COLUMNS
+    from jaeger_os.core.background.board import COLUMNS
 
     parts = args.strip().split(None, 2)
     sub = parts[0].lower() if parts else ""
@@ -1749,7 +1749,7 @@ def _usage(ctx: SlashContext, args: str) -> SlashResult:  # noqa: ARG001
         "[dim](estimate)[/]")
     # Tool usage telemetry — most-called tools, with failure counts.
     try:
-        from jaeger_os.core.usage_stats import top_tools
+        from jaeger_os.core.runtime.usage_stats import top_tools
         rows = top_tools(8)
     except Exception:  # noqa: BLE001
         rows = []
@@ -1797,7 +1797,7 @@ def _config(ctx: SlashContext, args: str) -> SlashResult:  # noqa: ARG001
 def _skills(ctx: SlashContext, args: str) -> SlashResult:  # noqa: ARG001
     """List the skills currently loaded — each skill is a tool bundle."""
     try:
-        from jaeger_os.core import toolsets as _ts
+        from jaeger_os.core.skills import toolsets as _ts
         summaries = dict(_ts._SKILL_SUMMARY)
         members = dict(_ts._SKILL_TOOLSETS)
     except Exception as exc:  # noqa: BLE001

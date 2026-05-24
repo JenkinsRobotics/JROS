@@ -186,7 +186,7 @@ class _TuiConfirmationProvider:
     answer and sets the Event — the answer travels through the input
     channel that actually works.
 
-    Grants are **per skill** (:class:`~jaeger_os.core.permissions.PermissionGrants`):
+    Grants are **per skill** (:class:`~jaeger_os.core.safety.permissions.PermissionGrants`):
     *yes* approves the skill for the session, *always* persists it to
     ``<instance>/permissions.json``. An already-granted skill never
     re-prompts — answer *always* once and it is silent thereafter.
@@ -197,7 +197,7 @@ class _TuiConfirmationProvider:
     _ANSWER_TIMEOUT_S = 300.0
 
     def __init__(self, tui: "JaegerTUI") -> None:
-        from jaeger_os.core.permissions import PermissionGrants
+        from jaeger_os.core.safety.permissions import PermissionGrants
         self._tui = tui
         # 'yes' holds for the session, 'always' persists to
         # <instance>/permissions.json — loaded for the booted instance.
@@ -362,7 +362,7 @@ class JaegerTUI:
         'confirm' mode → the spinner-aware prompt; 'allow' mode →
         auto-approve. The mode is ``config.permissions.mode``, chosen at
         first-boot setup and persisted, so the posture survives restarts."""
-        from jaeger_os.core.permissions import (
+        from jaeger_os.core.safety.permissions import (
             AllowAllProvider, PermissionPolicy, install_policy,
         )
         from jaeger_os.main import _pipeline
@@ -523,7 +523,7 @@ class JaegerTUI:
         if is_err:
             # Recognise common model-server failures and surface a clear,
             # actionable hint instead of the raw HTTP body.
-            from jaeger_os.core.cloud_errors import friendly_error_text
+            from jaeger_os.core.runtime.cloud_errors import friendly_error_text
             body = friendly_error_text(body, model_name=self.model_name)
         else:
             self._last_answer = body   # for /copy
@@ -630,7 +630,7 @@ class JaegerTUI:
         # Expand @file / @url references — the header above shows the
         # concise original; the agent receives the inlined content (A4).
         try:
-            from jaeger_os.core.context_refs import expand_references
+            from jaeger_os.core.prompts.context_refs import expand_references
             agent_text = expand_references(user_text)
         except Exception:  # noqa: BLE001 — never let expansion break a turn
             agent_text = user_text
@@ -648,8 +648,8 @@ class JaegerTUI:
         """The instance's display name (identity.yaml ``name``) — used as
         the voice wake word. None on any read error."""
         try:
-            from jaeger_os.core.instance import InstanceLayout
-            from jaeger_os.core.schemas import Identity, load_yaml
+            from jaeger_os.core.instance.instance import InstanceLayout
+            from jaeger_os.core.instance.schemas import Identity, load_yaml
             layout = InstanceLayout(root=self.instance_dir)
             return load_yaml(layout.identity_path, Identity).name
         except Exception:  # noqa: BLE001
@@ -658,7 +658,7 @@ class JaegerTUI:
     def _voice_config(self) -> Any:
         """The active instance's VoiceConfig, read from the live pipeline
         config. Falls back to defaults (all on) if it can't be read."""
-        from jaeger_os.core.schemas import VoiceConfig
+        from jaeger_os.core.instance.schemas import VoiceConfig
         try:
             from jaeger_os.main import _pipeline
             cfg = _pipeline.get("config")
@@ -749,8 +749,8 @@ class JaegerTUI:
     def _persist_voice_config(self, vc: Any) -> None:
         """Write the VoiceConfig into the live config and config.yaml."""
         try:
-            from jaeger_os.core.instance import InstanceLayout
-            from jaeger_os.core.schemas import dump_yaml
+            from jaeger_os.core.instance.instance import InstanceLayout
+            from jaeger_os.core.instance.schemas import dump_yaml
             from jaeger_os.main import _pipeline
             cfg = _pipeline.get("config")
             if cfg is None:
@@ -879,13 +879,13 @@ class JaegerTUI:
         the in-progress task is flipped back to ``pending`` so it
         resumes next time, and the realtime model is reloaded."""
         from jaeger_os.main import run_command, switch_model
-        from jaeger_os.core.deep_think import queue_for_layout
-        from jaeger_os.core.instance import InstanceLayout
-        from jaeger_os.core.model_resolver import (
+        from jaeger_os.core.background.deep_think import queue_for_layout
+        from jaeger_os.core.instance.instance import InstanceLayout
+        from jaeger_os.core.models.model_resolver import (
             DEFAULT_CODER_MODEL,
             DEFAULT_MODEL,
         )
-        from jaeger_os.core.reflection import reflect_on_task, save_reflection
+        from jaeger_os.core.prompts.reflection import reflect_on_task, save_reflection
 
         # The pipeline must be booted (config/lock/layout) before we can
         # swap models — _ensure_agent does that on first use.
@@ -1240,8 +1240,8 @@ class JaegerTUI:
         """Idle window elapsed — enter Deep Think if there's approved
         queued work, otherwise quietly keep waiting."""
         try:
-            from jaeger_os.core.deep_think import queue_for_layout
-            from jaeger_os.core.instance import InstanceLayout
+            from jaeger_os.core.background.deep_think import queue_for_layout
+            from jaeger_os.core.instance.instance import InstanceLayout
             queue_ = queue_for_layout(InstanceLayout(root=self.instance_dir))
             if queue_.next_pending() is None:
                 return  # nothing approved to work — just keep idling
@@ -1361,8 +1361,8 @@ class JaegerTUI:
             return False
         self._busy_mode = mode
         try:
-            from jaeger_os.core.instance import InstanceLayout
-            from jaeger_os.core.schemas import dump_yaml
+            from jaeger_os.core.instance.instance import InstanceLayout
+            from jaeger_os.core.instance.schemas import dump_yaml
             from jaeger_os.main import _pipeline
             cfg = _pipeline.get("config")
             if cfg is not None:

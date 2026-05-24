@@ -7,7 +7,7 @@ so a missing dependency surfaces at boot, not mid-conversation.
 
 from __future__ import annotations
 
-from jaeger_os.core.preflight import (
+from jaeger_os.core.runtime.preflight import (
     Check,
     boot_warning,
     check_environment,

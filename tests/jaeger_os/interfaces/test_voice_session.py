@@ -13,7 +13,7 @@ from unittest.mock import MagicMock
 
 from rich.console import Console
 
-from jaeger_os.core.schemas import VoiceConfig
+from jaeger_os.core.instance.schemas import VoiceConfig
 from jaeger_os.interfaces.tui import slash_commands as slash
 from jaeger_os.interfaces.tui.app import _wants_voice_mode
 from jaeger_os.interfaces.tui.voice_session import (

@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import pytest
 
-from jaeger_os.core.permissions import (
+from jaeger_os.core.safety.permissions import (
     DenyAllProvider,
     PermissionDenied,
     PermissionPolicy,

@@ -8,7 +8,7 @@ into the prompt, so the library can't bloat context.
 
 from __future__ import annotations
 
-from jaeger_os.core import playbook_skills as pb
+from jaeger_os.core.skills import playbook_skills as pb
 from jaeger_os.core.tools import skill
 
 
@@ -130,7 +130,7 @@ def test_discover_playbooks_includes_instance_authored(tmp_path) -> None:
     must be discovered — not just the bundled ones. (Agent writes are
     sandboxed to the instance, so this is where its playbooks land.)"""
     from jaeger_os.core import tools
-    from jaeger_os.core.instance import InstanceLayout
+    from jaeger_os.core.instance.instance import InstanceLayout
 
     layout = InstanceLayout(root=tmp_path / "inst")
     layout.root.mkdir(parents=True, exist_ok=True)

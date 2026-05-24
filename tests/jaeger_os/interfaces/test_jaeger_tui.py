@@ -199,5 +199,5 @@ def test_boot_eager_swallows_boot_failure() -> None:
 
 def test_auto_idle_defaults_to_thirty_minutes() -> None:
     """Jaegers use free time — auto-idle Deep Think is on by default."""
-    from jaeger_os.core.schemas import DeepThinkConfig
+    from jaeger_os.core.instance.schemas import DeepThinkConfig
     assert DeepThinkConfig().auto_idle_minutes == 30

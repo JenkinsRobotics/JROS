@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 from unittest.mock import patch
 
-from jaeger_os.core.runtimes import (
+from jaeger_os.core.models.runtimes import (
     Runtime,
     _import_version,
     discover_llama_cpp_python,
@@ -69,7 +69,7 @@ def test_discover_ollama_when_server_responds():
         "__enter__": lambda self: fake_resp,
         "__exit__": lambda self, *a: False,
     })()
-    with patch("jaeger_os.core.runtimes.urllib.request.urlopen", return_value=fake_cm):
+    with patch("jaeger_os.core.models.runtimes.urllib.request.urlopen", return_value=fake_cm):
         rt = discover_ollama()
     assert rt.available is True
     assert rt.version == "0.4.5"
@@ -79,7 +79,7 @@ def test_discover_ollama_when_server_responds():
 def test_discover_ollama_when_server_unreachable():
     import urllib.error
     with patch(
-        "jaeger_os.core.runtimes.urllib.request.urlopen",
+        "jaeger_os.core.models.runtimes.urllib.request.urlopen",
         side_effect=urllib.error.URLError("conn refused"),
     ):
         rt = discover_ollama()
@@ -94,7 +94,7 @@ def test_discover_lmstudio_when_server_responds():
         "__enter__": lambda self: fake_resp,
         "__exit__": lambda self, *a: False,
     })()
-    with patch("jaeger_os.core.runtimes.urllib.request.urlopen", return_value=fake_cm):
+    with patch("jaeger_os.core.models.runtimes.urllib.request.urlopen", return_value=fake_cm):
         rt = discover_lmstudio()
     assert rt.available is True
     assert rt.version == "running"
@@ -105,7 +105,7 @@ def test_discover_lmstudio_when_server_responds():
 def test_discover_lmstudio_when_server_unreachable():
     import urllib.error
     with patch(
-        "jaeger_os.core.runtimes.urllib.request.urlopen",
+        "jaeger_os.core.models.runtimes.urllib.request.urlopen",
         side_effect=urllib.error.URLError("conn refused"),
     ):
         rt = discover_lmstudio()
@@ -119,7 +119,7 @@ def test_discover_lmstudio_when_server_unreachable():
 def test_discover_runtimes_returns_all_four_in_stable_order():
     import urllib.error
     with patch(
-        "jaeger_os.core.runtimes.urllib.request.urlopen",
+        "jaeger_os.core.models.runtimes.urllib.request.urlopen",
         side_effect=urllib.error.URLError("offline"),
     ):
         runtimes = discover_runtimes()

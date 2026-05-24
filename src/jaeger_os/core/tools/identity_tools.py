@@ -49,7 +49,7 @@ def set_name(name: str) -> dict[str, Any]:
     except Exception as exc:  # noqa: BLE001
         return {"ok": False, "error": f"no active instance: {exc}"}
 
-    from ..schemas import Identity, dump_yaml, load_yaml
+    from jaeger_os.core.instance.schemas import Identity, dump_yaml, load_yaml
     try:
         ident = load_yaml(layout.identity_path, Identity)
     except Exception as exc:  # noqa: BLE001

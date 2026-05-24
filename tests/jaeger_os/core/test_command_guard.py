@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import pytest
 
-from jaeger_os.core.command_guard import check_hardline, hardline_guard
+from jaeger_os.core.safety.command_guard import check_hardline, hardline_guard
 
 
 # ── blocked: catastrophic, zero legitimate use ──────────────────────
@@ -115,7 +115,7 @@ def test_run_shell_blocks_a_hardline_command_below_the_tier_prompt():
 def test_run_shell_lets_a_safe_command_reach_the_tier_layer():
     """A safe command is not hardline-blocked — it proceeds to the tier
     check (approved here) and runs normally."""
-    from jaeger_os.core.permissions import (
+    from jaeger_os.core.safety.permissions import (
         AllowAllProvider,
         PermissionPolicy,
         use_policy,

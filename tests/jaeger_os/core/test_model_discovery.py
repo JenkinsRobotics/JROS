@@ -8,14 +8,14 @@ provider that rides the OpenAI-compatible path.
 
 from __future__ import annotations
 
-from jaeger_os.core.external_model import _OPENAI_COMPATIBLE
-from jaeger_os.core.model_discovery import (
+from jaeger_os.core.models.external_model import _OPENAI_COMPATIBLE
+from jaeger_os.core.models.model_discovery import (
     discover_all,
     discover_jaeger,
     discover_lmstudio,
     discover_ollama,
 )
-from jaeger_os.core.schemas import ExternalModelConfig
+from jaeger_os.core.instance.schemas import ExternalModelConfig
 
 
 # ── Ollama provider ──────────────────────────────────────────────────
@@ -62,7 +62,7 @@ def test_discover_all_covers_every_source() -> None:
 
 
 def test_ollama_cloud_offline_without_a_key() -> None:
-    from jaeger_os.core.model_discovery import discover_ollama_cloud
+    from jaeger_os.core.models.model_discovery import discover_ollama_cloud
     r = discover_ollama_cloud("")
     assert r["online"] is False and r["models"] == []
 
@@ -70,7 +70,7 @@ def test_ollama_cloud_offline_without_a_key() -> None:
 def test_local_gguf_discovery_is_a_filesystem_scan() -> None:
     # discover_local_gguf returns disk .gguf files with name/path/source
     # and never raises, even if no model dir exists.
-    from jaeger_os.core.model_discovery import discover_local_gguf
+    from jaeger_os.core.models.model_discovery import discover_local_gguf
     out = discover_local_gguf()
     assert isinstance(out, list)
     for m in out:
@@ -79,7 +79,7 @@ def test_local_gguf_discovery_is_a_filesystem_scan() -> None:
 
 
 def test_ollama_disk_discovery_skips_os_noise() -> None:
-    from jaeger_os.core.model_discovery import discover_ollama_disk
+    from jaeger_os.core.models.model_discovery import discover_ollama_disk
     out = discover_ollama_disk()
     assert isinstance(out, list)
     # .DS_Store / hidden files must never leak in as "models".

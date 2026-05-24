@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import pytest
 
-from jaeger_os.agent.schema_sanitizer import (
+from jaeger_os.agent.parsing.schema_sanitizer import (
     sanitize_tool_schemas,
     strip_nullable_unions,
     strip_pattern_and_format,

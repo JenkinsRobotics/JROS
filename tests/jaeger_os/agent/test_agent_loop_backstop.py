@@ -7,7 +7,7 @@ thresholds and signatures match the pre-refactor pydantic-ai loop in
 
 from __future__ import annotations
 
-from jaeger_os.agent.loop_backstop import (
+from jaeger_os.agent.loop.loop_backstop import (
     MAX_IDENTICAL_CALLS,
     MAX_SEMANTIC_FAILURES,
     MAX_TOOL_CALLS,

@@ -14,7 +14,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from jaeger_os.core import memory as mem
+from jaeger_os.core.memory import memory as mem
 
 
 @pytest.fixture()

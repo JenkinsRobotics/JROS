@@ -21,8 +21,8 @@ import threading
 from abc import ABC, abstractmethod
 from typing import Any
 
-from ..message_types import Message
-from ..tool_schema import ToolDef
+from jaeger_os.agent.schemas.message_types import Message
+from jaeger_os.agent.schemas.tool_schema import ToolDef
 
 
 # Features an adapter may declare. Listed here so capability checks
@@ -67,7 +67,7 @@ class ProviderAdapter(ABC):
         **kwargs: Any,
     ) -> Any:
         """Run one model request. Must honour ``interrupt_event`` via
-        :func:`jaeger_os.agent.interrupt.interruptible_call` (or an
+        :func:`jaeger_os.agent.loop.interrupt.interruptible_call` (or an
         equivalent pattern) — the operator must be able to halt the
         agent mid-call. Returns the raw provider response object,
         which ``parse_response`` then decodes."""

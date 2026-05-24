@@ -4,7 +4,7 @@ Direct SDK calls, no pydantic-ai indirection. The adapter owns:
 
   • internal ``Message`` ↔ Anthropic content-block translation
   • the actual ``client.messages.create(...)`` round-trip, wrapped in
-    :func:`jaeger_os.agent.interrupt.interruptible_call` so Ctrl-C lands
+    :func:`jaeger_os.agent.loop.interrupt.interruptible_call` so Ctrl-C lands
   • response decode back to a single internal ``Message``
   • capability declaration + a lightweight health probe
 
@@ -21,9 +21,9 @@ import threading
 import time
 from typing import Any
 
-from ..interrupt import interruptible_call
-from ..message_types import Message, ToolCall
-from ..tool_schema import ToolDef
+from jaeger_os.agent.loop.interrupt import interruptible_call
+from jaeger_os.agent.schemas.message_types import Message, ToolCall
+from jaeger_os.agent.schemas.tool_schema import ToolDef
 from .base import ProviderAdapter
 
 # Features Anthropic supports. Streaming is off-by-default for v1 (the

@@ -8,7 +8,7 @@ shells, and embedded secrets before it is trusted.
 
 from __future__ import annotations
 
-from jaeger_os.core.skills_guard import (
+from jaeger_os.core.safety.skills_guard import (
     format_report,
     scan_skill,
     scan_text,

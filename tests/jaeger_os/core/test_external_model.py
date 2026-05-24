@@ -2,7 +2,7 @@
 
 Post-pydantic-ai-removal, the external client no longer constructs a
 ``pydantic_ai.Model`` instance — adapter selection lives in
-:mod:`jaeger_os.agent.runtime_bridge`. What stays in
+:mod:`jaeger_os.agent.loop.runtime_bridge`. What stays in
 ``core/external_model.py`` is config-shape + key resolution + the
 ``chat()`` shim that fast-finalize calls. This test file pins those.
 """
@@ -11,14 +11,14 @@ from __future__ import annotations
 
 import pytest
 
-from jaeger_os.core.external_model import (
+from jaeger_os.core.models.external_model import (
     ExternalModelClient,
     ExternalModelError,
     _merge_consecutive,
     resolve_api_key,
     validate_external_provider,
 )
-from jaeger_os.core.schemas import Config, ExternalModelConfig, ModelConfig
+from jaeger_os.core.instance.schemas import Config, ExternalModelConfig, ModelConfig
 
 
 # ── local-first invariant ───────────────────────────────────────────
@@ -130,7 +130,7 @@ def test_validate_gemini_requires_key():
 def test_external_client_surface():
     """The client exposes ``kind`` / ``model_name`` / ``provider`` /
     ``chat`` / ``connectivity_check`` / ``describe`` — the surface the
-    new agent layer's :func:`jaeger_os.agent.runtime_bridge.
+    new agent layer's :func:`jaeger_os.agent.loop.runtime_bridge.
     _adapter_for_client` and the fast-finalize fallback both read."""
     ext = ExternalModelConfig(enabled=True, provider="lmstudio", model="local-model")
     client = ExternalModelClient(ext, layout=None)

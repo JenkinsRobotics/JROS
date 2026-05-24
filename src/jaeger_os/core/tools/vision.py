@@ -17,7 +17,7 @@ import time
 from typing import Any
 
 from ._common import SandboxError, _require_layout, _resolve_under
-from ..tool_interrupt import is_interrupted
+from jaeger_os.core.runtime.tool_interrupt import is_interrupted
 
 
 # ---------------------------------------------------------------------------
@@ -33,7 +33,7 @@ def _ensure_imagegen_pipeline() -> tuple[Any, str]:
 
     # Optional backend — ensure() gives a clean, actionable error (and
     # an opt-in auto-install) instead of a raw ImportError.
-    from ..lazy_deps import FeatureUnavailable, ensure
+    from jaeger_os.core.models.lazy_deps import FeatureUnavailable, ensure
     try:
         ensure("image.diffusers")
     except FeatureUnavailable as exc:

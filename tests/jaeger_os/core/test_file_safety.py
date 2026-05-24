@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from jaeger_os.core.file_safety import is_sensitive_path
+from jaeger_os.core.safety.file_safety import is_sensitive_path
 
 
 # ── blocked: credential locations ───────────────────────────────────

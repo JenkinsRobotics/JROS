@@ -11,7 +11,7 @@ reference buffer that make true barge-in possible, the wake/follow-up
 earcons, and the shared Kokoro TTS. It reuses the TUI's already-booted
 model — no second model load.
 
-Settings (see :class:`jaeger_os.core.schemas.VoiceConfig`):
+Settings (see :class:`jaeger_os.core.instance.schemas.VoiceConfig`):
   • wake_word  — require "hey <name>" before the agent answers
   • follow_up  — open a no-wake-word window after each reply
   • barge_in   — interrupt the agent mid-sentence by speaking (needs the

@@ -15,8 +15,8 @@ from typing import Any
 
 import pytest
 
-from jaeger_os.core import permissions as _perm
-from jaeger_os.core.permissions import (
+from jaeger_os.core.safety import permissions as _perm
+from jaeger_os.core.safety.permissions import (
     AllowAllProvider,
     ConsoleConfirmationProvider,
     PermissionGrants,

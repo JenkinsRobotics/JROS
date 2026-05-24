@@ -19,9 +19,9 @@ import time
 from typing import Any
 
 from ._common import _audit, _require_layout
-from ..command_guard import hardline_guard
-from ..permissions import PermissionTier, requires_tier
-from ..tool_interrupt import ToolInterrupted, run_interruptible
+from jaeger_os.core.safety.command_guard import hardline_guard
+from jaeger_os.core.safety.permissions import PermissionTier, requires_tier
+from jaeger_os.core.runtime.tool_interrupt import ToolInterrupted, run_interruptible
 
 
 def run_python(code: str, timeout_s: float = 10.0) -> dict[str, Any]:

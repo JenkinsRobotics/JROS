@@ -35,15 +35,15 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from .agent.tool_registry import register_tool_from_function
+from jaeger_os.agent.schemas.tool_registry import register_tool_from_function
 from .core import credentials as creds
-from .core import log_rotation
-from .core import memory as mem
-from .core import prompts as prompt_module
-from .core import tool_interrupt
+from jaeger_os.core.runtime import log_rotation
+from jaeger_os.core.memory import memory as mem
+from jaeger_os.core.prompts import prompts as prompt_module
+from jaeger_os.core.runtime import tool_interrupt
 from .core import tools as jaeger_tools
-from .core.cron_runner import CronRunner
-from .core.instance import (
+from jaeger_os.core.background.cron_runner import CronRunner
+from jaeger_os.core.instance.instance import (
     CoreVersionMismatch,
     InstanceLayout,
     InstanceLock,
@@ -52,17 +52,17 @@ from .core.instance import (
     resolve_instance_dir,
     touch_manifest_started,
 )
-from .core.permissions import (
+from jaeger_os.core.safety.permissions import (
     ConsoleConfirmationProvider,
     PermissionPolicy,
     PermissionTier,
     install_policy,
     requires_tier,
 )
-from .core.schemas import CORE_VERSION, Config
-from .core.schemas import load_yaml
-from .core.skill_loader import load_and_register
-from .core.setup_wizard import run_wizard
+from jaeger_os.core.instance.schemas import CORE_VERSION, Config
+from jaeger_os.core.instance.schemas import load_yaml
+from jaeger_os.core.skills.skill_loader import load_and_register
+from jaeger_os.core.instance.setup_wizard import run_wizard
 
 
 # ---------------------------------------------------------------------------
@@ -344,7 +344,7 @@ def _parse_toolsets_env() -> frozenset[str] | None:
     # Validate eagerly via ``resolve_toolsets`` — its KeyError carries
     # the offending name. Catch it here so we can decorate the error
     # with the env-var context.
-    from .agent.toolsets import resolve_toolsets
+    from jaeger_os.agent.schemas.toolsets import resolve_toolsets
     try:
         resolve_toolsets(names)
     except KeyError as exc:
@@ -800,7 +800,7 @@ def _session_context_block(session_key: str, user_text: str) -> str:
 # ---------------------------------------------------------------------------
 def _register_builtins(client: Any) -> None:
     """Wire all the built-in Jaeger tools into the framework-free
-    :mod:`jaeger_os.agent.tool_registry`.
+    :mod:`jaeger_os.agent.schemas.tool_registry`.
 
     Phase-6.2 cutover: the decorator is now ``@register_tool_from_function``
     (was ``@agent.tool_plain``); tool bodies and the ``@requires_tier``
@@ -1256,7 +1256,7 @@ def _register_builtins(client: Any) -> None:
         appear on your very next step. Call with no name (or an unknown
         one) to get the catalog of every toolset and what it holds.
         Returns the toolsets now active."""
-        from .core.toolsets import (
+        from jaeger_os.core.skills.toolsets import (
             active_toolset_names, all_toolsets, enable_toolset,
         )
         clean = (name or "").strip().lower()
@@ -1455,7 +1455,7 @@ def _register_builtins(client: Any) -> None:
         the skill is NOT registered and you must fix the skill (not the
         test) before retrying. Returns the names of skills newly
         registered this call."""
-        from .core.skill_loader import load_and_register, _REGISTERED_KEYS
+        from jaeger_os.core.skills.skill_loader import load_and_register, _REGISTERED_KEYS
         cfg = _pipeline["config"]
         before = {(n, v, z) for (n, v, z) in _REGISTERED_KEYS}
         report = load_and_register(
@@ -1543,7 +1543,7 @@ def _delegate_internal(client: Any, subtask: str) -> dict[str, Any]:
         # loop. A fresh ``JaegerAgent`` per subtask keeps history scoped
         # to the delegate's work (a child agent doesn't inherit the
         # parent's context — the spec calls this out).
-        from .agent.runtime_bridge import build_jaeger_agent, drive_one_turn
+        from jaeger_os.agent.loop.runtime_bridge import build_jaeger_agent, drive_one_turn
         sub_agent = build_jaeger_agent(
             client,
             system_prompt=_pipeline["system_prompt"],
@@ -1737,7 +1737,7 @@ def _strip_drift_markup(text: str) -> str:
     # Use the agent layer's drift parser to strip tool-call envelopes
     # from text we'd otherwise show to the user (TUI banner, finalize
     # fallback). The parser knows the same patterns as the adapters.
-    from .agent.drift_parser import _DRIFT_PATTERNS  # noqa: PLC2701
+    from jaeger_os.agent.parsing.drift_parser import _DRIFT_PATTERNS  # noqa: PLC2701
     cleaned = text
     for pattern in _DRIFT_PATTERNS:
         cleaned = pattern.sub("", cleaned)
@@ -1807,7 +1807,7 @@ def begin_turn_cancel_scope() -> "threading.Event":
     agent loop (:func:`_run_via_iter`) checks it between steps and halts
     gracefully. Cleared here so a stale cancel can't kill the next turn.
 
-    The Event comes from :mod:`jaeger_os.core.tool_interrupt` so it is the
+    The Event comes from :mod:`jaeger_os.core.runtime.tool_interrupt` so it is the
     *same* object a long-running tool polls via ``is_interrupted()`` — one
     cancel flag, checked between loop nodes *and* mid-tool."""
     ev = tool_interrupt.begin_scope()
@@ -1855,7 +1855,7 @@ def _get_agent(client: Any) -> object:
     fingerprint and returns the sentinel.
 
     Phase-9 cleanup: no pydantic-ai ``Agent`` is constructed any more.
-    Tools live in :mod:`jaeger_os.agent.tool_registry`; the sentinel
+    Tools live in :mod:`jaeger_os.agent.schemas.tool_registry`; the sentinel
     exists only so the skill loader's ``_ToolCapturingAgent`` wrapper
     has something to wrap.
     """
@@ -1971,7 +1971,7 @@ def _confirmation_provider(config: Any, layout: Any = None) -> Any:
     load + persist per-skill grants (``<instance>/permissions.json``)."""
     mode = getattr(getattr(config, "permissions", None), "mode", "confirm")
     if mode == "allow":
-        from .core.permissions import AllowAllProvider
+        from jaeger_os.core.safety.permissions import AllowAllProvider
         return AllowAllProvider()
     return ConsoleConfirmationProvider(instance_dir=getattr(layout, "root", None))
 
@@ -1981,7 +1981,7 @@ def _preflight_log() -> None:
     if an optional dependency or system library is missing. Silent when
     everything is ready. Best-effort — preflight never blocks boot."""
     try:
-        from .core.preflight import boot_warning, check_environment
+        from jaeger_os.core.runtime.preflight import boot_warning, check_environment
         warning = boot_warning(check_environment())
         if warning:
             print(warning, flush=True)
@@ -2005,7 +2005,7 @@ def _run_turn_via_jaeger_agent(
     the loop through :class:`JaegerAgent`. Returns the exact same dict
     shape so ``run_command`` / ``run_for_voice`` don't need to know
     which loop ran."""
-    from .agent.runtime_bridge import build_jaeger_agent, drive_one_turn
+    from jaeger_os.agent.loop.runtime_bridge import build_jaeger_agent, drive_one_turn
 
     key = session_key
     # First call per session builds + caches a JaegerAgent. Force the
@@ -2216,7 +2216,7 @@ class LlamaCppPythonClient:
     finalize / fast-finalize passes.
 
     This is the local-first default brain. The opt-in alternative is
-    :class:`jaeger_os.core.external_model.ExternalModelClient`, which
+    :class:`jaeger_os.core.models.external_model.ExternalModelClient`, which
     presents the same ``.chat()`` / ``.kind`` surface. The new agent
     loop (Phase-9) wraps ``.llm`` in
     :class:`jaeger_os.agent.LocalLlamaAdapter` to drive inference;
@@ -2230,7 +2230,7 @@ class LlamaCppPythonClient:
     def __init__(self, model_cfg: Any, warmup: bool = True) -> None:
         from llama_cpp import Llama
 
-        from .core.model_resolver import resolve_model_path
+        from jaeger_os.core.models.model_resolver import resolve_model_path
         # Resolve through the registry so configs can carry a stable
         # name like "gemma-4-26b-a4b-it-q4_k_m" instead of a fragile
         # absolute path. Downloads from HF Hub on first use if the
@@ -2305,7 +2305,7 @@ def make_client(config: Any, layout: Any = None, *, warmup: bool = True) -> Any:
     never left without a brain because a cloud endpoint is down."""
     ext = getattr(config, "external_model", None)
     if ext is not None and getattr(ext, "enabled", False):
-        from .core.external_model import ExternalModelClient, ExternalModelError
+        from jaeger_os.core.models.external_model import ExternalModelClient, ExternalModelError
         try:
             client = ExternalModelClient(ext, layout)
             check = client.connectivity_check()
@@ -2327,7 +2327,7 @@ def make_client(config: Any, layout: Any = None, *, warmup: bool = True) -> Any:
     # (the default), mlx for Apple-Silicon-optimised MLX models.
     backend = (getattr(config.model, "backend", "") or "llama_cpp_python").lower()
     if backend in ("mlx", "mlx-lm", "mlx_lm"):
-        from .core.mlx_client import MlxClient
+        from jaeger_os.core.models.mlx_client import MlxClient
         return MlxClient(config.model.model_path, warmup=warmup)
     return LlamaCppPythonClient(config.model, warmup=warmup)
 
@@ -2381,7 +2381,7 @@ def self_test(layout: InstanceLayout) -> int:
 
     # Skill discovery
     try:
-        from .core.skill_loader import discover_skills
+        from jaeger_os.core.skills.skill_loader import discover_skills
         discovered = discover_skills(layout)
         names = [f"{s.name}_v{s.version}({s.zone})" for s in discovered]
         print(f"== skill discovery == {names or '(none yet — core skills/ empty)'}")
@@ -2424,7 +2424,7 @@ def self_test(layout: InstanceLayout) -> int:
 
     # Migrations discovery
     try:
-        from .core.migrations import discover_migrations
+        from jaeger_os.core.instance.migrations import discover_migrations
         migs = discover_migrations()
         print(f"== migrations == {[m['name'] for m in migs] or '(none registered — at head)'}")
     except Exception as exc:
@@ -2491,7 +2491,7 @@ def _cli_delete_credential(layout: InstanceLayout, name: str) -> int:
 
 
 def _cli_migrate(layout: InstanceLayout) -> int:
-    from .core.migrations import run_pending_migrations
+    from jaeger_os.core.instance.migrations import run_pending_migrations
 
     try:
         applied = run_pending_migrations(layout)
@@ -2551,7 +2551,7 @@ def _cli_list_instances() -> int:
         if has_manifest:
             # Try to read the instance's identity for a one-line summary.
             try:
-                from .core.schemas import Identity, load_yaml
+                from jaeger_os.core.instance.schemas import Identity, load_yaml
                 identity = load_yaml(path / "identity.yaml", Identity)
                 summary = f"{identity.name!r} — {identity.role}"
             except Exception:
@@ -2577,11 +2577,11 @@ def _cli_create_instance(name: str, *, force: bool = False) -> int:
         import shutil
         shutil.rmtree(layout.root, ignore_errors=True)
 
-    from .core.schemas import (
+    from jaeger_os.core.instance.schemas import (
         Config, DisplayConfig, Identity, Manifest, ModelConfig, SkillsConfig,
         dump_json, dump_yaml,
     )
-    from .core.model_resolver import DEFAULT_MODEL
+    from jaeger_os.core.models.model_resolver import DEFAULT_MODEL
 
     layout.root.mkdir(parents=True, exist_ok=True)
     layout.ensure_dirs()
@@ -2795,7 +2795,7 @@ def boot_for_tui(
     try:
         manifest = check_manifest(layout)
     except CoreVersionMismatch:
-        from .core.migrations import run_pending_migrations
+        from jaeger_os.core.instance.migrations import run_pending_migrations
         run_pending_migrations(layout)
         manifest = check_manifest(layout)
 
@@ -2927,9 +2927,9 @@ def run_daemon(*, instance_name: str | None = None,
     """
     import signal as _signal
 
-    from .core.deep_think import queue_for_layout
-    from .core.model_resolver import DEFAULT_CODER_MODEL, DEFAULT_MODEL
-    from .core.reflection import reflect_on_task, save_reflection
+    from jaeger_os.core.background.deep_think import queue_for_layout
+    from jaeger_os.core.models.model_resolver import DEFAULT_CODER_MODEL, DEFAULT_MODEL
+    from jaeger_os.core.prompts.reflection import reflect_on_task, save_reflection
 
     print("[jaeger-daemon] booting…", flush=True)
     boot = boot_for_tui(instance_name=instance_name, with_memory=True,
@@ -3052,7 +3052,7 @@ def main() -> int:
     # --doctor: verify every dependency + system library, offer to
     # install whatever is missing, then exit. Needs no instance/model.
     if getattr(args, "doctor", False):
-        from .core.preflight import (
+        from jaeger_os.core.runtime.preflight import (
             check_environment, fixable, format_report, install_missing, missing,
         )
         checks = check_environment()
@@ -3109,7 +3109,7 @@ def main() -> int:
         manifest = check_manifest(layout)
     except CoreVersionMismatch:
         try:
-            from .core.migrations import run_pending_migrations
+            from jaeger_os.core.instance.migrations import run_pending_migrations
             applied = run_pending_migrations(layout)
             if applied:
                 print(f"[jaeger] applied {len(applied)} migration(s) to reach core {CORE_VERSION}: "

@@ -112,7 +112,7 @@ def _run_turn_via_new_agent(
     """Phase-6 bench dispatch — drive the turn through ``JaegerAgent``
     instead of pydantic-ai. Returns the same :class:`TurnRow` shape so
     the level scorers don't need to know which loop ran."""
-    from jaeger_os.agent.runtime_bridge import build_jaeger_agent, drive_one_turn
+    from jaeger_os.agent.loop.runtime_bridge import build_jaeger_agent, drive_one_turn
     from jaeger_os.main import SKIP_FINAL_TOOLS, _get_agent, _pipeline
 
     # Drive ``_get_agent`` once so the tool registry is mirrored. The

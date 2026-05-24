@@ -38,7 +38,7 @@ from html.parser import HTMLParser
 from typing import Any, Callable
 from urllib.parse import parse_qs, unquote, urlparse
 
-from ..tool_interrupt import is_interrupted
+from jaeger_os.core.runtime.tool_interrupt import is_interrupted
 
 
 # ── Shared result shape ─────────────────────────────────────────────

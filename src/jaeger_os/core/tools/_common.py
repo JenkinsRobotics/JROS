@@ -22,7 +22,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from ..instance import InstanceLayout
+from jaeger_os.core.instance.instance import InstanceLayout
 
 
 # ---------------------------------------------------------------------------
@@ -33,7 +33,7 @@ _layout: InstanceLayout | None = None
 
 def bind(layout: InstanceLayout) -> None:
     """Wire all tool I/O to a specific instance dir. Called once at startup."""
-    from .. import memory as mem
+    from jaeger_os.core.memory import memory as mem
     global _layout
     _layout = layout
     mem.bind(layout)
@@ -63,7 +63,7 @@ def _audit(event: str, payload: dict[str, Any]) -> None:
     }
     # Redact secrets before they land in the tamper-evident audit log —
     # a run_shell command or tool arg can carry an API key (audit A3).
-    from ..redact import redact_obj
+    from jaeger_os.core.safety.redact import redact_obj
     entry = redact_obj(entry)
     with layout.audit_log_path.open("a", encoding="utf-8") as fh:
         fh.write(json.dumps(entry, ensure_ascii=True, default=str) + "\n")
@@ -137,7 +137,7 @@ def _resolve_read(path: str) -> Path:
         )
     # Reads are unconfined, but never an OS-level secret store —
     # ~/.ssh, .aws/credentials, a .env, … (audit A5).
-    from ..file_safety import is_sensitive_path
+    from jaeger_os.core.safety.file_safety import is_sensitive_path
     _sensitive = is_sensitive_path(full)
     if _sensitive:
         raise SandboxError(f"refused — {_sensitive}")

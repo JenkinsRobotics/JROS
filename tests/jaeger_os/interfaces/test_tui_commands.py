@@ -71,7 +71,7 @@ def test_cloud_provider_maps_are_consistent() -> None:
 def test_cloud_providers_are_valid_schema_providers() -> None:
     """The TUI's cloud list must stay in sync with the config schema's
     accepted providers."""
-    from jaeger_os.core.schemas import ExternalModelConfig
+    from jaeger_os.core.instance.schemas import ExternalModelConfig
     for prov in slash._CLOUD_PROVIDERS:
         assert ExternalModelConfig(provider=prov, model="x").provider == prov
 
@@ -124,7 +124,7 @@ def test_confirmation_roundtrip(monkeypatch, tmp_path, answer, expected) -> None
     import threading
     import time
 
-    from jaeger_os.core.permissions import PermissionRequest, PermissionTier
+    from jaeger_os.core.safety.permissions import PermissionRequest, PermissionTier
     from jaeger_os.interfaces.tui.app import _TuiConfirmationProvider
 
     monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
@@ -155,7 +155,7 @@ def test_confirmation_denies_on_non_interactive_stdin(monkeypatch) -> None:
     """Piped / non-tty stdin — no live user; fail safe, never block."""
     import sys
 
-    from jaeger_os.core.permissions import PermissionRequest, PermissionTier
+    from jaeger_os.core.safety.permissions import PermissionRequest, PermissionTier
     from jaeger_os.interfaces.tui.app import _TuiConfirmationProvider
 
     monkeypatch.setattr(sys.stdin, "isatty", lambda: False)

@@ -12,7 +12,7 @@ from types import SimpleNamespace
 import pytest
 
 from jaeger_os.core import tools
-from jaeger_os.core.toolsets import LEAN_CORE, model_visible
+from jaeger_os.core.skills.toolsets import LEAN_CORE, model_visible
 
 
 # ── lean surface ─────────────────────────────────────────────────────
@@ -44,7 +44,7 @@ def test_lean_core_is_hermes_sized() -> None:
 def test_mcp_tools_are_not_lean_filtered() -> None:
     # A configured MCP server is deliberately loaded — the lean surface
     # must not hide the tools it re-exports.
-    from jaeger_os.core.toolsets import register_mcp_tools
+    from jaeger_os.core.skills.toolsets import register_mcp_tools
     assert model_visible("weather-server:get_forecast") is False
     register_mcp_tools(["weather-server:get_forecast"])
     assert model_visible("weather-server:get_forecast") is True
@@ -55,7 +55,7 @@ def test_mcp_tools_are_not_lean_filtered() -> None:
 
 @pytest.fixture()
 def bound(tmp_path):
-    from jaeger_os.core import memory as mem
+    from jaeger_os.core.memory import memory as mem
     mem.bind(SimpleNamespace(memory_dir=tmp_path / "memory"))
     yield
 

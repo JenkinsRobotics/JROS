@@ -29,7 +29,6 @@ from .adapters.hermes_xml import HermesXMLAdapter
 from .adapters.local_llama import LocalLlamaAdapter
 from .adapters.mlx import MLXAdapter
 from .adapters.openai import OpenAIAdapter
-from .bridge import mirror_pydantic_ai_tools
 from .callbacks import AgentCallbacks
 from .interrupt import AgentInterrupted, StaleCallTimeout, interruptible_call
 from .retry_utils import jittered_backoff, retry_with_backoff
@@ -72,8 +71,6 @@ __all__ = [
     "JaegerAgent", "SkipFinalFinalizer",
     # prompt assembly
     "build_system_prompt",
-    # phase-6 migration
-    "mirror_pydantic_ai_tools",
     # phase-7 toolsets
     "JAEGER_TOOLSETS", "list_toolsets", "resolve_toolsets", "toolset_for_tool",
     # phase-8 resilience

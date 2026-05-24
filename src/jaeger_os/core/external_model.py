@@ -103,48 +103,46 @@ def resolve_api_key(ext: ExternalModelConfig, layout: Any | None) -> str:
 
 
 # ---------------------------------------------------------------------------
-# pydantic-ai Model construction
+# Provider validation
 # ---------------------------------------------------------------------------
-def build_external_model(ext: ExternalModelConfig, api_key: str) -> Any:
-    """Build the pydantic-ai ``Model`` for ``ext``.
+# Phase-9 cleanup: the legacy ``build_external_model`` constructed a
+# pydantic-ai ``Model`` instance. After Phase 6.2 the agent layer drives
+# providers directly via :mod:`jaeger_os.agent.adapters`, so the only
+# work this layer needs to do is validate that the API key is present
+# before the adapter tries to use it.
 
-    LM Studio / OpenAI-compatible endpoints map to ``OpenAIChatModel``
-    with a custom-base-url provider; anthropic maps to ``AnthropicModel``.
-    External models emit native structured tool calls, so none of the
-    llama-cpp drift-parsing in ``LlamaCppModel`` is needed here.
+
+def validate_external_provider(ext: ExternalModelConfig, api_key: str) -> str:
+    """Return the resolved API key for ``ext``, raising
+    :class:`ExternalModelError` when a cloud provider is missing a key.
+
+    Local OpenAI-compatible servers (LM Studio, local Ollama) accept
+    any non-empty key; this helper injects a placeholder. True cloud
+    endpoints (``openai`` / ``anthropic`` / ``ollama-cloud`` /
+    ``gemini``) genuinely require a real key.
     """
     if ext.provider in _OPENAI_COMPATIBLE:
-        from pydantic_ai.models.openai import OpenAIChatModel
-        from pydantic_ai.providers.openai import OpenAIProvider
-
-        # Local servers (LM Studio, local Ollama) need no real key but
-        # reject an empty one — any non-empty placeholder works. True
-        # cloud endpoints ('ollama-cloud', 'openai') genuinely require a
-        # key and are never placeholdered.
         _placeholder = {"lmstudio": "lm-studio", "ollama": "ollama"}
         key = api_key or _placeholder.get(ext.provider, "")
         if not key:
             env = ext.api_key_env or _CONVENTIONAL_ENV.get(
-                ext.provider, "OPENAI_API_KEY")
+                ext.provider, "OPENAI_API_KEY",
+            )
             raise ExternalModelError(
                 f"provider {ext.provider!r} needs an API key — set the "
                 f"{ext.api_key_credential!r} credential or the {env} "
                 f"env var."
             )
-        provider = OpenAIProvider(base_url=ext.base_url, api_key=key)
-        return OpenAIChatModel(ext.model, provider=provider)
+        return key
 
     if ext.provider == "anthropic":
-        from pydantic_ai.models.anthropic import AnthropicModel
-        from pydantic_ai.providers.anthropic import AnthropicProvider
-
         if not api_key:
             raise ExternalModelError(
                 "provider 'anthropic' needs an API key — set the "
                 f"{ext.api_key_credential!r} credential or the "
                 f"{ext.api_key_env or 'ANTHROPIC_API_KEY'} env var."
             )
-        return AnthropicModel(ext.model, provider=AnthropicProvider(api_key=api_key))
+        return api_key
 
     raise ExternalModelError(f"unknown provider {ext.provider!r}")
 
@@ -166,13 +164,14 @@ def _merge_consecutive(messages: list[dict[str, str]]) -> list[dict[str, str]]:
 
 
 class ExternalModelClient:
-    """External-brain client. Exposes the same surface ``main.py`` uses
-    on ``LlamaCppPythonClient``:
+    """External-brain client. Exposes the surface ``main.py`` reads:
 
-      • ``.model``   — the pydantic-ai ``Model`` for the agent loop
       • ``.chat()``  — bounded completion for fast-finalize / thinking
       • ``.kind``    — ``"external"`` (vs ``"local"``)
       • ``.describe()`` — one-line human summary for the status panel
+      • ``.ext`` / ``.provider`` / ``.model_name`` — config attributes
+        the new agent layer's :func:`jaeger_os.agent.runtime_bridge.
+        _adapter_for_client` reads to pick the right adapter.
     """
 
     kind = "external"
@@ -180,8 +179,9 @@ class ExternalModelClient:
 
     def __init__(self, ext: ExternalModelConfig, layout: Any | None = None) -> None:
         self.ext = ext
-        self._api_key = resolve_api_key(ext, layout)
-        self.model = build_external_model(ext, self._api_key)
+        self._api_key = validate_external_provider(
+            ext, resolve_api_key(ext, layout),
+        )
         self.model_name = ext.model
         self.provider = ext.provider
 

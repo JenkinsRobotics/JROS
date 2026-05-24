@@ -18,7 +18,7 @@ readme = "README.md"
 requires-python = ">=3.11,<3.13"
 license = { text = "Apache-2.0" }
 authors = [{ name = "Jenkins Robotics" }]
-keywords = ["agent", "llm", "local-first", "robotics", "pydantic-ai", "jaeger", "embodied-ai"]
+keywords = ["agent", "llm", "local-first", "robotics", "jaeger", "embodied-ai"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
@@ -42,7 +42,10 @@ classifiers = [
 # pywhispercpp).
 dependencies = [
     # --- agent core ---
-    "pydantic-ai>=1.2",        # agent loop (agent.iter + typed tool surface)
+    # Phase-9 cleanup: pydantic-ai removed. The agent loop lives in
+    # ``jaeger_os.agent`` — a framework-free implementation that talks
+    # to the ``openai`` / ``anthropic`` SDKs and the in-process
+    # ``llama_cpp.Llama`` directly. See docs/agent_refactor_phase_9.md.
     "pydantic>=2.0",           # config + tool schemas
     "pyyaml>=6.0",             # identity.yaml / config.yaml
     "numpy>=1.26",             # embeddings + audio buffers

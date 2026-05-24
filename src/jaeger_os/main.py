@@ -35,18 +35,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from pydantic_ai import Agent, CallToolsNode, ModelRequestNode
-from pydantic_ai.messages import (
-    ModelRequest,
-    ModelResponse,
-    SystemPromptPart,
-    TextPart,
-    ToolCallPart,
-    ToolReturnPart,
-    UserPromptPart,
-)
-from pydantic_ai.usage import RequestUsage
-
 from .agent.tool_registry import register_tool_from_function
 from .core import credentials as creds
 from .core import log_rotation
@@ -64,7 +52,6 @@ from .core.instance import (
     resolve_instance_dir,
     touch_manifest_started,
 )
-from .core.llm_model import LlamaCppModel
 from .core.permissions import (
     ConsoleConfirmationProvider,
     PermissionPolicy,
@@ -76,12 +63,6 @@ from .core.schemas import CORE_VERSION, Config
 from .core.schemas import load_yaml
 from .core.skill_loader import load_and_register
 from .core.setup_wizard import run_wizard
-from .core.tool_guardrails import ToolGuardrail, call_signature, merge_guidance
-from .core.tool_result_budget import (
-    TurnResultBudget,
-    budget_from_env,
-    compact_history,
-)
 
 
 # ---------------------------------------------------------------------------
@@ -427,7 +408,80 @@ _pipeline: dict[str, Any] = {
     # it auto-fires the next turn with the evaluator's reason as the
     # prompt. Mirrors Claude Code's /goal (see code.claude.com/docs/en/goal).
     "goal": None,  # GoalState | None
+    # Phase-9 status indicator (Hermes-style). The TUI status bar and
+    # the run-turn spinner both read this on every render tick to show
+    # what the agent is actively doing — standby / model-thinking /
+    # tool dispatch / deep-think / background process. Updated by
+    # ``set_agent_status`` from the agent loop's callbacks and from
+    # the deep-think runner / background process tracker.
+    "agent_status": {
+        "state": "ready",          # ready | thinking | tool | deep_think | background | finalizing | error
+        "detail": "",              # short human label (tool name, queue size, …)
+        "since_ts": 0.0,           # time.time() when this state started
+    },
 }
+
+
+def set_agent_status(
+    state: str,
+    detail: str = "",
+    *,
+    since_ts: float | None = None,
+) -> None:
+    """Single setter the TUI / gateway / log readers poll.
+
+    Cheap dict write — fires from anywhere (agent callback, deep-think
+    runner thread, tool body). The TUI's Live spinner refreshes 8× a
+    second and re-reads this; no need for a separate signal channel.
+    """
+    _pipeline["agent_status"] = {
+        "state": state,
+        "detail": detail,
+        "since_ts": since_ts if since_ts is not None else time.time(),
+    }
+
+
+def get_agent_status() -> dict[str, Any]:
+    """Snapshot of the current status, safe to read from any thread."""
+    return dict(_pipeline.get("agent_status") or {
+        "state": "ready", "detail": "", "since_ts": 0.0,
+    })
+
+
+_STATUS_GLYPHS: dict[str, str] = {
+    "ready": "o",
+    "thinking": "(...)",
+    "tool": ">",
+    "finalize": "*",
+    "deep_think": "DT",
+    "background": "BG",
+    "error": "!",
+    "speaking": "TTS",
+}
+
+
+def status_label(status: "dict[str, Any] | None" = None) -> str:
+    """Render the current status as a short label like ``> web_search``
+    or ``(...) thinking 4.2s``.  Used by the TUI spinner text and the
+    bottom status bar so the user can see at a glance whether the
+    agent is idle, doing model work, dispatching a tool, or busy with
+    a background task.
+
+    Pass an explicit snapshot to avoid re-read races; omit for the
+    live snapshot.
+    """
+    snap = status if status is not None else get_agent_status()
+    state = snap.get("state") or "ready"
+    detail = snap.get("detail") or ""
+    since = float(snap.get("since_ts") or 0.0)
+    elapsed = max(0.0, time.time() - since) if since else 0.0
+    glyph = _STATUS_GLYPHS.get(state, "*")
+    parts = [glyph, state]
+    if detail:
+        parts.append(f": {detail}")
+    if state != "ready" and elapsed > 0.5:
+        parts.append(f"({elapsed:.1f}s)")
+    return " ".join(parts)
 
 _session_histories: dict[str, list[Any]] = {}
 _session_loaded: set[str] = set()
@@ -655,64 +709,6 @@ def _record_episodic(entry: dict[str, Any]) -> None:
         print(f"[jaeger] episodic append failed: {exc}", file=sys.stderr, flush=True)
 
 
-# ---------------------------------------------------------------------------
-# Per-session conversation history
-# ---------------------------------------------------------------------------
-def _episodic_to_messages(turns: list[dict[str, str]]) -> list[Any]:
-    out: list[Any] = []
-    pending_user: str | None = None
-    for entry in turns:
-        role = entry.get("role")
-        content = entry.get("content")
-        if not isinstance(content, str):
-            continue
-        if role == "user":
-            pending_user = content
-        elif role == "assistant" and pending_user is not None:
-            out.append(ModelRequest(parts=[UserPromptPart(content=pending_user)]))
-            out.append(ModelResponse(
-                parts=[TextPart(content=content)],
-                usage=RequestUsage(input_tokens=0, output_tokens=0),
-                model_name="local-gemma-4-26b-a4b",
-                timestamp=datetime.now(timezone.utc),
-            ))
-            pending_user = None
-    return out
-
-
-def _ensure_system_prompt(history: list[Any]) -> None:
-    """Guarantee the live system prompt leads ``history``, in place.
-
-    pydantic-ai injects the agent's system prompt only when message_history
-    is empty (``UserPromptNode`` in ``_agent_graph``: ``if not messages``).
-    A resumed session is rebuilt from the episodic log by
-    :func:`_episodic_to_messages`, which carries no ``SystemPromptPart`` — so
-    without this every resumed turn runs with no identity, no operating
-    rules, and no knowledge of what Jaeger is. The same gap reopens if the
-    overflow trim drops the message that carried the prompt.
-
-    Idempotent: a no-op when a system prompt already leads the history.
-    """
-    if not history:
-        return
-    system_prompt = _pipeline.get("system_prompt") or ""
-    if not system_prompt:
-        return
-    first = history[0]
-    first_parts = list(getattr(first, "parts", []) or [])
-    if any(isinstance(p, SystemPromptPart) for p in first_parts):
-        return
-    sys_part = SystemPromptPart(content=system_prompt)
-    if isinstance(first, ModelRequest):
-        # Prepend into the existing first request so the system prompt leads
-        # it — exactly how pydantic-ai builds a fresh conversation.
-        first.parts = [sys_part, *first_parts]
-    else:
-        # First message is a response (e.g. an odd-length overflow trim) —
-        # insert a standalone system-prompt request ahead of it.
-        history.insert(0, ModelRequest(parts=[sys_part]))
-
-
 def _get_session_history(session_key: str) -> list[Any]:
     """The in-process conversation history for a session.
 
@@ -797,105 +793,6 @@ def _session_context_block(session_key: str, user_text: str) -> str:
     if not lines:
         return ""
     return "[session context from prior tool results]\n" + "\n".join(lines) + "\n[end session context]"
-
-
-def _augment_with_session_context(session_key: str, user_text: str) -> str:
-    block = _session_context_block(session_key, user_text)
-    return f"{block}\n\n{user_text}" if block else user_text
-
-
-def _pair_tool_messages(msgs: list[Any]) -> list[tuple[str, dict[str, Any], Any]]:
-    """The one canonical message walk. Pairs each tool-call to its
-    tool-return across a pydantic-ai message list and returns ordered
-    ``(tool_name, args, return_content)`` triples. Every caller that
-    needs to inspect a turn's tool calls goes through this."""
-    triples: list[tuple[str, dict[str, Any], Any]] = []
-    pending: dict[str, dict[str, Any]] = {}
-    for msg in msgs:
-        kind = getattr(msg, "kind", None)
-        if kind == "response":
-            for part in getattr(msg, "parts", []):
-                if getattr(part, "part_kind", None) == "tool-call":
-                    pending[part.tool_call_id] = {
-                        "name": part.tool_name,
-                        "args": part.args if isinstance(part.args, dict) else {},
-                    }
-        elif kind == "request":
-            for part in getattr(msg, "parts", []):
-                if getattr(part, "part_kind", None) != "tool-return":
-                    continue
-                call = pending.pop(getattr(part, "tool_call_id", None), None) or {}
-                name = call.get("name") or getattr(part, "tool_name", "") or ""
-                triples.append((name, call.get("args") or {},
-                                getattr(part, "content", None)))
-    return triples
-
-
-def _iter_tool_returns(iter_out: dict[str, Any]) -> list[tuple[str, dict[str, Any], Any]]:
-    """Ordered ``(tool_name, args, result)`` triples from an iter result —
-    handles both the skip-final and full-iter shapes."""
-    if iter_out.get("skipped"):
-        fd = iter_out.get("first_decision") or {}
-        name = fd.get("tool")
-        if not name:
-            return []
-        args = fd.get("args") if isinstance(fd.get("args"), dict) else {}
-        return [(name, args, iter_out.get("skipped_result"))]
-    result = iter_out.get("result")
-    if result is None:
-        return []
-    try:
-        msgs = list(result.all_messages()) if hasattr(result, "all_messages") else []
-    except Exception:
-        return []
-    return _pair_tool_messages(msgs)
-
-
-def _update_session_state_from_iter(session_key: str, iter_out: dict[str, Any]) -> None:
-    state = _session_state.setdefault(session_key, {})
-    for name, args, result in _iter_tool_returns(iter_out):
-        if not isinstance(result, dict):
-            continue
-        if name == "calculate" and result.get("result") is not None:
-            state["last_calculation_result"] = result.get("result")
-            if args.get("expression"):
-                state["last_calculation_expression"] = args.get("expression")
-        elif name == "get_weather" and result.get("location"):
-            state["last_location"] = result.get("location")
-        elif name == "get_time":
-            loc = args.get("location") or args.get("timezone") or result.get("timezone")
-            if loc:
-                state["last_location"] = loc
-        elif name in {"write_file", "append_file", "patch", "read_file", "delete_file"}:
-            path = result.get("path") or args.get("path")
-            if path:
-                state["last_file"] = path
-        elif name == "web_search":
-            query = result.get("query") or args.get("query")
-            if query:
-                state["last_search_topic"] = query
-
-
-def _sanitize_history_messages(
-    messages: list[Any],
-    *,
-    effective_text: str,
-    original_text: str,
-) -> list[Any]:
-    """Keep synthetic session context out of durable chat history."""
-    if effective_text == original_text:
-        return messages
-    for msg in messages:
-        if getattr(msg, "kind", None) != "request":
-            continue
-        for part in getattr(msg, "parts", []):
-            if (
-                getattr(part, "part_kind", None) == "user-prompt"
-                and getattr(part, "content", None) == effective_text
-            ):
-                part.content = original_text
-                return messages
-    return messages
 
 
 # ---------------------------------------------------------------------------
@@ -1747,65 +1644,6 @@ def _delegate_parallel(client: Any, subtasks: list[str]) -> dict[str, Any]:
     }
 
 
-def _build_mcp_tools(specs: list[Any]) -> list[Any]:
-    """Build Pydantic AI Tool objects for every MCP tool the bridge exposes.
-
-    Each MCP tool's advertised JSON Schema becomes the pydantic-ai tool
-    schema directly via Tool.from_schema, so adding a new MCP server in
-    plugins/mcp_config.json automatically surfaces its tools — no code
-    change required.
-    """
-    if not specs:
-        return []
-    from pydantic_ai import Tool
-
-    tools_list: list[Any] = []
-    for spec in specs:
-        schema = spec.input_schema if isinstance(spec.input_schema, dict) else {}
-        if not schema or "type" not in schema:
-            schema = {"type": "object", "properties": {}, **schema}
-
-        def _make_caller(qualified_name: str):
-            def _call(**kwargs: Any) -> dict[str, Any]:
-                from .plugins.mcp import client as mcp_client
-                return mcp_client.call_mcp_tool(qualified_name, kwargs)
-            _call.__name__ = qualified_name.replace(":", "_").replace("/", "_")
-            return _call
-
-        tools_list.append(
-            Tool.from_schema(
-                function=_make_caller(spec.qualified_name),
-                name=spec.qualified_name,
-                description=spec.description or f"MCP tool {spec.qualified_name}",
-                json_schema=schema,
-            )
-        )
-    # Keep MCP tools out of the lean-surface filter — a configured MCP
-    # server is deliberately loaded, so all its tools stay visible.
-    try:
-        from .toolsets import register_mcp_tools
-        register_mcp_tools([s.qualified_name for s in specs])
-    except Exception:  # noqa: BLE001
-        pass
-    return tools_list
-
-
-def build_agent(client: Any, system_prompt: str, mcp_specs: list[Any] | None = None) -> Agent[None, str]:
-    # ``client.model`` is the pydantic-ai Model: a LlamaCppModel for the
-    # local llama-cpp client, or a native OpenAIChatModel / AnthropicModel
-    # for the external-model client. The agent loop is the same either way.
-    model = client.model
-    # ``tool_retries=`` was renamed to ``retries=`` in pydantic-ai 1.x;
-    # the kwarg controls how many times the agent re-prompts the model
-    # when a tool's typed args fail validation.
-    agent: Agent[None, str] = Agent(
-        model=model,
-        system_prompt=system_prompt,
-        retries=2,
-        tools=_build_mcp_tools(mcp_specs or []),
-    )
-    _register_builtins(client)
-    return agent
 
 
 # ---------------------------------------------------------------------------
@@ -1896,7 +1734,10 @@ def _strip_drift_markup(text: str) -> str:
     bench / non-LLM call paths don't pay the cost."""
     if not text or "<" not in text:
         return text
-    from .core.llm_model import _DRIFT_PATTERNS
+    # Use the agent layer's drift parser to strip tool-call envelopes
+    # from text we'd otherwise show to the user (TUI banner, finalize
+    # fallback). The parser knows the same patterns as the adapters.
+    from .agent.drift_parser import _DRIFT_PATTERNS  # noqa: PLC2701
     cleaned = text
     for pattern in _DRIFT_PATTERNS:
         cleaned = pattern.sub("", cleaned)
@@ -1956,72 +1797,6 @@ def _looks_multistep(user_text: str) -> bool:
 # multi-step work tops out near ~16 calls and varies its arguments, so
 # neither limit trips on a healthy turn — they are a safety net, not a
 # fine-grained iteration tuner.
-_MAX_TOOL_CALLS = 24
-_MAX_IDENTICAL_CALLS = 4
-_MAX_SEMANTIC_FAILURES = 2
-
-
-def _semantic_failure_signature(tool_name: str, args: Any, content: Any) -> str | None:
-    """Return a stable signature for repeated tool failures.
-
-    Exact call matching misses common loops where the model varies irrelevant
-    args while hitting the same underlying error. This signature normalizes
-    the action to tool + target path/code shape + first useful error line.
-    """
-    if not isinstance(content, dict) or content.get("ok") is True:
-        return None
-    error = (
-        content.get("stderr")
-        or content.get("syntax_error")
-        or content.get("error")
-        or content.get("reason")
-        or ""
-    )
-    if not error:
-        return None
-    first_line = str(error).strip().splitlines()[0][:160]
-    if isinstance(args, dict):
-        target = (
-            args.get("path") or args.get("file") or args.get("name")
-            or content.get("path") or content.get("file") or ""
-        )
-        if not target and tool_name in ("execute_code", "run_python"):
-            code = str(args.get("code") or "")
-            target = f"code:{hash(code) & 0xffff:x}" if code else ""
-    else:
-        target = ""
-    return f"{tool_name}|{target}|{first_line}"
-
-
-def _loop_halt_reason(tool_calls_made: int,
-                      call_signatures: dict[str, int],
-                      failure_signatures: dict[str, int] | None = None) -> str | None:
-    """Return a halt reason when a turn is spinning, else None. Checks the
-    tight identical-call loop first, then the runaway total."""
-    for sig, n in (failure_signatures or {}).items():
-        if n >= _MAX_SEMANTIC_FAILURES:
-            return (f"hit the same {sig.split('|', 1)[0]} failure "
-                    f"{n} times")
-    for sig, n in call_signatures.items():
-        if n >= _MAX_IDENTICAL_CALLS:
-            return (f"called {sig.split('|', 1)[0]} with identical "
-                    f"arguments {n} times")
-    if tool_calls_made > _MAX_TOOL_CALLS:
-        return f"made {tool_calls_made} tool calls in a single turn"
-    return None
-
-
-def _tool_arg_detail(args: Any) -> str:
-    """A short human-readable detail for a tool call — the first
-    argument value, truncated. Feeds the TUI's live ``┊`` activity line
-    (e.g. ``┊ 🔧 skill  view``)."""
-    val: Any = ""
-    if isinstance(args, dict) and args:
-        val = next(iter(args.values()))
-    elif isinstance(args, str):
-        val = args
-    s = str(val).replace("\n", " ").strip()
-    return s[:40] + ("…" if len(s) > 40 else "")
 
 
 def begin_turn_cancel_scope() -> "threading.Event":
@@ -2047,516 +1822,11 @@ def request_turn_cancel() -> None:
         ev.set()
 
 
-async def _run_via_iter(
-    agent: Agent,
-    user_text: str,
-    message_history: list[Any] | None,
-    *,
-    client: Any = None,
-) -> dict[str, Any]:
-    first_decision: dict[str, Any] | None = None
-    skip_final = False
-    skip_tool_name: str | None = None
-    skip_result: Any = None
-    # Multi-step prompts: don't short-circuit on the first tool call,
-    # let the full agent.iter loop run so the model can chain naturally.
-    suppress_skip_final = _looks_multistep(user_text)
-    # P4 loop backstop — guarantee the turn terminates.
-    tool_calls_made = 0
-    call_signatures: dict[str, int] = {}
-    failure_signatures: dict[str, int] = {}
-    pending_tool_calls: dict[str, dict[str, Any]] = {}
-    # Loop guardrail — corrective guidance one step before the hard backstop.
-    guardrail = ToolGuardrail()
-    # Tool-result budget — persist oversized tool returns out of context.
-    budget = TurnResultBudget(_pipeline.get("layout"), budget_from_env())
-    # Fresh per-turn unchanged-read dedup state for file_read.
-    jaeger_tools.reset_read_tracker()
-    halt_reason: str | None = None
-    interrupted = False
-    # User-interrupt scope — a threading.Event the TUI sets (Ctrl-C, or
-    # the user speaking mid-turn) to stop the turn. None for non-TUI
-    # callers, which simply never get interrupted.
-    cancel_event = _pipeline.get("cancel_event")
-    # Live tool-progress — the TUI registers this so it can render the
-    # ``┊`` activity lines + the toolbar spinner as the turn runs.
-    _tool_cb = _pipeline.get("tool_event_cb")
-    # Live, read-only turn snapshot for the `/peek` command — fresh each
-    # turn so a new turn never shows the last one's counters.
-    _turn_started = time.perf_counter()
-    _pipeline["turn_progress"] = None
-
-    def _emit_tool(phase: str, name: str, detail: str = "",
-                   elapsed: float = 0.0) -> None:
-        if _tool_cb is not None:
-            try:
-                _tool_cb(phase, name, detail, elapsed)
-            except Exception:  # noqa: BLE001 — UI callback must never break a turn
-                pass
-        # Publish a snapshot of the turn's state so `/peek` can show
-        # whether it is healthy, looping, or struggling — without
-        # touching the loop. `call_signatures` already counts identical
-        # (tool, args) calls for the loop backstop; the top count is the
-        # loop signal.
-        try:
-            top_count = max(call_signatures.values(), default=0)
-            top_tool = ""
-            if call_signatures:
-                top_sig = max(call_signatures,
-                              key=lambda s: call_signatures[s])
-                top_tool = top_sig.split("|", 1)[0]
-            _pipeline["turn_progress"] = {
-                "active": True,
-                "elapsed_s": round(time.perf_counter() - _turn_started, 1),
-                "tool_calls": tool_calls_made,
-                "last_tool": name,
-                "phase": phase,
-                "repeated_max": top_count,
-                "repeated_tool": top_tool,
-                "failures": sum(failure_signatures.values()),
-            }
-        except Exception:  # noqa: BLE001 — telemetry must never break a turn
-            pass
-
-    # Resumed / trimmed histories are rebuilt without a SystemPromptPart, and
-    # pydantic-ai only injects the system prompt when message_history is empty
-    # — so re-seat it here or the turn runs with no identity or operating rules.
-    if message_history:
-        _ensure_system_prompt(message_history)
-
-    async with agent.iter(user_text, message_history=message_history or None) as run:
-        async for node in run:
-            if cancel_event is not None and cancel_event.is_set():
-                interrupted = True
-                halt_reason = "the turn was interrupted"
-                break
-            if isinstance(node, CallToolsNode):
-                tool_parts = [p for p in node.model_response.parts if hasattr(p, "tool_call_id")]
-                if first_decision is None and tool_parts:
-                    tc = tool_parts[0]
-                    first_decision = {"tool": tc.tool_name, "args": tc.args}
-                    if (
-                        not suppress_skip_final
-                        and len(tool_parts) == 1
-                        and tc.tool_name in SKIP_FINAL_TOOLS
-                    ):
-                        skip_final = True
-                        skip_tool_name = tc.tool_name
-                # P4 loop backstop — count every call, halt a spinning turn.
-                for tp in tool_parts:
-                    tool_calls_made += 1
-                    sig = call_signature(tp.tool_name, tp.args)
-                    call_signatures[sig] = call_signatures.get(sig, 0) + 1
-                    pending_tool_calls[getattr(tp, "tool_call_id", "")] = {
-                        "name": tp.tool_name,
-                        "args": tp.args,
-                        "started": time.perf_counter(),
-                    }
-                    _emit_tool("start", tp.tool_name, _tool_arg_detail(tp.args))
-                halt_reason = _loop_halt_reason(
-                    tool_calls_made, call_signatures, failure_signatures,
-                )
-                if halt_reason:
-                    break
-            if isinstance(node, ModelRequestNode):
-                for p in node.request.parts:
-                    if isinstance(p, ToolReturnPart):
-                        call = pending_tool_calls.pop(
-                            getattr(p, "tool_call_id", ""), {},
-                        )
-                        _tname = call.get("name") or getattr(p, "tool_name", "")
-                        _args = call.get("args") or {}
-                        _started = call.get("started", 0.0)
-                        _elapsed = ((time.perf_counter() - _started)
-                                    if _started else 0.0)
-                        _emit_tool("done", _tname, "", _elapsed)
-                        # The budget cap below changes only what the model
-                        # sees — failure detection + the guardrail must judge
-                        # the ORIGINAL result, so capture it first.
-                        original_content = p.content
-                        fail_sig = _semantic_failure_signature(
-                            _tname, _args, original_content,
-                        )
-                        if fail_sig:
-                            failure_signatures[fail_sig] = failure_signatures.get(fail_sig, 0) + 1
-                        # Usage telemetry — best-effort, never fatal.
-                        try:
-                            from .core.usage_stats import record_tool
-                            record_tool(_tname, ok=not fail_sig,
-                                        elapsed=_elapsed)
-                        except Exception:  # noqa: BLE001
-                            pass
-                        # Persist an oversized payload to a file, leaving a
-                        # compact preview in context.
-                        try:
-                            p.content = budget.process(
-                                p.content, str(_tname),
-                                getattr(p, "tool_call_id", "") or "",
-                            )
-                        except Exception as exc:  # noqa: BLE001 — never break a turn
-                            print(f"[jaeger] tool-result budget skipped: {exc}",
-                                  file=sys.stderr, flush=True)
-                        # When this call is starting to spin, attach corrective
-                        # guidance so the model can break the loop before the
-                        # hard backstop ends the turn.
-                        try:
-                            guidance = guardrail.observe(
-                                str(_tname), _args,
-                                original_content, fail_sig,
-                            )
-                        except Exception as exc:  # noqa: BLE001 — never break a turn
-                            guidance = None
-                            print(f"[jaeger] loop guardrail skipped: {exc}",
-                                  file=sys.stderr, flush=True)
-                        if guidance:
-                            p.content = merge_guidance(p.content, guidance)
-                halt_reason = _loop_halt_reason(
-                    tool_calls_made, call_signatures, failure_signatures,
-                )
-                if halt_reason:
-                    break
-                if skip_final:
-                    for p in node.request.parts:
-                        if isinstance(p, ToolReturnPart):
-                            skip_result = p.content
-                            break
-                if skip_result is not None:
-                    break
-        else:
-            return {"result": run.result, "skipped": False, "first_decision": first_decision}
-
-    # P4 loop backstop — the turn was stopped mid-flight. Return a graceful
-    # skip-final-shaped dict so every caller handles it without changes.
-    if halt_reason:
-        if interrupted:
-            text = ("Okay — I stopped there. What would you like me to "
-                    "do instead?")
-        else:
-            text = (
-                f"I stopped this turn early — I {halt_reason} without making "
-                "progress, so I was stuck in a loop rather than getting "
-                "closer to an answer. Tell me how you'd like to proceed."
-            )
-        skipped_msgs = [
-            ModelRequest(parts=[UserPromptPart(content=user_text)]),
-            ModelResponse(
-                parts=[TextPart(content=text)],
-                usage=RequestUsage(input_tokens=0, output_tokens=0),
-                model_name="local-gemma-4-26b-a4b",
-                timestamp=datetime.now(timezone.utc),
-            ),
-        ]
-        return {
-            "result": None, "skipped": True, "skipped_text": text,
-            "skipped_msgs": skipped_msgs, "skipped_result": None,
-            "first_decision": first_decision, "halted": True,
-        }
-
-    # Fast-finalize: bounded LLM call that paraphrases the tool result
-    # into a natural sentence. Falls back to the raw formatter when
-    # ``client`` isn't threaded through (legacy callers, tests).
-    text = _fast_finalize_sync(client, user_text, skip_tool_name or "", skip_result)
-    call_id = "fast_" + os.urandom(4).hex()
-    skipped_msgs = [
-        ModelRequest(parts=[UserPromptPart(content=user_text)]),
-        ModelResponse(
-            parts=[
-                ToolCallPart(
-                    tool_name=skip_tool_name or "",
-                    args=(first_decision or {}).get("args") or {},
-                    tool_call_id=call_id,
-                ),
-            ],
-            usage=RequestUsage(input_tokens=0, output_tokens=0),
-            model_name="local-gemma-4-26b-a4b",
-            timestamp=datetime.now(timezone.utc),
-        ),
-        ModelRequest(parts=[
-            ToolReturnPart(
-                tool_name=skip_tool_name or "",
-                content=skip_result,
-                tool_call_id=call_id,
-            ),
-        ]),
-        ModelResponse(
-            parts=[TextPart(content=text)],
-            usage=RequestUsage(input_tokens=0, output_tokens=0),
-            model_name="local-gemma-4-26b-a4b",
-            timestamp=datetime.now(timezone.utc),
-        ),
-    ]
-    return {
-        "result": None, "skipped": True, "skipped_text": text,
-        "skipped_msgs": skipped_msgs, "skipped_result": skip_result,
-        "first_decision": first_decision,
-    }
-
-
-def _walk_new_messages(result: Any) -> tuple[list[str], dict[str, Any] | None]:
-    """Tool-activity display lines + the first tool decision, from THIS
-    turn's new messages. Shares the canonical walk (`_pair_tool_messages`)."""
-    try:
-        msgs = (list(result.new_messages()) if hasattr(result, "new_messages")
-                else list(result.all_messages()))
-    except Exception:
-        return [], None
-    triples = _pair_tool_messages(msgs)
-    out: list[str] = []
-    for name, args, _content in triples:
-        args_repr = ""
-        if isinstance(args, dict) and args:
-            args_repr = ", ".join(f"{k}={v!r}" for k, v in list(args.items())[:2])
-            if len(args_repr) > 60:
-                args_repr = args_repr[:57] + "..."
-        out.append(f"  ▸ {name}({args_repr})")
-    first_decision = ({"tool": triples[0][0], "args": triples[0][1]}
-                      if triples else None)
-    return out, first_decision
-
-
-# ---------------------------------------------------------------------------
-# Phase-4 inline thinking. Opt-in (env: JAEGER_INLINE_THINK=1) brief
-# chain-of-thought call BEFORE the main agent turn, on prompts the
-# heuristic flags as complex (long, or contains code keywords). The
-# thought is prepended to the user turn so the model sees its own
-# plan before deciding what tool to call. Default: OFF — adds 1-3s
-# of latency per qualifying turn, which the bench shouldn't pay
-# unless explicitly opted in.
-# ---------------------------------------------------------------------------
-_INLINE_THINK_DIRECTIVE = (
-    "Before answering the user's request, think briefly about it in 3-5 "
-    "short bullets:\n"
-    "  1. What does the user actually want?\n"
-    "  2. What tools or steps would solve it?\n"
-    "  3. Likely failure modes (truncated code, ambiguous wording, "
-    "missing context)?\n"
-    "Plain text only. Do NOT call any tools in this response — analysis "
-    "only. Keep under 150 words."
-)
-
-_INLINE_THINK_KEYWORDS = frozenset({
-    "code", "script", "python", "function", "class ",
-    "implement", "build", "create a", "write a",
-    "fix the", "debug", "refactor", "rewrite",
-    "test the", "test it", "execute_code",
-})
-
-
-def _should_inline_think(user_text: str) -> bool:
-    """Heuristic gate for the Phase-4 inline-thinking pre-pass.
-
-    Fires when the env var JAEGER_INLINE_THINK is set AND the user
-    prompt looks non-trivial (long, or contains code-task keywords).
-    Keep the trigger conservative — the latency cost compounds across
-    a long bench, and most simple prompts don't need a plan."""
-    if os.environ.get("JAEGER_INLINE_THINK") != "1":
-        return False
-    if not user_text:
-        return False
-    if len(user_text) > 120:
-        return True
-    lower = user_text.lower()
-    return any(kw in lower for kw in _INLINE_THINK_KEYWORDS)
-
-
-def _inline_think_sync(client: Any, user_text: str) -> str | None:
-    """Synchronous one-shot chain-of-thought call. Returns the thought
-    text (stripped) or None on any failure. Uses the same client and
-    system prompt as the agent so the KV-cache prefix is shared.
-
-    The lock is held in the caller (``_run_with_fix_loop``); we do not
-    re-acquire it here to avoid a deadlock against a re-entrant caller."""
-    try:
-        system = _pipeline.get("system_prompt") or ""
-        result = client.chat(
-            [
-                {"role": "system", "content": system},
-                {"role": "user", "content": user_text},
-                {"role": "user", "content": _INLINE_THINK_DIRECTIVE},
-            ],
-            max_tokens=300,
-            temperature=0.6,
-            top_p=0.95,
-            stream=False,
-        )
-        return (getattr(result, "text", None) or "").strip() or None
-    except Exception:
-        return None
-
-
-def _augment_with_thought(user_text: str, thought: str) -> str:
-    """Prepend the inline thought to user_text as a marked block so
-    the model can read its own plan before deciding what to do."""
-    return (
-        "[my plan for this turn — internal, do not echo back]\n"
-        f"{thought}\n"
-        "[end plan]\n\n"
-        f"{user_text}"
-    )
-
-
-# ---------------------------------------------------------------------------
-# Phase-3 run-and-fix loop. Detects a failed ``run_python`` in the
-# completed iter_out, builds a follow-up "fix this and retry" user
-# turn, and re-runs the agent with the prior messages as history so
-# it knows what code it wrote. Capped at 1 extra pass — the system
-# prompt promises the model ONE retry, not infinite.
-# ---------------------------------------------------------------------------
-_RETRY_PROMPT_TEMPLATE = (
-    "The previous `execute_code` call failed. Stderr:\n```\n{stderr}\n```\n"
-    "Read the file with `read_file`, fix the bug, write it back with "
-    "`write_file`, and re-run with `execute_code`. Do not give up."
-)
-
-_SYNTAX_RETRY_PROMPT_TEMPLATE = (
-    "The previous `{tool}` call wrote a Python file with a syntax error.\n"
-    "Path: `{path}`\n"
-    "Syntax error:\n```\n{syntax_error}\n```\n"
-    "Read the file with `read_file`, fix the syntax error using `patch` or "
-    "`write_file`, then run the file with `execute_code` to verify it works."
-)
-
-_EXECUTION_RETRY_PROMPT_TEMPLATE = (
-    "You answered with a plan but did not execute the task. Execute the "
-    "original request now using the available tools. Do not restate a plan "
-    "unless a tool result makes the task impossible.\n\n"
-    "Original request:\n{request}"
-)
-
-
-def _history_after_iter(iter_out: dict[str, Any],
-                        fallback: list[Any] | None = None) -> list[Any] | None:
-    result = iter_out.get("result")
-    if result is not None and hasattr(result, "all_messages"):
-        try:
-            return list(result.all_messages())
-        except Exception:
-            pass
-    if iter_out.get("skipped_msgs"):
-        return (fallback or []) + list(iter_out["skipped_msgs"])
-    return fallback
-
-
-def _needs_execution_retry(iter_out: dict[str, Any], user_text: str) -> bool:
-    """Detect the common stall where a multi-step task gets a plan only."""
-    if iter_out.get("skipped") or iter_out.get("first_decision") is not None:
-        return False
-    lower = (user_text or "").strip().lower()
-    if lower.startswith(("explain", "how do i", "how can i", "what are the steps")):
-        return False
-    if not _looks_multistep(user_text):
-        return False
-    result = iter_out.get("result")
-    text = (getattr(result, "output", "") or "").strip().lower()
-    if not text:
-        return False
-    plan_markers = (
-        "first,", "first ", "next,", "next ", "then ", "step 1",
-        "i would", "i will", "plan:", "here's a plan", "here is a plan",
-    )
-    return any(marker in text for marker in plan_markers)
-
-
-def _find_failed_run_python(iter_out: dict[str, Any]) -> dict[str, Any] | None:
-    """Return the ``execute_code`` tool's result dict if it ran and
-    failed (``ok=False`` AND not ``timed_out``), else None. Shares the
-    canonical walk so the skip-final and full-iter shapes are both
-    covered for free."""
-    for name, _args, content in _iter_tool_returns(iter_out):
-        if name in ("execute_code", "run_python") and isinstance(content, dict):
-            failure = _run_python_failure_if_any(content)
-            if failure is not None:
-                return failure
-    return None
-
-
-def _find_failed_python_write(iter_out: dict[str, Any]) -> dict[str, Any] | None:
-    """Return a Python file-write result with ``syntax_ok=False`` — the
-    earlier, cheaper failure signal from write_file / append_file / patch,
-    caught before the model burns a retry executing a file that can't
-    compile. Shares the canonical walk."""
-    for name, _args, content in _iter_tool_returns(iter_out):
-        if (name in ("write_file", "append_file", "patch")
-                and isinstance(content, dict)
-                and content.get("syntax_ok") is False):
-            return {
-                "tool": name,
-                "path": content.get("path") or content.get("file") or "",
-                "syntax_error": content.get("syntax_error") or "syntax error",
-            }
-    return None
-
-
-def _run_python_failure_if_any(result: dict[str, Any]) -> dict[str, Any] | None:
-    """Return ``result`` if it represents a fixable failure, else None.
-    Timeouts are NOT retried — an infinite loop won't get smarter on
-    a second try, and the wall-clock cost would compound."""
-    if result.get("ok"):
-        return None
-    if result.get("timed_out"):
-        return None
-    if not (result.get("stderr") or result.get("error")):
-        return None
-    return result
-
-
-async def _run_with_fix_loop(
-    agent: Agent,
-    user_text: str,
-    message_history: list[Any] | None,
-    *,
-    max_retries: int = 1,
-    client: Any = None,
-) -> dict[str, Any]:
-    """Wrapper around :func:`_run_via_iter` that:
-      1. Optionally pre-pends an inline chain-of-thought (Phase 4) when
-         ``JAEGER_INLINE_THINK=1`` and the prompt looks complex.
-      2. Injects ONE retry pass (Phase 3) if a ``run_python`` call fails.
-
-    Disabled (max_retries=0) for any caller that doesn't want the retry
-    cost / non-determinism. ``client`` is needed for the inline-think
-    call; when None, the think pass is silently skipped."""
-    history = message_history
-    effective_text = user_text
-    if client is not None and _should_inline_think(user_text):
-        thought = _inline_think_sync(client, user_text)
-        if thought:
-            effective_text = _augment_with_thought(user_text, thought)
-    iter_out = await _run_via_iter(agent, effective_text, history, client=client)
-    if _needs_execution_retry(iter_out, user_text):
-        history = _history_after_iter(iter_out, history)
-        retry_text = _EXECUTION_RETRY_PROMPT_TEMPLATE.format(request=user_text)
-        iter_out = await _run_via_iter(agent, retry_text, history, client=client)
-        iter_out["retried_after_plan_only_response"] = True
-    for _ in range(max_retries):
-        failure = _find_failed_run_python(iter_out)
-        syntax_failure = None if failure is not None else _find_failed_python_write(iter_out)
-        if failure is None and syntax_failure is None:
-            return iter_out
-        # Build the retry history from the just-finished run so the
-        # model sees its own prior tool calls. Falls back to whatever
-        # we had if the result object doesn't expose all_messages().
-        history = _history_after_iter(iter_out, history)
-        if syntax_failure is not None:
-            retry_text = _SYNTAX_RETRY_PROMPT_TEMPLATE.format(
-                tool=syntax_failure.get("tool") or "write_file",
-                path=syntax_failure.get("path") or "the file",
-                syntax_error=(syntax_failure.get("syntax_error") or "")[:1500].strip(),
-            )
-        else:
-            stderr = (failure.get("stderr") or failure.get("error") or "")[:1500]
-            retry_text = _RETRY_PROMPT_TEMPLATE.format(stderr=stderr.strip())
-        iter_out = await _run_via_iter(agent, retry_text, history, client=client)
-        # Mark so callers / logs can see this was a retry-loop turn.
-        iter_out["retried_after_run_python_failure"] = failure is not None
-        iter_out["retried_after_python_syntax_failure"] = syntax_failure is not None
-    return iter_out
-
-
-# ---------------------------------------------------------------------------
-# run_command — the chat-loop entry point
-# ---------------------------------------------------------------------------
-_agent_cache: dict[tuple, Agent[None, str]] = {}
+# Per-(client, system_prompt, mcp_specs) cache so a single set of skill
+# registrations + smoke tests doesn't re-run on every turn. The value is
+# the ``_RegistrationSentinel`` returned by ``_get_agent``; the cache
+# clears whenever the model is hot-swapped (see ``/model`` slash command).
+_agent_cache: dict[tuple, Any] = {}
 
 
 def _agent_key(client: Any) -> tuple:
@@ -2566,31 +1836,45 @@ def _agent_key(client: Any) -> tuple:
     return (id(client), hash(_pipeline["system_prompt"]), mcp_fingerprint)
 
 
-def _get_agent(client: Any) -> Agent[None, str]:
-    """Phase-6.2 cutover: still constructs a (now-empty) pydantic-ai
-    ``Agent`` for shape compatibility with the few remaining callers
-    that reach for ``agent.model`` etc., but the real work happens via
-    ``_register_builtins`` (writes into the framework-free registry)
-    and the skill loader (same). The returned ``Agent`` carries the
-    model + system prompt; **no tools live on it any more** — they all
-    live in :mod:`jaeger_os.agent.tool_registry`.
+class _RegistrationSentinel:
+    """Stand-in passed to the skill loader where the legacy pydantic-ai
+    ``Agent`` used to live. The loader's ``_ToolCapturingAgent`` only
+    needs ``tool_plain`` / ``tool`` to be *callable*; everything else
+    falls through ``__getattr__`` and skill code shouldn't read it —
+    we keep the attribute pass-through as a no-op so a stray
+    ``agent.something`` lookup returns a harmless lambda rather than
+    crashing the load."""
 
-    Will be deleted entirely once every legacy call site is gone."""
+    def __getattr__(self, name: str) -> Any:  # noqa: D401
+        return lambda *a, **k: None
+
+
+def _get_agent(client: Any) -> object:
+    """Cached registration trigger — calls ``_register_builtins`` +
+    the skill loader once per ``(client, system_prompt, mcp_specs)``
+    fingerprint and returns the sentinel.
+
+    Phase-9 cleanup: no pydantic-ai ``Agent`` is constructed any more.
+    Tools live in :mod:`jaeger_os.agent.tool_registry`; the sentinel
+    exists only so the skill loader's ``_ToolCapturingAgent`` wrapper
+    has something to wrap.
+    """
     key = _agent_key(client)
     if key not in _agent_cache:
         _agent_cache.clear()
-        agent = build_agent(client, _pipeline["system_prompt"], _pipeline.get("mcp_specs"))
+        _register_builtins(client)
+        sentinel = _RegistrationSentinel()
         # Skill loader registers base + instance skills AFTER built-ins,
         # so an instance skill named `get_time_v2` overrides the built-in
         # (last-write-wins in the registry).
         load_and_register(
-            agent,
+            sentinel,
             _pipeline["layout"],
             run_smoke_tests=_pipeline["config"].skills.run_smoke_tests,
             enabled_allowlist=list(_pipeline["config"].skills.enabled_base_skills) or None,
             audit=lambda ev, payload: jaeger_tools._audit(ev, payload),
         )
-        _agent_cache[key] = agent
+        _agent_cache[key] = sentinel
     return _agent_cache[key]
 
 
@@ -2612,19 +1896,31 @@ def prewarm(client: Any) -> None:
         return
     started = time.perf_counter()
     try:
-        # Phase-6.2: prewarm through the new ``JaegerAgent`` directly.
-        # ``_get_agent`` still runs to fire tool + skill registration into
-        # the framework-free registry; we then build a one-shot agent and
-        # discard it — the warmup just primes the llama-cpp KV cache.
-        _get_agent(client)
-        from .agent.runtime_bridge import build_jaeger_agent, drive_one_turn
-        warm_agent = build_jaeger_agent(
-            client,
-            system_prompt=_pipeline["system_prompt"],
-            toolsets=_pipeline.get("toolsets"),
-            skip_final_tools=SKIP_FINAL_TOOLS,
-        )
-        drive_one_turn(warm_agent, "Respond with just the word ready.")
+        # Phase-8 fix: prewarm hits the raw client.chat directly instead
+        # of going through the full JaegerAgent loop. The full loop
+        # renders all registered tool schemas (~9K tokens) which is a
+        # 20-30s prefill on a cold model — long enough to trip the
+        # stale-call detector and abandon the worker thread, which
+        # corrupts llama-cpp's KV cache and breaks the FIRST real turn
+        # with ``llama_decode -3``. The lightweight version below
+        # primes the cache safely without the tool surface.
+        _get_agent(client)  # still wires the tool registry + skills
+        llama = getattr(client, "llm", None)
+        if llama is not None and hasattr(llama, "create_chat_completion"):
+            # In-process llama-cpp path. Use ONE-token max + no tools so
+            # the prefill is bounded.
+            llama.create_chat_completion(
+                messages=[
+                    {"role": "system", "content": _pipeline["system_prompt"]},
+                    {"role": "user", "content": "ready"},
+                ],
+                max_tokens=1,
+                temperature=0.0,
+            )
+        else:
+            # HTTP-backed external client — the connectivity check
+            # already covered the cold-start. Nothing to do here.
+            pass
     except Exception as exc:
         print(f"[jaeger] prewarm skipped: {exc}", flush=True)
         return
@@ -2717,16 +2013,26 @@ def _run_turn_via_jaeger_agent(
     # bridge's mirror both fire.
     if key not in _jaeger_agents_by_session:
         _get_agent(client)  # populates the new registry via _get_agent's mirror
+        from .agent import AgentCallbacks
+        _status_cb = AgentCallbacks(
+            tool_progress=lambda name, phase, data: set_agent_status(
+                "tool" if phase == "start" else "thinking",
+                detail=name if phase == "start" else "",
+            ),
+            heartbeat=lambda elapsed_s: None,  # ``since_ts`` carries elapsed
+        )
         _jaeger_agents_by_session[key] = build_jaeger_agent(
             client,
             system_prompt=_pipeline["system_prompt"],
             toolsets=_pipeline.get("toolsets"),
             skip_final_tools=SKIP_FINAL_TOOLS,
+            callbacks=_status_cb,
         )
     jaeger_agent = _jaeger_agents_by_session[key]
 
     lock = _pipeline["llm_lock"]
     started = time.perf_counter()
+    set_agent_status("thinking", detail="")
     try:
         if lock is not None:
             with lock:
@@ -2740,6 +2046,7 @@ def _run_turn_via_jaeger_agent(
             "user": user_text, "session_key": key, "error": str(exc),
             "latency": asdict(report), "framework_path": "jaeger_os_agent",
         })
+        set_agent_status("error", detail=f"{type(exc).__name__}")
         return {"text": "", "error": str(exc), "tool_activity": [],
                 "first_decision": None, "skipped_final": False,
                 "spoke_via_tool": False, "elapsed_s": elapsed, "report": report}
@@ -2782,6 +2089,7 @@ def _run_turn_via_jaeger_agent(
     if runner is not None:
         runner.queue(user_text, run_id=os.environ.get("BENCH_RUN_ID"))
 
+    set_agent_status("ready")
     return {
         "text": answer, "error": None, "tool_activity": tool_activity,
         "first_decision": first_decision, "skipped_final": skipped,
@@ -2802,110 +2110,6 @@ def _run_turn(client: Any, user_text: str, *, session_key: str) -> dict[str, Any
     The legacy pydantic-ai code paths below the early-return are
     unreachable and will be deleted in the next cleanup pass."""
     return _run_turn_via_jaeger_agent(client, user_text, session_key=session_key)
-    # ── legacy pydantic-ai path (unreachable) ──────────────────────
-
-    key = session_key
-    history = _get_session_history(key) if _pipeline["with_memory"] else None
-    effective_text = (
-        _augment_with_session_context(key, user_text)
-        if _pipeline["with_memory"] else user_text
-    )
-    agent = _get_agent(client)
-    # LlamaCppModel carries per-call timing; external models don't.
-    model: Any = agent.model
-    if hasattr(model, "reset_timings"):
-        model.reset_timings()
-    lock = _pipeline["llm_lock"]
-    started = time.perf_counter()
-    try:
-        if lock is not None:
-            with lock:
-                iter_out = asyncio.run(
-                    _run_with_fix_loop(agent, effective_text, history, client=client))
-        else:
-            iter_out = asyncio.run(
-                _run_with_fix_loop(agent, effective_text, history, client=client))
-    except Exception as exc:  # noqa: BLE001
-        elapsed = time.perf_counter() - started
-        report = LatencyReport(elapsed, 0, 0.0, 0.0, 0.0, 0.0, 0.0)
-        write_log({"user": user_text, "session_key": key, "error": str(exc),
-                   "latency": asdict(report)})
-        return {"text": "", "error": str(exc), "tool_activity": [],
-                "first_decision": None, "skipped_final": False,
-                "spoke_via_tool": False, "elapsed_s": elapsed, "report": report}
-
-    elapsed = time.perf_counter() - started
-    skipped = iter_out["skipped"]
-    first_decision = iter_out["first_decision"]
-    result = iter_out.get("result")
-
-    if skipped:
-        answer = (iter_out["skipped_text"] or "").strip()
-        if first_decision is not None:
-            args = first_decision.get("args") or {}
-            args_repr = (", ".join(f"{k}={v!r}" for k, v in list(args.items())[:2])
-                         if isinstance(args, dict) else "")
-            tool_activity = [f"  ▸ {first_decision['tool']}({args_repr})"]
-        else:
-            tool_activity = []
-    else:
-        answer = ((result.output if hasattr(result, "output") else str(result))
-                  or "").strip()
-        tool_activity, walked = _walk_new_messages(result)
-        first_decision = first_decision or walked
-
-    llm_times = list(getattr(model, "last_call_times", []))
-    decision_total = sum(llm_times)
-    final_last = llm_times[-1] if len(llm_times) > 1 else 0.0
-    report = LatencyReport(
-        total=elapsed,
-        tool_calls=len(tool_activity),
-        decision=decision_total,
-        decision_ttft=llm_times[0] if llm_times else 0.0,
-        tool=max(0.0, elapsed - decision_total),
-        final=final_last,
-        final_ttft=final_last,
-    )
-
-    write_log({
-        "user": user_text, "session_key": key, "answer": answer,
-        "tool_calls": len(tool_activity), "tool_activity": tool_activity,
-        "decision": first_decision, "skipped_final": skipped,
-        "latency": asdict(report),
-    })
-
-    if _pipeline["with_memory"]:
-        _update_session_state_from_iter(key, iter_out)
-    if _pipeline["with_memory"] and history is not None:
-        if skipped:
-            new_msgs: list[Any] = list(iter_out["skipped_msgs"])
-        else:
-            try:
-                new_msgs = list(result.new_messages()
-                                if hasattr(result, "new_messages")
-                                else result.all_messages())
-            except Exception:  # noqa: BLE001
-                new_msgs = []
-        new_msgs = _sanitize_history_messages(
-            new_msgs, effective_text=effective_text, original_text=user_text)
-        history.extend(new_msgs)
-        overflow = len(history) - _MAX_HISTORY_MESSAGES
-        if overflow > 0:
-            del history[:overflow]
-        # Prune bulky payloads out of the messages that survive the trim so
-        # a long session does not carry every past result at full fidelity.
-        compact_history(history)
-
-    runner = _pipeline["thinking_runner"]
-    if runner is not None:
-        runner.queue(user_text, run_id=os.environ.get("BENCH_RUN_ID"))
-
-    return {
-        "text": answer, "error": None, "tool_activity": tool_activity,
-        "first_decision": first_decision, "skipped_final": skipped,
-        "spoke_via_tool": any("🔊" in line for line in tool_activity),
-        "elapsed_s": elapsed, "report": report,
-    }
 
 
 def run_command(client: Any, user_text: str, session_key: str | None = None) -> None:
@@ -3007,23 +2211,18 @@ class _ChatResult:
 
 
 class LlamaCppPythonClient:
-    """Loads a Llama instance once and exposes `.model` (a LlamaCppModel)
-    for the agent loop plus `.chat()` for the bounded finalize passes.
+    """Loads a Llama instance once and exposes ``.llm`` (the raw
+    ``llama_cpp.Llama`` instance) plus ``.chat()`` for the bounded
+    finalize / fast-finalize passes.
 
     This is the local-first default brain. The opt-in alternative is
     :class:`jaeger_os.core.external_model.ExternalModelClient`, which
-    presents the same `.model` / `.chat()` / `.kind` surface."""
+    presents the same ``.chat()`` / ``.kind`` surface. The new agent
+    loop (Phase-9) wraps ``.llm`` in
+    :class:`jaeger_os.agent.LocalLlamaAdapter` to drive inference;
+    nothing here talks to ``pydantic-ai`` any more."""
 
     kind = "local"
-
-    @property
-    def model(self) -> "LlamaCppModel":
-        """Fresh LlamaCppModel over the resident Llama. ``build_agent``
-        calls this once per agent build; each agent gets its own wrapper
-        but they share the one loaded weights. The model name is passed
-        through so the wrapper can pick the right native tool dialect
-        (Gemma 4 vs. Qwen3)."""
-        return LlamaCppModel(self.llm, model_name=getattr(self, "model_name", "local-gemma-4"))
 
     def describe(self) -> str:
         return f"local · llama-cpp · {getattr(self, 'model_name', '?')}"

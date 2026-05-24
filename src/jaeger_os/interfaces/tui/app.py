@@ -1033,8 +1033,26 @@ class JaegerTUI:
 
         if running:
             frame = _SPINNER_FRAMES[int(time.time() * 8) % len(_SPINNER_FRAMES)]
-            frags.append((f"fg:{ACCENT_PTK}",
-                          f"{frame} {self._current_activity or 'ruminating'}"))
+            # Spinner text resolution:
+            #   1. Specific ``_current_activity`` (anything other than
+            #      the default "ruminating"). Set explicitly by the
+            #      deep-think entry, goal-eval entry, and by tests.
+            #   2. Live ``agent_status`` snapshot — surfaces the
+            #      active tool, finalize step, background process, etc.
+            #      as published by the agent-loop callbacks.
+            #   3. Whatever ``_current_activity`` is (e.g. "ruminating"
+            #      while a turn is mid-flight but the agent hasn't yet
+            #      dispatched a tool), else literal "ruminating".
+            from jaeger_os.main import get_agent_status, status_label
+            _snap = get_agent_status()
+            _cur = self._current_activity or ""
+            if _cur and _cur != "ruminating":
+                live = _cur
+            elif _snap.get("state") not in (None, "", "ready"):
+                live = status_label(_snap)
+            else:
+                live = _cur or "ruminating"
+            frags.append((f"fg:{ACCENT_PTK}", f"{frame} {live}"))
             frags.append(SEP)
 
         frags.append((f"fg:{ACCENT_PTK} bold", f"✦ {self.model_name}"))
@@ -1176,6 +1194,11 @@ class JaegerTUI:
                     # not-met goal re-enqueues itself as the next turn.
                     self._current_activity = "evaluating goal"
                     try:
+                        from jaeger_os.main import set_agent_status
+                        set_agent_status("thinking", detail="evaluating goal")
+                    except Exception:  # noqa: BLE001
+                        pass
+                    try:
                         nxt = self._post_turn_goal_check()
                     except Exception:  # noqa: BLE001
                         nxt = None
@@ -1202,6 +1225,11 @@ class JaegerTUI:
         self._turn_running.set()
         self._turn_started_at = time.perf_counter()
         self._current_activity = "deep think"
+        try:
+            from jaeger_os.main import set_agent_status
+            set_agent_status("deep_think", detail="thinking")
+        except Exception:  # noqa: BLE001 — status indicator must never crash a turn
+            pass
         try:
             self._maybe_auto_deep_think()
         finally:

@@ -107,6 +107,27 @@ class MLXAdapter(HermesXMLAdapter):
             inject_tool_instructions=inject_tool_instructions,
         )
 
+    def call(
+        self,
+        formatted: Any,
+        interrupt_event: Any,
+        *,
+        stale_timeout: float | None = None,
+        on_heartbeat: Any = None,
+        **kwargs: Any,
+    ) -> Any:
+        """In-process MLX call — ``stale_timeout`` is forced to ``None``
+        because abandoning the worker thread mid-``mlx_lm.generate``
+        leaves the model state half-mutated; the next call then errors.
+        Same reasoning as :class:`LocalLlamaAdapter.call`."""
+        return super().call(
+            formatted,
+            interrupt_event,
+            stale_timeout=None,
+            on_heartbeat=on_heartbeat,
+            **kwargs,
+        )
+
     def _lazy_runner(self, prompt: str, kw: dict[str, Any]) -> str:
         """Indirection so the heavy ``mlx_lm.load`` doesn't fire at
         construction time. First call resolves the real runner; later

@@ -228,6 +228,39 @@ class LocalLlamaAdapter(OpenAIAdapter):
         self._client = _LlamaChatFacade(self._llama)
         return self._client
 
+    # ── in-process call (override the inherited HTTP version) ───────
+
+    def call(
+        self,
+        formatted: Any,
+        interrupt_event: Any,
+        *,
+        stale_timeout: float | None = None,
+        on_heartbeat: Any = None,
+        **kwargs: Any,
+    ) -> Any:
+        """In-process call — ``stale_timeout`` is **forced to None**
+        regardless of what the caller passes.
+
+        Why: the in-process llama-cpp call cannot be safely cancelled.
+        :func:`interruptible_call` abandons its worker thread on
+        timeout but the abandoned worker keeps running inside Python,
+        holding the ``Llama`` instance. A subsequent call then sees a
+        half-decoded KV cache and returns ``llama_decode -3``.
+
+        The parent's HTTP path safely abandons sockets — that's why
+        the timeout exists at all. In-process has nothing to abandon,
+        so we always run to completion. Heartbeats still fire so the
+        TUI can show "still working (N s)…" during long cold prefills.
+        """
+        return super().call(
+            formatted,
+            interrupt_event,
+            stale_timeout=None,            # the key change
+            on_heartbeat=on_heartbeat,
+            **kwargs,
+        )
+
     # ── parse with drift fallback ───────────────────────────────────
 
     def parse_response(self, raw: Any) -> Message:

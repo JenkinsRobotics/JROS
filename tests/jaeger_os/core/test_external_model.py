@@ -1,10 +1,10 @@
-"""External-model pipeline — schema, key resolution, model construction.
+"""External-model pipeline — schema, key resolution, provider validation.
 
-These tests build pydantic-ai models and the ExternalModelClient WITHOUT
-contacting any server (construction is offline; only `.chat()` /
-`.connectivity_check()` would hit the network, and those are not
-exercised here). They lock in the local-first invariant: a default
-config never enables an external brain.
+Post-pydantic-ai-removal, the external client no longer constructs a
+``pydantic_ai.Model`` instance — adapter selection lives in
+:mod:`jaeger_os.agent.runtime_bridge`. What stays in
+``core/external_model.py`` is config-shape + key resolution + the
+``chat()`` shim that fast-finalize calls. This test file pins those.
 """
 
 from __future__ import annotations
@@ -14,9 +14,9 @@ import pytest
 from jaeger_os.core.external_model import (
     ExternalModelClient,
     ExternalModelError,
-    build_external_model,
-    resolve_api_key,
     _merge_consecutive,
+    resolve_api_key,
+    validate_external_provider,
 )
 from jaeger_os.core.schemas import Config, ExternalModelConfig, ModelConfig
 
@@ -59,37 +59,8 @@ def test_resolve_api_key_conventional_env(monkeypatch):
 
 def test_resolve_api_key_absent_returns_empty(monkeypatch):
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-    ext = ExternalModelConfig(provider="lmstudio", api_key_env="")
+    ext = ExternalModelConfig(provider="openai", api_key_env="")
     assert resolve_api_key(ext, layout=None) == ""
-
-
-# ── model construction (offline) ────────────────────────────────────
-
-
-def test_build_lmstudio_model_no_key_needed():
-    ext = ExternalModelConfig(enabled=True, provider="lmstudio", model="m")
-    model = build_external_model(ext, api_key="")
-    assert type(model).__name__ == "OpenAIChatModel"
-
-
-def test_build_ollama_cloud_requires_key():
-    """Ollama Cloud is a real cloud endpoint — no placeholder key; an
-    empty key must fail loud rather than silently mis-authenticate."""
-    ext = ExternalModelConfig(
-        enabled=True, provider="ollama-cloud",
-        base_url="https://ollama.com/v1", model="qwen3.5:397b",
-    )
-    with pytest.raises(ExternalModelError):
-        build_external_model(ext, api_key="")
-
-
-def test_build_ollama_cloud_with_key():
-    ext = ExternalModelConfig(
-        enabled=True, provider="ollama-cloud",
-        base_url="https://ollama.com/v1", model="qwen3.5:397b",
-    )
-    model = build_external_model(ext, api_key="fake-key")
-    assert type(model).__name__ == "OpenAIChatModel"
 
 
 def test_resolve_ollama_cloud_key_from_conventional_env(monkeypatch):
@@ -98,89 +69,100 @@ def test_resolve_ollama_cloud_key_from_conventional_env(monkeypatch):
     assert resolve_api_key(ext, layout=None) == "ollama-cloud-key"
 
 
-def test_build_anthropic_requires_key():
-    ext = ExternalModelConfig(enabled=True, provider="anthropic", model="claude-x")
-    with pytest.raises(ExternalModelError):
-        build_external_model(ext, api_key="")
-
-
-def test_build_anthropic_with_key():
-    ext = ExternalModelConfig(enabled=True, provider="anthropic", model="claude-opus-4-7")
-    model = build_external_model(ext, api_key="fake-key")
-    assert type(model).__name__ == "AnthropicModel"
-
-
-def test_external_client_surface():
-    """The client must mirror LlamaCppPythonClient's surface so main.py
-    never branches on backend: .model, .chat, .kind, .model_name."""
-    ext = ExternalModelConfig(enabled=True, provider="lmstudio", model="local-model")
-    client = ExternalModelClient(ext, layout=None)
-    assert client.kind == "external"
-    assert client.model_name == "local-model"
-    assert client.llm is None
-    assert hasattr(client, "chat") and hasattr(client, "connectivity_check")
-    assert type(client.model).__name__ == "OpenAIChatModel"
-    assert "lmstudio" in client.describe()
-
-
-# ── gemini (OpenAI-compatible endpoint) ─────────────────────────────
-
-
-_GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/openai/"
-
-
-def test_external_model_provider_gemini_accepted():
-    """The provider Literal must accept 'gemini'."""
-    ext = ExternalModelConfig(provider="gemini", model="gemini-2.5-flash")
-    assert ext.provider == "gemini"
-
-
-def test_external_model_rejects_bogus_provider():
-    """…and reject anything that is not a known provider."""
-    with pytest.raises(Exception):
-        ExternalModelConfig(provider="bogus-provider")
-
-
-def test_build_gemini_model_via_openai_path():
-    """Gemini's OpenAI-compatible endpoint maps to OpenAIChatModel — it
-    rides the same path as 'openai', with no native Gemini adapter."""
-    ext = ExternalModelConfig(
-        enabled=True, provider="gemini", model="gemini-2.5-flash",
-        base_url=_GEMINI_URL,
-    )
-    model = build_external_model(ext, api_key="fake-key")
-    assert type(model).__name__ == "OpenAIChatModel"
-
-
-def test_build_gemini_requires_key():
-    """Gemini is a true cloud endpoint — an empty key must fail loud,
-    not silently placeholder the way a local server does."""
-    ext = ExternalModelConfig(
-        enabled=True, provider="gemini", model="gemini-2.5-flash",
-        base_url=_GEMINI_URL,
-    )
-    with pytest.raises(ExternalModelError):
-        build_external_model(ext, api_key="")
-
-
 def test_resolve_gemini_key_from_conventional_env(monkeypatch):
     ext = ExternalModelConfig(provider="gemini", api_key_env="")
     monkeypatch.setenv("GEMINI_API_KEY", "gemini-key")
     assert resolve_api_key(ext, layout=None) == "gemini-key"
 
 
+# ── provider validation ────────────────────────────────────────────
+
+
+def test_validate_lmstudio_injects_placeholder_key():
+    """LM Studio runs locally; any non-empty key is accepted. The
+    validator injects ``"lm-studio"`` when no key is supplied so the
+    adapter doesn't refuse to construct."""
+    ext = ExternalModelConfig(enabled=True, provider="lmstudio", model="m")
+    assert validate_external_provider(ext, api_key="") == "lm-studio"
+
+
+def test_validate_ollama_cloud_requires_key():
+    """Ollama Cloud is a real cloud endpoint — no placeholder."""
+    ext = ExternalModelConfig(
+        enabled=True, provider="ollama-cloud",
+        base_url="https://ollama.com/v1", model="qwen3.5:397b",
+    )
+    with pytest.raises(ExternalModelError):
+        validate_external_provider(ext, api_key="")
+
+
+def test_validate_ollama_cloud_passes_real_key_through():
+    ext = ExternalModelConfig(
+        enabled=True, provider="ollama-cloud",
+        base_url="https://ollama.com/v1", model="qwen3.5:397b",
+    )
+    assert validate_external_provider(ext, api_key="real") == "real"
+
+
+def test_validate_anthropic_requires_key():
+    ext = ExternalModelConfig(enabled=True, provider="anthropic", model="claude-x")
+    with pytest.raises(ExternalModelError):
+        validate_external_provider(ext, api_key="")
+
+
+def test_validate_anthropic_passes_real_key_through():
+    ext = ExternalModelConfig(enabled=True, provider="anthropic", model="claude-opus-4-7")
+    assert validate_external_provider(ext, api_key="fake-key") == "fake-key"
+
+
+def test_validate_gemini_requires_key():
+    ext = ExternalModelConfig(
+        enabled=True, provider="gemini", model="gemini-2.5-flash",
+        base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
+    )
+    with pytest.raises(ExternalModelError):
+        validate_external_provider(ext, api_key="")
+
+
+# ── client surface ─────────────────────────────────────────────────
+
+
+def test_external_client_surface():
+    """The client exposes ``kind`` / ``model_name`` / ``provider`` /
+    ``chat`` / ``connectivity_check`` / ``describe`` — the surface the
+    new agent layer's :func:`jaeger_os.agent.runtime_bridge.
+    _adapter_for_client` and the fast-finalize fallback both read."""
+    ext = ExternalModelConfig(enabled=True, provider="lmstudio", model="local-model")
+    client = ExternalModelClient(ext, layout=None)
+    assert client.kind == "external"
+    assert client.model_name == "local-model"
+    assert client.provider == "lmstudio"
+    assert client.llm is None
+    assert hasattr(client, "chat") and hasattr(client, "connectivity_check")
+    assert "lmstudio" in client.describe()
+
+
+def test_external_model_provider_gemini_accepted():
+    ext = ExternalModelConfig(provider="gemini", model="gemini-2.5-flash")
+    assert ext.provider == "gemini"
+
+
+def test_external_model_rejects_bogus_provider():
+    with pytest.raises(Exception):
+        ExternalModelConfig(provider="bogus-provider")
+
+
 def test_gemini_client_surface(monkeypatch):
-    """A Gemini client mirrors the external surface and reports its
-    OpenAI-compatible endpoint in describe()."""
+    """Gemini client construction succeeds when the conventional key
+    is present in the environment."""
     monkeypatch.setenv("GEMINI_API_KEY", "fake-gemini-key")
     ext = ExternalModelConfig(
         enabled=True, provider="gemini", model="gemini-2.5-flash",
-        base_url=_GEMINI_URL,
+        base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
     )
     client = ExternalModelClient(ext, layout=None)
     assert client.kind == "external"
     assert client.provider == "gemini"
-    assert type(client.model).__name__ == "OpenAIChatModel"
     assert "gemini" in client.describe()
     assert "generativelanguage" in client.describe()
 
@@ -191,13 +173,11 @@ def test_gemini_client_surface(monkeypatch):
 def test_merge_consecutive_collapses_same_role():
     """Anthropic is strict about role alternation; the fast-finalize
     path sends two user turns in a row — they must merge into one."""
-    merged = _merge_consecutive(
-        [
-            {"role": "user", "content": "a"},
-            {"role": "user", "content": "b"},
-            {"role": "assistant", "content": "c"},
-        ]
-    )
+    merged = _merge_consecutive([
+        {"role": "user", "content": "a"},
+        {"role": "user", "content": "b"},
+        {"role": "assistant", "content": "c"},
+    ])
     assert merged == [
         {"role": "user", "content": "a\n\nb"},
         {"role": "assistant", "content": "c"},

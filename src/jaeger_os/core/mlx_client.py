@@ -15,7 +15,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from .mlx_model import MlxModel
 
 
 @dataclass
@@ -60,13 +59,6 @@ class MlxClient:
         )
         if warmup:
             self._warmup()
-
-    @property
-    def model(self) -> MlxModel:
-        """A fresh :class:`MlxModel` over the resident MLX weights — same
-        lifecycle as ``LlamaCppPythonClient.model``: one per agent build,
-        sharing the loaded weights underneath."""
-        return MlxModel(self._mlx_model, self._tokenizer, model_name=self.model_name)
 
     def describe(self) -> str:
         return f"local · mlx · {self.model_name}"

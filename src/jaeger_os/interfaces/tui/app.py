@@ -513,9 +513,17 @@ class JaegerTUI:
         rule, the body indented into the chat column, a closing rule.
 
         Tool activity is shown live *during* the turn (see
-        :meth:`_on_tool_event`), not here. The body is a plain
-        :class:`Text` so the model's answer is never interpreted as Rich
-        markup."""
+        :meth:`_on_tool_event`), not here. The body is rendered via
+        :class:`rich.markdown.Markdown` for the success path (so the
+        model's ``**bold**`` / bullets / headers render as the user
+        expects) and as a plain :class:`Text` for the error path (so
+        an LMStudio HTTP error body that contains ``[red]`` style
+        sequences is never mis-interpreted as Rich markup).
+
+        ``rich.markdown.Markdown`` escapes Rich-style ``[tag]`` syntax
+        before rendering — it's the safe-AND-pretty option compared to
+        a raw :class:`Text` wrap.
+        """
         body = (error or text or "").strip()
         if not body:
             return
@@ -533,8 +541,15 @@ class JaegerTUI:
         self.console.print()
         self.console.print(Rule(label, align="left", style=accent))
         self.console.print()
-        self.console.print(Padding(
-            Text(body, style="red" if is_err else ""), (0, 2, 0, 4)))
+        if is_err:
+            renderable = Text(body, style="red")
+        else:
+            # Markdown renderer handles **bold** / lists / headers / code
+            # blocks; escapes Rich ``[tag]`` markup so a literal "[red]"
+            # in the model's answer is shown, not interpreted.
+            from rich.markdown import Markdown
+            renderable = Markdown(body, code_theme="monokai")
+        self.console.print(Padding(renderable, (0, 2, 0, 4)))
         self.console.print()
         self.console.print(Rule(style=accent))
 
@@ -612,18 +627,65 @@ class JaegerTUI:
         — a chars/4 estimate. Rough, but it moves the bottom-bar gauge
         as the conversation grows, which is what the gauge is for.
 
-        Handles two message shapes:
-          • Legacy pydantic-ai: ``msg.parts[].content`` (attribute access).
-          • Phase-9 JaegerAgent: TypedDict with ``msg["content"]`` directly,
-            plus ``msg["tool_calls"]`` JSON for assistant tool-call turns.
+        Reads from TWO storage locations and concatenates them:
 
-        The new path was failing silently (0%) because the iterator only
-        looked at the legacy shape."""
+          1. ``_session_histories[session_key]`` — the legacy
+             pydantic-ai history (``msg.parts[].content``). Empty for
+             Phase-9 sessions but still walked for hybrid mode.
+          2. ``_jaeger_agents_by_session[session_key].messages`` — the
+             Phase-9 ``JaegerAgent`` instance's internal list of
+             TypedDict messages. This is where the live conversation
+             actually lives.
+
+        The gauge was stuck at 0% in 0.1.0 because we only walked #1,
+        which is empty for the new agent path.
+
+        Plus the system-prompt prefix + tool-schema blob — those are
+        what the model ACTUALLY sees per turn, so the gauge that
+        leaves them out underestimates and lulls the operator into
+        thinking they have plenty of headroom when in fact they're
+        sitting ~3-15K tokens deep before the first user message.
+        """
+        chars = 0
+        history: list = []
         try:
             from jaeger_os.main import (
                 _DEFAULT_SESSION_KEY, _get_session_history, _pipeline,
             )
-            history = _get_session_history(_DEFAULT_SESSION_KEY)
+            history = list(_get_session_history(_DEFAULT_SESSION_KEY) or [])
+            # Phase-9 JaegerAgent (preferred source for current sessions).
+            agents = _pipeline.get("jaeger_agents_by_session") if isinstance(
+                _pipeline.get("jaeger_agents_by_session"), dict
+            ) else None
+            if agents is None:
+                # Fall back to the private module attribute — names match
+                # what main.py uses today.
+                try:
+                    from jaeger_os.main import _jaeger_agents_by_session
+                    agents = _jaeger_agents_by_session
+                except Exception:  # noqa: BLE001
+                    agents = {}
+            agent = (agents or {}).get(_DEFAULT_SESSION_KEY)
+            if agent is not None and hasattr(agent, "messages"):
+                history = history + list(agent.messages or [])
+            # Add the system prompt prefix — it's a fixed cost per turn
+            # but the gauge should reflect that the budget isn't all
+            # "free" at the start of a session.
+            sysprompt = _pipeline.get("system_prompt") or ""
+            chars += len(str(sysprompt))
+            # Tool schemas — the other big fixed cost. We estimate by
+            # summing the JSON-serialised schema for every currently
+            # visible tool. Cheap enough to recompute per refresh.
+            try:
+                from jaeger_os.agent.schemas.tool_registry import get_tools
+                from jaeger_os.core.skills.toolsets import tool_visible
+                import json as _json2
+                for t in get_tools():
+                    if tool_visible(t.name) and hasattr(t, "to_openai_schema"):
+                        chars += len(_json2.dumps(t.to_openai_schema(),
+                                                   ensure_ascii=False))
+            except Exception:  # noqa: BLE001 — never block the gauge
+                pass
         except Exception:  # noqa: BLE001
             return
         chars = 0

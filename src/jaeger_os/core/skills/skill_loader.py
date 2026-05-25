@@ -373,5 +373,18 @@ def load_and_register(
 
     if registered:
         names = ", ".join(f"{s.name}_v{s.version}({s.zone})" for s in registered)
-        print(f"[jaeger-skills] registered {len(registered)} skill(s): {names}", flush=True)
+        print(f"[jaeger-skills] registered {len(registered)} tool-skill(s): {names}", flush=True)
+    # Playbook skills (procedural SKILL.md docs the agent reads on
+    # demand via the ``skill`` tool) live alongside the tool-skills but
+    # are NOT registered as agent tools — they get discovered + indexed
+    # separately. Mention the count here so the operator sees the full
+    # surface, not just the Python-module slice.
+    try:
+        from jaeger_os.core.skills.playbook_skills import discover_playbooks
+        pb_count = len(discover_playbooks())
+        if pb_count:
+            print(f"[jaeger-skills] {pb_count} playbook skill(s) available "
+                  f"via the ``skill`` tool (action=list/view).", flush=True)
+    except Exception:  # noqa: BLE001 — playbook discovery must not block boot
+        pass
     return SkillLoadReport(registered=registered, skipped=skipped)

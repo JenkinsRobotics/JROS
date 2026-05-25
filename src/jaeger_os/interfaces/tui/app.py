@@ -501,7 +501,8 @@ class JaegerTUI:
         message containing ``[red]`` etc. can never inject styling."""
         self.console.print()
         self.console.print(Rule(style=ACCENT))
-        glyph = {"voice": "🎙", "goal": "◎"}.get(source, "●")
+        glyph = {"voice": "🎙", "goal": "◎",
+                 "kanban_idle": "◇"}.get(source, "●")
         line = Text("  ")
         line.append(f"{glyph} ", style=ACCENT_BOLD)
         line.append(user_text.strip(), style="bold")
@@ -1049,13 +1050,13 @@ class JaegerTUI:
                 )
                 outcome = "done"
                 try:
-                    directive = (
-                        f"You are in Deep Think mode — autonomous skill "
-                        f"development. Complete this task fully, writing all "
-                        f"needed files into the skills/ directory and "
-                        f"installing any dependencies with install_package:\n\n"
-                        f"{task.description}"
-                    )
+                    # Framework-injected message — the canonical text
+                    # lives in core/prompts/synthetic.py alongside the
+                    # other auto-prompts (idle board pickup, cron),
+                    # so the full set of "things the framework sends
+                    # as the user" is one read.
+                    from jaeger_os.core.prompts import deep_think_directive
+                    directive = deep_think_directive(task.description)
                     run_command(self._client, directive,
                                 session_key=f"deepthink_{task.id}")
                     queue.mark_done(task.id, "completed in Deep Think")
@@ -1324,8 +1325,9 @@ class JaegerTUI:
 
     def _idle_tick(self) -> None:
         """Called by the worker whenever the turn queue is empty —
-        auto-enters Deep Think once the idle window has elapsed with
-        approved work waiting."""
+        once the idle window has elapsed, look for autonomous work:
+        first the Deep Think queue, then the kanban board. Quietly
+        keeps waiting when neither has anything actionable."""
         if self._turn_running.is_set() or self._idle_fired:
             return
         idle = self._auto_idle_seconds()
@@ -1334,6 +1336,27 @@ class JaegerTUI:
         if not self._turn_queue.empty():
             return
         self._idle_fired = True
+        # Order matters: Deep Think is the heavier, more deliberate
+        # mode (long-form skill authoring). The board is the lighter
+        # "knock out a TODO" mode. Try DT first since a pending DT
+        # job was probably authored explicitly; fall through to the
+        # board when DT is empty.
+        if self._maybe_auto_deep_think():
+            return
+        self._maybe_auto_work_board()
+
+    def _maybe_auto_deep_think(self) -> bool:
+        """Try to enter Deep Think for an approved queued task. Returns
+        True when DT was started (so the caller skips the board path).
+        Quietly returns False when nothing approved is pending."""
+        try:
+            from jaeger_os.core.background.deep_think import queue_for_layout
+            from jaeger_os.core.instance.instance import InstanceLayout
+            queue_ = queue_for_layout(InstanceLayout(root=self.instance_dir))
+            if queue_.next_pending() is None:
+                return False  # nothing approved to work
+        except Exception:  # noqa: BLE001
+            return False
         self._turn_running.set()
         self._turn_started_at = time.perf_counter()
         self._current_activity = "deep think"
@@ -1343,26 +1366,39 @@ class JaegerTUI:
         except Exception:  # noqa: BLE001 — status indicator must never crash a turn
             pass
         try:
-            self._maybe_auto_deep_think()
+            self.console.print(
+                "[dim]◎ idle — entering Deep Think to work the queue.[/]"
+            )
+            self.run_deep_think()
         finally:
             self._turn_running.clear()
             self._current_activity = ""
+        return True
 
-    def _maybe_auto_deep_think(self) -> None:
-        """Idle window elapsed — enter Deep Think if there's approved
-        queued work, otherwise quietly keep waiting."""
+    def _maybe_auto_work_board(self) -> bool:
+        """Fall-through idle path: if the kanban board has actionable
+        cards (backlog / ready / in_progress), submit a synthetic
+        'work the board' prompt to the regular turn queue. Returns
+        True when a turn was submitted. The synthetic prompt string
+        lives in ``core/prompts/synthetic.py`` — one place to find
+        every framework-injected message."""
         try:
-            from jaeger_os.core.background.deep_think import queue_for_layout
+            from jaeger_os.core.background.board import has_actionable_work
             from jaeger_os.core.instance.instance import InstanceLayout
-            queue_ = queue_for_layout(InstanceLayout(root=self.instance_dir))
-            if queue_.next_pending() is None:
-                return  # nothing approved to work — just keep idling
-        except Exception:  # noqa: BLE001
-            return
+            from jaeger_os.core.prompts import AUTO_BOARD_PROMPT
+            layout = InstanceLayout(root=self.instance_dir)
+            if not has_actionable_work(layout):
+                return False
+        except Exception:  # noqa: BLE001 — board access must never crash idle
+            return False
         self.console.print(
-            "[dim]◎ idle — entering Deep Think to work the queue.[/]"
+            "[dim]◎ idle — picking up a kanban card.[/]"
         )
-        self.run_deep_think()
+        # Goes through the standard turn queue so it shares the
+        # llm_lock, status pipeline, and TUI rendering with a normal
+        # user turn — no parallel codepath to maintain.
+        self._turn_queue.put(("kanban_idle", AUTO_BOARD_PROMPT))
+        return True
 
     def _resolve_pending_confirm(self, line: str) -> bool:
         """Route a typed line to a tier-gated tool waiting for approval.
@@ -1654,7 +1690,36 @@ class JaegerTUI:
 
 def run(*, skip_model: bool = False) -> int:
     """Public entry: construct + run the Jaeger TUI. Returns exit
-    code. ``skip_model=True`` is for banner-only mode."""
+    code. ``skip_model=True`` is for banner-only mode.
+
+    Enforces TUI singleton via :mod:`.singleton`: if another TUI for
+    this instance is already running, surface a friendly message and
+    exit non-zero. The tray's ``Open TUI`` handler does its own
+    pre-check so the user normally never sees this path — it's the
+    belt-and-braces for someone running ``python -m jaeger_os`` by
+    hand while the tray already opened one."""
+    if not skip_model:
+        try:
+            from pathlib import Path
+
+            from jaeger_os.core.instance.instance import (
+                default_instance_name, resolve_instance_dir,
+            )
+            from .singleton import acquire_tui_slot, existing_tui_pid
+            name = default_instance_name()
+            run_dir = Path(resolve_instance_dir(name)) / "run"
+            existing = existing_tui_pid(run_dir)
+            if existing is not None:
+                print(
+                    f"Jaeger TUI already running (pid={existing}) for "
+                    f"instance {name!r}. Close it first, or use the "
+                    f"tray's Open TUI to bring it to the front.",
+                    file=sys.stderr,
+                )
+                return 1
+            acquire_tui_slot(run_dir)
+        except Exception:  # noqa: BLE001 — slot mgmt must never block boot
+            pass
     return JaegerTUI(skip_model=skip_model).repl()
 
 

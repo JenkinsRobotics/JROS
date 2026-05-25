@@ -209,3 +209,87 @@ class Board:
 def board_for_layout(layout: Any) -> Board:
     """The Board for an instance layout — ``<instance>/memory/board.json``."""
     return Board(layout.memory_dir / "board.json")
+
+
+# ── prompt digest ──────────────────────────────────────────────────
+
+
+_DIGEST_TITLE_LEN = 60
+_DIGEST_MAX_PER_COL = 6  # cap each column's titles so the digest stays compact
+
+
+def board_digest(layout: Any) -> str:
+    """One short paragraph summarising the actionable cards on the
+    board — designed to be injected into the agent's system prompt
+    so the model sees "you have N things waiting" on every turn.
+
+    Empty string when there's nothing actionable (no backlog, no
+    ready, no in_progress). The "done"/"blocked" columns are NOT
+    surfaced — the agent should not be nudged to revisit completed
+    or user-blocked work; only the live queue gets attention.
+
+    Format::
+
+        BOARD STATUS — work to pick up when you have free time:
+          in_progress (1):
+            • card_abc — finish the v0.5 release notes
+          ready (2):
+            • card_def — write a blog post about Jaeger
+            • card_ghi — port the macOS skill to linux
+          backlog (3):
+            • card_jkl — investigate kanban autonomy
+            ...
+
+    Capped at ~6 titles per column so a runaway board doesn't blow
+    the context budget. Titles are truncated to ~60 chars."""
+    try:
+        board = board_for_layout(layout)
+        cards = board.list()
+    except Exception:  # noqa: BLE001 — digest must never block boot
+        return ""
+
+    columns_in_order = ("in_progress", "ready", "backlog")
+    bucket: dict[str, list[Card]] = {col: [] for col in columns_in_order}
+    for c in cards:
+        if c.column in bucket:
+            bucket[c.column].append(c)
+    if not any(bucket.values()):
+        return ""
+
+    # Sort each bucket by priority then created_at so the most
+    # important work surfaces at the top of its column.
+    prio_rank = {"high": 0, "med": 1, "low": 2}
+    for col, items in bucket.items():
+        items.sort(key=lambda c: (prio_rank.get(c.priority, 1), c.created_at))
+
+    lines: list[str] = [
+        "BOARD STATUS — work to pick up when you have free time:",
+    ]
+    for col in columns_in_order:
+        items = bucket[col]
+        if not items:
+            continue
+        lines.append(f"  {col} ({len(items)}):")
+        for card in items[:_DIGEST_MAX_PER_COL]:
+            title = (card.title or "").strip().replace("\n", " ")
+            if len(title) > _DIGEST_TITLE_LEN:
+                title = title[: _DIGEST_TITLE_LEN - 1] + "…"
+            tag_hint = f" [{','.join(card.tags)}]" if card.tags else ""
+            lines.append(f"    • {card.id} — {title}{tag_hint}")
+        if len(items) > _DIGEST_MAX_PER_COL:
+            lines.append(f"    … and {len(items) - _DIGEST_MAX_PER_COL} more "
+                         f"(call board_view(column={col!r}) to see all)")
+    return "\n".join(lines)
+
+
+def has_actionable_work(layout: Any) -> bool:
+    """True when any card sits in backlog / ready / in_progress —
+    the trigger for the idle-tick autonomous board worker."""
+    try:
+        board = board_for_layout(layout)
+        for c in board.list():
+            if c.column in ("backlog", "ready", "in_progress"):
+                return True
+    except Exception:  # noqa: BLE001
+        return False
+    return False

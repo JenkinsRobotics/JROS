@@ -156,3 +156,74 @@ postprocess / append), but the per-agent dispatch map (#3) just
 landed in this same function — let it bake against the bench before
 slicing it apart. Worth doing once we have data on the new dispatch
 path's behavior. Tracked alongside #10.
+
+---
+
+# Code review (2026-05-25) — third review batch (Hermes integration)
+
+A third review of the broader Hermes-style agent loop produced 8
+findings spanning daemon transport, context compression, parser
+structure, oversized results, MCP OAuth, background notifications,
+parser registry, and config diagnostics. Disposition:
+
+## Applied this round
+
+| # | Finding | Fix |
+|---|---|---|
+| 3 | Oversized tool results were truncated to a preview, full body lost | `ContextGuard.truncate_oversized_result` now writes the full body to `<instance>/logs/tool_results/<ts>_<id>.{json,txt}` and the in-prompt marker carries the on-disk path. Best-effort: a write hiccup falls back to preview-only. `build_jaeger_agent` accepts an `artifact_dir` param; `main.py` wires `layout.logs_dir / "tool_results"`. 4 new tests pin the persistence path + the fall-back. |
+| 6 | Background tasks finished silently; agent only learned via polling | At-most-once completion queue. `_refresh_status` stamps `notified=False` on the running→terminal transition; `consume_pending_completions(layout)` drains + marks them notified. New `pending_background()` tool returns `{completions: [...], count: N}`. Added to `background` toolset. 5 tests in `test_background_notifications.py`. |
+| 8 | `--doctor` checked only deps, not the configured instance | New `check_instance(layout)` extends environment checks with config.yaml parse, `model.path` existence, ctx sanity, and logs/ writability. `main.py` resolves the default (or `--instance`) layout and runs the deeper check when a config exists. 5 new tests in `test_preflight.py`. |
+
+## Deferred — with explicit reasoning
+
+### #1 — Daemon streaming protocol / `attach` client
+
+The Phase 1 daemon ships an NDJSON-over-UDS protocol but no real
+streaming client; `jaeger attach` is a thin REPL today.
+
+**Why deferred:** this is **Phase 2** of the daemon split (committed
+in `docs/daemon_split_plan.md`). The Phase 2 work moves the agent
+INTO the daemon, which lets the attach client become a real
+streaming subscriber. Doing the client first would mean a second
+rewrite once the agent moves. Tracked as Phase 2.
+
+### #2 — Long-running context compression (history summarisation)
+
+`ContextGuard.trim_to_fit` drops oldest groups when the prompt won't
+fit. A compression pass (summarise dropped history into a single
+"context so far" block) would preserve more signal at the same token
+cost.
+
+**Why deferred:** L-effort feature. Needs a summariser model
+selection (local vs. delegated), a cache strategy so we don't pay
+the summariser cost every turn, careful trim-vs-summarise picking,
+and bench discipline so the compression doesn't quietly regress
+routing. Group-aware trim covers the worst overflow case today.
+Tracked for 0.2.0.
+
+### #4 — Tool-guardrail controller (richer no-progress detection)
+
+Already deferred in the first review (see #4 above). Third review
+re-raised the same item; disposition unchanged.
+
+### #5 — MCP OAuth flow for cloud-hosted servers
+
+Local MCP servers are configured statically; cloud-hosted ones
+require an OAuth dance that the framework doesn't yet model.
+
+**Why deferred:** Hardware-integration track. The Jaeger port aims
+at embodied work first; the MCP cloud surface is a deferred dependency
+for that path. Tracked alongside the Jaeger port direction memo.
+
+### #7 — Parser registry refactor
+
+`drift_parser.py` now dispatches across five dialects (Gemma,
+Qwen3-Coder XML, Hermes JSON envelope, Llama raw-JSON, Mistral
+`[TOOL_CALLS]`). A registry table — `{dialect_name: probe_fn}` —
+would be cleaner than the current sequential `if` cascade.
+
+**Why deferred:** pure refactor with no behaviour change. The
+dialect set is settling (Llama + Mistral just landed); refactoring
+now risks churn the next dialect would invalidate. Worth doing when
+the dialect set is stable, with tests pinning each branch first.
+Tracked as 0.2.0 cleanup.

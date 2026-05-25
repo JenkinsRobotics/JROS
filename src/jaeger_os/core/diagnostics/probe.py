@@ -1,0 +1,280 @@
+"""The lean-fast probe set.
+
+Eight checks, each idempotent and individually under ~250 ms:
+
+  1. layout          — required dirs writable
+  2. file_sandbox    — write + read + delete a probe file under skills/
+  3. memory          — remember + recall + forget round trip
+  4. time            — get_time returns a timestamp
+  5. calculate       — calculator answers 2+2 = 4
+  6. tool_registry   — every CORE tool name resolves
+  7. skills_loaded   — at least one skill discovered
+  8. drift_parser    — parses a synthetic tool call
+
+Why these eight: they cover the layers most likely to break silently
+after a config or refactor change — instance binding, sandbox path
+rules, memory store schema, tool registration, skill discovery, the
+parser the model's text has to survive. None touches the LLM (that
+would push wall time past 3s and break the "safe to run from cron"
+property). A separate ``deep`` mode can add LLM checks later.
+
+Each check is a ``HealthCheck`` callable returning ``HealthResult``.
+The runner calls them in order and rolls up totals; failures don't
+short-circuit the rest of the probe.
+"""
+
+from __future__ import annotations
+
+import time
+import uuid
+from dataclasses import dataclass, field
+from typing import Any, Callable
+
+
+@dataclass(frozen=True)
+class HealthResult:
+    """One probe's outcome."""
+    name: str
+    ok: bool
+    detail: str = ""
+    elapsed_ms: float = 0.0
+
+
+@dataclass(frozen=True)
+class HealthCheck:
+    """A probe — name + the callable that runs it."""
+    name: str
+    fn: Callable[[], tuple[bool, str]]
+
+
+# ── individual checks ───────────────────────────────────────────────
+
+
+def _check_layout() -> tuple[bool, str]:
+    """Are the per-instance directories present and writable? A
+    read-only filesystem (USB drive, NixOS store accidentally
+    selected as instance root) breaks every later check, so this
+    runs first and gives a decisive failure when it bites."""
+    from jaeger_os.core.tools._common import _require_layout
+    layout = _require_layout()
+    for attr in ("logs_dir", "memory_dir", "skills_dir"):
+        d = getattr(layout, attr, None)
+        if d is None:
+            return False, f"layout has no {attr!r}"
+        try:
+            d.mkdir(parents=True, exist_ok=True)
+        except Exception as exc:  # noqa: BLE001
+            return False, f"{attr} not writable: {type(exc).__name__}: {exc}"
+    return True, f"root={layout.root}"
+
+
+def _check_file_sandbox() -> tuple[bool, str]:
+    """Write + read + delete a probe file via the real sandbox path
+    resolver. Catches a broken ``_resolve_under`` rule or a permission
+    glitch on the skills/ directory."""
+    from jaeger_os.core.tools._common import _require_layout
+    layout = _require_layout()
+    probe = layout.skills_dir / f"_health_probe_{uuid.uuid4().hex[:8]}.txt"
+    body = "ok"
+    try:
+        probe.parent.mkdir(parents=True, exist_ok=True)
+        probe.write_text(body, encoding="utf-8")
+        read_back = probe.read_text(encoding="utf-8")
+        if read_back != body:
+            return False, "round-trip mismatch — sandbox returned stale content"
+    except Exception as exc:  # noqa: BLE001
+        return False, f"{type(exc).__name__}: {exc}"
+    finally:
+        try:
+            probe.unlink(missing_ok=True)
+        except Exception:  # noqa: BLE001 — best-effort cleanup
+            pass
+    return True, "write+read+delete ok"
+
+
+def _check_memory() -> tuple[bool, str]:
+    """Memory remember/recall/forget round-trip. Catches schema drift
+    on facts.json or a broken InstanceLayout binding (the memory
+    store reads layout.memory_dir at every call)."""
+    from jaeger_os.core.tools import memory as mem
+    key = f"_health_probe_{uuid.uuid4().hex[:8]}"
+    sentinel = "alive"
+    try:
+        mem.remember(key=key, value=sentinel)
+        out = mem.recall(key=key)
+        recalled = out.get("value") if isinstance(out, dict) else None
+        if recalled != sentinel:
+            return False, f"recall returned {recalled!r}, expected {sentinel!r}"
+    except Exception as exc:  # noqa: BLE001
+        return False, f"{type(exc).__name__}: {exc}"
+    finally:
+        try:
+            mem.forget(key=key)
+        except Exception:  # noqa: BLE001
+            pass
+    return True, "remember+recall+forget round trip ok"
+
+
+def _check_time() -> tuple[bool, str]:
+    """get_time returns a timestamp-ish string. Catches a broken
+    ``time_and_math`` import or a recent rename."""
+    from jaeger_os.core.tools import get_time
+    out = get_time()
+    text = out if isinstance(out, str) else \
+        (out.get("time") if isinstance(out, dict) else str(out))
+    if not text or ":" not in text:
+        return False, f"unexpected get_time output: {out!r}"
+    return True, str(text)[:40]
+
+
+def _check_calculate() -> tuple[bool, str]:
+    """calculator answers 2+2 = 4. Round-trip through the same tool
+    the agent uses, not a private eval."""
+    from jaeger_os.core.tools import calculate
+    out = calculate(expression="2+2")
+    body = str(out.get("result") if isinstance(out, dict) else out)
+    if "4" not in body:
+        return False, f"2+2 returned {body!r}"
+    return True, f"2+2 = {body}"
+
+
+def _check_tool_registry() -> tuple[bool, str]:
+    """Every name in CORE resolves to a registered tool. Catches a
+    rename that left the toolset config dangling against a tool that
+    no longer exists (the lean-surface filter would silently hide it
+    without this check)."""
+    from jaeger_os.core.skills.toolsets import CORE
+    try:
+        from jaeger_os.main import _pipeline
+        agent = _pipeline.get("agent")
+    except Exception:  # noqa: BLE001
+        agent = None
+    if agent is None or not hasattr(agent, "_function_toolset"):
+        # Pre-agent boot or non-pydantic-ai agent — fall back to
+        # checking the tool registry module directly.
+        try:
+            import jaeger_os.core.tools as tools_mod
+            registered = {n for n in dir(tools_mod) if not n.startswith("_")}
+        except Exception as exc:  # noqa: BLE001
+            return False, f"could not load tool registry: {exc}"
+    else:
+        try:
+            registered = set(agent._function_toolset.tools.keys())
+        except Exception:  # noqa: BLE001
+            registered = set()
+    missing = sorted(n for n in CORE if n not in registered)
+    if missing:
+        return False, f"CORE tools missing from registry: {missing}"
+    return True, f"{len(CORE)} CORE tools resolve"
+
+
+def _check_skills_loaded() -> tuple[bool, str]:
+    """At least one skill is discoverable on disk. Zero skills usually
+    means the instance was created but never had its scaffold synced,
+    which is a confusing failure mode — the agent boots fine but says
+    "I have no skills" mid-conversation."""
+    from jaeger_os.core.skills.skill_loader import discover_skills
+    from jaeger_os.core.tools._common import _require_layout
+    layout = _require_layout()
+    try:
+        skills = list(discover_skills(layout))
+    except Exception as exc:  # noqa: BLE001
+        return False, f"discover_skills raised: {type(exc).__name__}: {exc}"
+    if not skills:
+        return False, "no skills discovered under skills/"
+    return True, f"{len(skills)} skill(s) discovered"
+
+
+def _check_drift_parser() -> tuple[bool, str]:
+    """The drift parser is the safety net for models that emit tool
+    calls as raw text instead of structured calls. A regression here
+    would silently degrade routing for every model that drifts — this
+    check pins a canonical Gemma-style emission and confirms it
+    survives parsing."""
+    from jaeger_os.agent.parsing.drift_parser import extract_tool_calls
+    sample = '[get_time(timezone="UTC")]'
+    try:
+        calls = extract_tool_calls(sample)
+    except Exception as exc:  # noqa: BLE001
+        return False, f"parser raised: {type(exc).__name__}: {exc}"
+    if not calls:
+        return False, "parser returned no calls on canonical sample"
+    name = getattr(calls[0], "name", None) or (
+        calls[0].get("name") if isinstance(calls[0], dict) else None
+    )
+    if name != "get_time":
+        return False, f"parser returned wrong tool name: {name!r}"
+    return True, f"parsed {len(calls)} call(s) ok"
+
+
+# ── canonical probe set ─────────────────────────────────────────────
+
+
+# Order matters: layout first (failure cascades), drift_parser last
+# (purely in-process, useful even when the rest of the runtime is
+# wedged). The set is small enough that running it linearly is faster
+# than coordinating threads.
+DEFAULT_CHECKS: list[HealthCheck] = [
+    HealthCheck("layout",         _check_layout),
+    HealthCheck("file_sandbox",   _check_file_sandbox),
+    HealthCheck("memory",         _check_memory),
+    HealthCheck("time",           _check_time),
+    HealthCheck("calculate",      _check_calculate),
+    HealthCheck("tool_registry",  _check_tool_registry),
+    HealthCheck("skills_loaded",  _check_skills_loaded),
+    HealthCheck("drift_parser",   _check_drift_parser),
+]
+
+
+# ── runner ──────────────────────────────────────────────────────────
+
+
+def _run_one(check: HealthCheck) -> HealthResult:
+    """Invoke one check, time it, swallow exceptions as failures so
+    the rest of the probe still runs."""
+    started = time.perf_counter()
+    try:
+        ok, detail = check.fn()
+    except Exception as exc:  # noqa: BLE001 — probe must survive bad checks
+        ok = False
+        detail = f"{type(exc).__name__}: {exc}"
+    elapsed_ms = (time.perf_counter() - started) * 1000.0
+    return HealthResult(name=check.name, ok=bool(ok), detail=detail,
+                        elapsed_ms=round(elapsed_ms, 1))
+
+
+def run_health_checks(
+    checks: list[HealthCheck] | None = None,
+) -> dict[str, Any]:
+    """Run every check and roll up a summary dict.
+
+    Returns ``{ok, passed, total, checks: [...], elapsed_s}``.
+
+    ``ok`` is True only when every probe passed — strict roll-up so a
+    caller can branch on the topline boolean without inspecting
+    individual rows. The full results list stays in ``checks`` for
+    drill-down."""
+    selected = checks if checks is not None else DEFAULT_CHECKS
+    started = time.perf_counter()
+    results = [_run_one(c) for c in selected]
+    elapsed_s = time.perf_counter() - started
+    passed = sum(1 for r in results if r.ok)
+    return {
+        "ok": passed == len(results),
+        "passed": passed,
+        "total": len(results),
+        "checks": [
+            {"name": r.name, "ok": r.ok, "detail": r.detail,
+             "elapsed_ms": r.elapsed_ms}
+            for r in results
+        ],
+        "elapsed_s": round(elapsed_s, 3),
+    }
+
+
+__all__ = [
+    "DEFAULT_CHECKS",
+    "HealthCheck",
+    "HealthResult",
+    "run_health_checks",
+]

@@ -123,6 +123,319 @@ def check_environment() -> list[Check]:
     return _check_python_deps() + [_check_portaudio()] + _check_binaries()
 
 
+# ── instance-aware checks ──────────────────────────────────────────
+
+
+def _check_instance_config(layout: object) -> list[Check]:
+    """Inspect the instance's config.yaml + model file. These are the
+    failures we see most often in practice — a model path that points
+    at a file the user moved/renamed, a ctx setting bigger than the
+    model was trained for, a config that doesn't parse.
+
+    Each Check is non-fixable (no ``fix_cmd``) — the right action is
+    "edit your config.yaml", not "pip install something". The doctor
+    still prints them so the user knows where to look."""
+    out: list[Check] = []
+    root = getattr(layout, "root", None)
+    if root is None:
+        return out
+
+    import pathlib
+    config_path = pathlib.Path(root) / "config.yaml"
+    if not config_path.is_file():
+        return [Check(
+            "config.yaml", "instance", False,
+            f"missing — expected at {config_path}",
+            "run `jaeger-os --setup` to create the instance scaffold",
+        )]
+
+    # YAML parse — config.yaml is the agent's contract. If it doesn't
+    # parse, every later check is meaningless.
+    try:
+        import yaml
+        with config_path.open("r", encoding="utf-8") as fh:
+            cfg = yaml.safe_load(fh) or {}
+    except Exception as exc:  # noqa: BLE001
+        return [Check(
+            "config.yaml", "instance", False,
+            f"could not parse: {type(exc).__name__}: {exc}",
+            "edit the file by hand or restore from git",
+        )]
+    out.append(Check("config.yaml", "instance", True,
+                     f"parsed ({config_path})"))
+
+    model_cfg = (cfg.get("model") or {}) if isinstance(cfg, dict) else {}
+    model_path = model_cfg.get("path") or model_cfg.get("model_path") or ""
+    if not model_path:
+        out.append(Check(
+            "model.path", "instance", False,
+            "not configured — agent has no LLM to call",
+            "set `model.path` in config.yaml to a GGUF file",
+        ))
+    else:
+        mp = pathlib.Path(model_path).expanduser()
+        if not mp.is_absolute():
+            mp = pathlib.Path(root) / mp
+        if mp.is_file():
+            size_mb = mp.stat().st_size / (1024 * 1024)
+            out.append(Check(
+                "model.path", "instance", True,
+                f"{mp.name} ({size_mb:,.0f} MB)",
+            ))
+        else:
+            out.append(Check(
+                "model.path", "instance", False,
+                f"file missing: {mp}",
+                "fix `model.path` in config.yaml or download the model "
+                "with `jaeger-os` model tooling",
+            ))
+
+    # ctx — sanity-check, but we can't know n_ctx_train without loading.
+    ctx = model_cfg.get("ctx") or model_cfg.get("n_ctx") or 0
+    try:
+        ctx_int = int(ctx)
+    except (TypeError, ValueError):
+        ctx_int = 0
+    if ctx_int <= 0:
+        out.append(Check(
+            "model.ctx", "instance", False,
+            f"invalid ctx: {ctx!r}",
+            "set `model.ctx` in config.yaml to a positive integer",
+        ))
+    elif ctx_int < 2048:
+        out.append(Check(
+            "model.ctx", "instance", False,
+            f"ctx={ctx_int} is unusually small — most prompts won't fit",
+            "raise `model.ctx` to at least 4096 (typical: 8192–32768)",
+        ))
+    else:
+        out.append(Check(
+            "model.ctx", "instance", True,
+            f"ctx={ctx_int}",
+        ))
+
+    # Logs dir — created lazily at boot, but if it exists and isn't
+    # writable the boot will fail in a confusing place. Check up front.
+    logs_dir = getattr(layout, "logs_dir", None) or (pathlib.Path(root) / "logs")
+    try:
+        pathlib.Path(logs_dir).mkdir(parents=True, exist_ok=True)
+        out.append(Check("logs/", "instance", True,
+                         f"writable ({logs_dir})"))
+    except Exception as exc:  # noqa: BLE001
+        out.append(Check(
+            "logs/", "instance", False,
+            f"could not create / write: {exc}",
+            "check filesystem permissions on the instance directory",
+        ))
+
+    return out
+
+
+def _check_daemon(layout: object) -> list[Check]:
+    """Daemon lifecycle health — socket exists, PID alive, protocol
+    answers a ping. Reports ``daemon`` as PASS=running, FAIL=expected
+    running but couldn't reach, or simply notes ``not running`` (which
+    is FINE for a TUI-only workflow — we don't mark it as a failure)."""
+    out: list[Check] = []
+    root = getattr(layout, "root", None)
+    if root is None:
+        return out
+    try:
+        import pathlib
+        from jaeger_os.daemon.lifecycle import Lifecycle, LifecyclePaths
+        paths = LifecyclePaths(run_dir=pathlib.Path(root) / "run")
+        lifecycle = Lifecycle(paths=paths)
+        status = lifecycle.status()
+    except Exception as exc:  # noqa: BLE001
+        out.append(Check(
+            "daemon", "daemon", True,
+            f"not checked: {type(exc).__name__}",
+        ))
+        return out
+
+    if not status.get("running"):
+        # Daemon down is not a FAIL — the TUI-only flow doesn't need
+        # it. Report as PASS with a "down" note so the user knows the
+        # current state without seeing a red X.
+        out.append(Check(
+            "daemon", "daemon", True,
+            f"not running ({status.get('reason', 'no pid')})",
+        ))
+        return out
+
+    pid = status.get("pid")
+    out.append(Check("daemon.pid", "daemon", True, f"running (pid={pid})"))
+
+    # Probe the protocol — a live PID file with a dead socket is the
+    # classic "stale lock" failure mode.
+    try:
+        from jaeger_os.daemon.client import Client
+        client = Client(socket_path=paths.socket_path)
+        live = client.ping()
+        out.append(Check(
+            "daemon.protocol", "daemon", True,
+            f"ping ok (uptime={live.get('uptime_s', 0):.1f}s)",
+        ))
+    except Exception as exc:  # noqa: BLE001 — protocol unreachable
+        out.append(Check(
+            "daemon.protocol", "daemon", False,
+            f"socket present but ping failed: {type(exc).__name__}: {exc}",
+            "run `jaeger stop && jaeger start` to clear stale state",
+        ))
+    return out
+
+
+def _check_memory_integrity(layout: object) -> list[Check]:
+    """The on-disk memory files (facts.json, schedules.json,
+    board.json) drive most of the agent's behaviour. A corrupted
+    JSON file produces confusing mid-conversation errors; checking
+    them up front turns "agent fell over" into a one-line message."""
+    import json
+    import pathlib
+    out: list[Check] = []
+    memory_dir = getattr(layout, "memory_dir", None)
+    if memory_dir is None:
+        root = getattr(layout, "root", None)
+        if root is None:
+            return out
+        memory_dir = pathlib.Path(root) / "memory"
+
+    for name in ("facts.json", "board.json", "schedules.json"):
+        path = pathlib.Path(memory_dir) / name
+        if not path.is_file():
+            out.append(Check(
+                f"memory/{name}", "memory", True,
+                "absent (fresh instance — will be created on first write)",
+            ))
+            continue
+        try:
+            with path.open("r", encoding="utf-8") as fh:
+                json.load(fh)
+        except Exception as exc:  # noqa: BLE001
+            out.append(Check(
+                f"memory/{name}", "memory", False,
+                f"corrupted: {type(exc).__name__}: {exc}",
+                f"back up and recreate: cp {path} {path}.broken && "
+                f"echo '{{}}' > {path}",
+            ))
+            continue
+        size_kb = path.stat().st_size / 1024
+        out.append(Check(
+            f"memory/{name}", "memory", True,
+            f"{size_kb:.1f} KB",
+        ))
+    return out
+
+
+def _check_tool_registry() -> list[Check]:
+    """Every name in CORE / LEAN_CORE must resolve to a real
+    registered tool. A rename or accidental deletion that the lean-
+    surface filter silently hides would mis-route every routing turn.
+
+    The CORE / LEAN_CORE names are the *agent-facing* names produced
+    by ``@register_tool_from_function`` wrappers in
+    ``jaeger_os.main.boot_for_tui``, not the function symbols in
+    ``jaeger_os.core.tools.__init__``. So we need the LIVE agent
+    registry, which only exists after a boot.
+
+    When no agent is booted (the common case — doctor is meant to be
+    runnable cheaply), we report a single ``not checked`` row rather
+    than a forest of false negatives. A run that booted the agent
+    earlier in the process gets the real check.
+    """
+    out: list[Check] = []
+    try:
+        from jaeger_os.core.skills.toolsets import CORE, LEAN_CORE
+    except Exception as exc:  # noqa: BLE001
+        out.append(Check(
+            "tools.registry", "runtime", False,
+            f"could not import toolset config: {exc}",
+        ))
+        return out
+
+    # Discover the agent's registered tools — Phase-9 stores them on
+    # the pipeline dict's ``agent`` (when booted via boot_for_tui).
+    registered: set[str] | None = None
+    try:
+        from jaeger_os.main import _pipeline
+        agent = _pipeline.get("agent")
+        if agent is not None and hasattr(agent, "_function_toolset"):
+            registered = set(agent._function_toolset.tools.keys())
+    except Exception:  # noqa: BLE001
+        registered = None
+
+    if registered is None:
+        out.append(Check(
+            "tools.registry", "runtime", True,
+            "not checked (no booted agent — run from inside a TUI session "
+            "to verify name resolution)",
+        ))
+        return out
+
+    for label, names in (("CORE", CORE), ("LEAN_CORE", LEAN_CORE)):
+        missing_names = sorted(n for n in names if n not in registered)
+        if missing_names:
+            out.append(Check(
+                f"tools.{label}", "runtime", False,
+                f"unresolved names: {missing_names}",
+                "rename / re-register the missing tools, or update toolsets.py",
+            ))
+        else:
+            out.append(Check(
+                f"tools.{label}", "runtime", True,
+                f"{len(names)} tools resolve",
+            ))
+    return out
+
+
+def _check_skills_health(layout: object) -> list[Check]:
+    """Every discoverable skill must have a parseable SKILL.md.
+    Malformed YAML frontmatter is the most common failure (a stray
+    tab, a missing colon) — a doctor that catches it saves the user
+    a confusing skill-loader stacktrace later."""
+    out: list[Check] = []
+    try:
+        from jaeger_os.core.skills.skill_loader import discover_skills
+        skills = list(discover_skills(layout))
+    except Exception as exc:  # noqa: BLE001
+        out.append(Check(
+            "skills", "skills", False,
+            f"discovery raised: {type(exc).__name__}: {exc}",
+        ))
+        return out
+    if not skills:
+        out.append(Check(
+            "skills", "skills", True,
+            "0 discovered (fresh instance — run `reload_skills` once a "
+            "skill is authored)",
+        ))
+        return out
+    out.append(Check(
+        "skills", "skills", True,
+        f"{len(skills)} skill(s) discovered",
+    ))
+    return out
+
+
+def check_instance(layout: object) -> list[Check]:
+    """Full doctor including environment + instance config + daemon
+    + memory integrity + tool registry + skills health. Use this
+    when ``--doctor`` runs against an explicit instance, the bare
+    :func:`check_environment` when no instance is bound (pre-setup).
+
+    The historical surface (env + instance-config) is preserved; the
+    new checks append in their own categories so older callers reading
+    just env / instance see the same rows they did before."""
+    return (
+        check_environment()
+        + _check_instance_config(layout)
+        + _check_daemon(layout)
+        + _check_memory_integrity(layout)
+        + _check_tool_registry()
+        + _check_skills_health(layout)
+    )
+
+
 def missing(checks: list[Check]) -> list[Check]:
     return [c for c in checks if not c.ok]
 
@@ -158,7 +471,8 @@ def install_missing(checks: list[Check]) -> list[Check]:
 def format_report(checks: list[Check]) -> str:
     """A grouped, human-readable report for ``jaeger-os --doctor``."""
     lines = ["", "  Jaeger-OS — environment check", ""]
-    for category in ("voice", "vision", "external", "memory", "messaging", "system"):
+    for category in ("instance", "daemon", "runtime", "memory", "skills",
+                     "voice", "vision", "external", "messaging", "system"):
         group = [c for c in checks if c.category == category]
         if not group:
             continue
@@ -188,3 +502,30 @@ def boot_warning(checks: list[Check]) -> str:
     out = [f"[jaeger] ⚠ {len(bad)} optional dependency issue(s): {names}",
            "[jaeger]   run `jaeger-os --doctor` to install them"]
     return "\n".join(out)
+
+
+def report_as_json(checks: list[Check]) -> str:
+    """Machine-readable doctor report. Stable schema for scripting,
+    monitoring agents, or feeding the result back to the agent itself
+    via a tool call. ``ok`` rolls up across the whole report so the
+    caller can branch on a single boolean."""
+    import json
+    bad = missing(checks)
+    payload = {
+        "ok": not bad,
+        "total": len(checks),
+        "passed": len(checks) - len(bad),
+        "failed": len(bad),
+        "checks": [
+            {
+                "name": c.name,
+                "category": c.category,
+                "ok": c.ok,
+                "detail": c.detail,
+                "fix": c.fix,
+                "fix_cmd": list(c.fix_cmd) if c.fix_cmd else [],
+            }
+            for c in checks
+        ],
+    }
+    return json.dumps(payload, indent=2, ensure_ascii=False)

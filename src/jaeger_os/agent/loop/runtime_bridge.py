@@ -133,6 +133,7 @@ def build_jaeger_agent(
     callbacks: AgentCallbacks | None = None,
     max_iterations: int = 24,
     ctx_window: int | None = None,
+    artifact_dir: Any = None,
 ) -> JaegerAgent:
     """Construct a :class:`JaegerAgent` wired against the provided
     JROS client. The skip-final finalizer is the legacy bounded-chat
@@ -152,11 +153,20 @@ def build_jaeger_agent(
     the guard disabled (legacy bench paths); otherwise a
     :class:`ContextGuard` with the matching budget is installed and
     every turn's prompt is trimmed/refused before it hits the model.
+
+    ``artifact_dir`` (when set) is where oversized tool results are
+    persisted before the in-prompt body is replaced with a preview +
+    on-disk path. Typically ``<instance>/logs/tool_results``. When
+    ``None``, oversized results are truncated to a preview only —
+    the legacy behaviour, fine for bench / tests with no layout bound.
     """
     from jaeger_os.agent.util.context_guard import ContextBudget, ContextGuard
 
     adapter = _adapter_for_client(client, system_prompt=system_prompt)
-    guard = ContextGuard(ContextBudget(ctx_window=ctx_window)) if ctx_window else None
+    guard = (
+        ContextGuard(ContextBudget(ctx_window=ctx_window, artifact_dir=artifact_dir))
+        if ctx_window else None
+    )
     return JaegerAgent(
         adapter=adapter,
         system_prompt=system_prompt,

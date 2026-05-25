@@ -36,19 +36,76 @@ class TrayState(enum.Enum):
     ERROR = "error"
 
 
-# Black-and-white glyphs avoid the macOS dark-mode tint problem you get
-# with coloured PNGs and let us ship without any image assets.
+# Two presentations:
+#
+#   1. ``_GLYPHS`` — a one-character text fallback used by hosts that
+#      can't render image assets (Linux/Windows trays, headless test
+#      runs that just inspect the state→label mapping).
+#   2. ``icon_path_for`` — a path to a PNG that rumps loads as the
+#      menu-bar icon on macOS. Off-states use a desaturated variant
+#      so the user can see the daemon-down state at a glance without
+#      a glaring red X. Running uses the full-colour brand mark.
+#
+# The brand mark is a horizontally mirrored Lilith disc — the L
+# silhouette becomes a J. See ``src/jaeger_os/assets/`` and the
+# image-generation incantation in
+# ``tests/jaeger_os/interfaces/tray/test_tray_icons.py``.
 _GLYPHS: dict[TrayState, str] = {
     TrayState.STOPPED:  "○",
     TrayState.STARTING: "◐",
     TrayState.RUNNING:  "●",
-    TrayState.ERROR:    "✕",
+    TrayState.ERROR:    "⚠",
 }
 
 
 def glyph_for(state: TrayState) -> str:
-    """One-character glyph that goes in the menu-bar slot."""
+    """One-character text glyph for the menu-bar slot. Used as a
+    fallback by adapters that can't render PNG assets; the macOS
+    adapter prefers :func:`icon_path_for` so the user sees the real
+    brand mark."""
     return _GLYPHS[state]
+
+
+# PNG icons shipped alongside the package — see
+# ``src/jaeger_os/assets/jaeger_icon{,_off}.png``. The off variant is
+# a desaturated version of the colour mark, so the menu-bar slot
+# still shows the J shape when the daemon is down — just visibly
+# greyed out. We resolve the path lazily so an import on a host
+# without the assets dir (a stripped-down install) doesn't error.
+def _asset_root():
+    """Locate the ``jaeger_os/assets`` directory at runtime."""
+    from pathlib import Path
+    return Path(__file__).resolve().parent.parent.parent / "assets"
+
+
+# Mapping from state to the icon's asset filename (without the
+# directory prefix). The on/off split: ``RUNNING`` uses the colour
+# mark; every other state uses the greyed-out variant. The starting
+# state could get its own animated icon in a future pass but the
+# greyed-out mark + "Jaeger OS: starting…" label is the lower-cost
+# version today.
+_ICON_NAMES: dict[TrayState, str] = {
+    TrayState.STOPPED:  "jaeger_icon_off.png",
+    TrayState.STARTING: "jaeger_icon_off.png",
+    TrayState.RUNNING:  "jaeger_icon.png",
+    TrayState.ERROR:    "jaeger_icon_off.png",
+}
+
+
+def icon_path_for(state: TrayState) -> str | None:
+    """Absolute path to the PNG that should fill the menu-bar slot.
+
+    Returns ``None`` when the asset is missing (e.g. a stripped
+    install or a host without the assets/ directory) so the caller
+    can fall back to :func:`glyph_for`."""
+    root = _asset_root()
+    name = _ICON_NAMES.get(state)
+    if name is None:
+        return None
+    path = root / name
+    if not path.is_file():
+        return None
+    return str(path)
 
 
 # ── menu items ────────────────────────────────────────────────────
@@ -75,10 +132,10 @@ SEPARATOR = MenuItem(label="-", action=None, enabled=False)
 
 def _status_label(state: TrayState) -> MenuItem:
     text = {
-        TrayState.STOPPED:  "Daemon: stopped",
-        TrayState.STARTING: "Daemon: starting…",
-        TrayState.RUNNING:  "Daemon: running",
-        TrayState.ERROR:    "Daemon: error — restart needed",
+        TrayState.STOPPED:  "Jaeger OS: stopped",
+        TrayState.STARTING: "Jaeger OS: starting…",
+        TrayState.RUNNING:  "Jaeger OS: running",
+        TrayState.ERROR:    "Jaeger OS: error — restart needed",
     }[state]
     return MenuItem(label=text, action=None, enabled=False)
 
@@ -91,20 +148,28 @@ def menu_items_for(state: TrayState) -> list[MenuItem]:
     return [
         _status_label(state),
         SEPARATOR,
-        MenuItem(label="Start Daemon",   action="start",   enabled=stopped),
-        MenuItem(label="Stop Daemon",    action="stop",    enabled=running),
-        MenuItem(label="Restart Daemon", action="restart", enabled=running),
+        MenuItem(label="Start Jaeger OS",   action="start",   enabled=stopped),
+        MenuItem(label="Stop Jaeger OS",    action="stop",    enabled=running),
+        MenuItem(label="Restart Jaeger OS", action="restart", enabled=running),
         SEPARATOR,
         # 'Open TUI' is always live: with the daemon running it's
         # `jaeger attach` (Phase 2); without, it's the standalone TUI.
-        # The action handler picks the right invocation.
+        # The action handler picks the right invocation. A PID-file
+        # check in the handler prevents a second TUI from spawning if
+        # one is already up — clicking again just brings the existing
+        # Terminal window to the front.
         MenuItem(label="Open TUI",            action="open_tui"),
         # Web dashboard not built yet — disabled placeholder so users
         # see it's coming.
         MenuItem(label="Open Web Dashboard",  action="open_web", enabled=False),
         SEPARATOR,
-        MenuItem(label="About Jaeger",  action="about"),
-        MenuItem(label="Quit Tray",     action="quit_tray"),
+        MenuItem(label="About Jaeger OS",  action="about"),
+        # "Quit Jaeger OS" tears EVERYTHING down — daemon, every
+        # running tray, and the rumps event loop itself. Users
+        # expect that picking Quit from the menu kills the whole
+        # product, not just the icon. The action handler in
+        # ``macos.py`` ties the steps together.
+        MenuItem(label="Quit Jaeger OS",     action="quit_tray"),
     ]
 
 

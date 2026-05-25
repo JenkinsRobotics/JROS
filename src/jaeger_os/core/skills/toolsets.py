@@ -134,7 +134,7 @@ TOOLSETS: dict[str, frozenset[str]] = {
     }),
     "background": frozenset({
         "start_background", "list_background", "check_background",
-        "stop_background", "open_on_host",
+        "stop_background", "pending_background", "open_on_host",
     }),
     "skills": frozenset({
         "reload_skills", "package_skill", "benchmark_skill",
@@ -147,6 +147,8 @@ TOOLSETS: dict[str, frozenset[str]] = {
     "plugins": frozenset({"list_plugins", "setup_plugin", "send_message"}),
     "models": frozenset({"list_models", "download_model", "model_location"}),
     "delegation": frozenset({"delegate_task"}),
+    "bench": frozenset({"run_benchmark"}),
+    "diagnostics": frozenset({"system_health"}),
 }
 
 # One-line description per built-in class — for the load_toolset catalog.
@@ -162,6 +164,8 @@ TOOLSET_SUMMARY: dict[str, str] = {
     "plugins": "list, set up plugins; send messages",
     "models": "list and download models",
     "delegation": "hand subtasks to sub-agents",
+    "bench": "run the agent self-benchmark against the live pipeline",
+    "diagnostics": "fast runtime health probe — verify the agent surface",
 }
 
 # Skill toolsets — populated at runtime by the skill loader. A skill is

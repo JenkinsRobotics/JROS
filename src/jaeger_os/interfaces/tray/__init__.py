@@ -25,10 +25,11 @@ from jaeger_os.interfaces.tray.base import (
     TrayModel,
     TrayState,
     glyph_for,
+    icon_path_for,
     menu_items_for,
 )
 
 __all__ = [
     "MenuItem", "TrayActions", "TrayModel", "TrayState",
-    "glyph_for", "menu_items_for",
+    "glyph_for", "icon_path_for", "menu_items_for",
 ]

@@ -73,7 +73,12 @@ def _write_meta(proc_dir: Path, meta: dict[str, Any]) -> None:
 def _refresh_status(proc_dir: Path, meta: dict[str, Any]) -> dict[str, Any]:
     """Reconcile a process's recorded status with reality. If meta says
     'running' but the pid is dead, flip to 'exited' and stamp the
-    finish time + exit code (read from the rc file the wrapper drops)."""
+    finish time + exit code (read from the rc file the wrapper drops).
+
+    Also stamps ``notified=False`` on the running→terminal transition so
+    ``consume_pending_completions`` can later surface the event to the
+    agent exactly once. We never *clear* notified here — only the
+    consume call flips it to True."""
     if meta.get("status") != "running":
         return meta
     pid = int(meta.get("pid", 0) or 0)
@@ -88,6 +93,8 @@ def _refresh_status(proc_dir: Path, meta: dict[str, Any]) -> dict[str, Any]:
             meta["exit_code"] = int(rc_file.read_text().strip())
         except Exception:  # noqa: BLE001
             meta["exit_code"] = meta.get("exit_code")
+    # First observation of completion — queue a notification.
+    meta.setdefault("notified", False)
     _write_meta(proc_dir, meta)
     return meta
 
@@ -151,6 +158,11 @@ def start_background(
         "started_at": time.time(),
         "finished_at": None,
         "exit_code": None,
+        # No notification pending while the process is still running.
+        # _refresh_status flips this to False on the running→terminal
+        # transition; consume_pending_completions flips it back to True
+        # once surfaced to the agent.
+        "notified": True,
     }
     _write_meta(proc_dir, meta)
     return {"ok": True, "process_id": proc_id, "name": meta["name"],
@@ -238,5 +250,47 @@ def stop_background(layout: Any, process_id: str) -> dict[str, Any]:
         return {"ok": False, "error": f"could not stop {process_id}: {exc}"}
     meta["status"] = "stopped"
     meta["finished_at"] = time.time()
+    # Explicit stops are user-initiated — the agent already knows the
+    # process ended, so skip the notification (notified=True).
+    meta["notified"] = True
     _write_meta(proc_dir, meta)
     return {"ok": True, "process_id": process_id, "status": "stopped"}
+
+
+def consume_pending_completions(layout: Any) -> list[dict[str, Any]]:
+    """Return every newly-completed background process whose completion
+    has not yet been surfaced to the agent — and mark each one notified
+    so the next call returns only the newer ones.
+
+    The returned dicts carry just what the heartbeat / status pane needs
+    to render a one-line "task X finished with code Y" note. Callers
+    that want fuller detail can follow up with ``process_status``.
+
+    Used by the agent's heartbeat / status surface — see
+    :mod:`jaeger_os.core.tools.background.pending_background`. Idempotent
+    on an empty queue."""
+    root = _processes_root(layout)
+    if not root.is_dir():
+        return []
+    out: list[dict[str, Any]] = []
+    for child in sorted(root.iterdir()):
+        if not child.is_dir():
+            continue
+        meta = _read_meta(child)
+        if meta is None:
+            continue
+        meta = _refresh_status(child, meta)
+        if meta.get("status") == "running":
+            continue
+        if meta.get("notified", True):
+            continue
+        out.append({
+            "process_id": meta.get("process_id"),
+            "name": meta.get("name"),
+            "status": meta.get("status"),
+            "exit_code": meta.get("exit_code"),
+            "finished_at": meta.get("finished_at"),
+        })
+        meta["notified"] = True
+        _write_meta(child, meta)
+    return out

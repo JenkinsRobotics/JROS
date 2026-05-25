@@ -70,14 +70,16 @@ def test_board_add_tool_lands_in_ready(bound_instance):
     assert result["column"] == "ready"
 
 
-def test_board_move_tool_rejects_self_approval(bound_instance):
-    """The agent cannot move a card backlog → ready — that is the
-    user's approval step."""
+def test_board_move_tool_allows_agent_self_promotion(bound_instance):
+    """The old ``backlog → ready was user-only`` gate was removed when
+    the agent gained autonomous backlog pickup — the whole board is
+    actionable work and the agent self-promotes as part of normal
+    operation. The user still owns the board via ``/board``."""
     board = board_for_layout(bound_instance)
     card = board.add("proposed work", column="backlog")
     result = tools.board_move(card.id, "ready")
-    assert result["ok"] is False
-    assert "approval" in result["error"]
+    assert result["ok"] is True
+    assert result["column"] == "ready"
 
 
 def test_board_move_tool_allows_normal_moves(bound_instance):

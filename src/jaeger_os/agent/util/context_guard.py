@@ -73,6 +73,14 @@ class ContextBudget:
     max_tool_result_chars: int = 24_000
     # How much of the original result body to keep when truncating.
     preview_chars: int = 1_500
+    # When set, oversized tool results are PERSISTED to a file under
+    # this directory (typically ``<instance>/logs/tool_results/``) and
+    # the model gets back a preview + the on-disk path so it can read
+    # more if needed. ``None`` keeps the legacy truncate-only path
+    # (default for unit tests + bench code that doesn't have a layout
+    # bound). The agent wires this from ``layout.logs_dir`` at
+    # construction time when the layout is available.
+    artifact_dir: Any = None    # pathlib.Path | None
 
     @property
     def prompt_budget(self) -> int:
@@ -339,12 +347,34 @@ class ContextGuard:
 
     def truncate_oversized_result(self, result: Any) -> tuple[Any, bool]:
         """If ``result`` is large enough to dominate the next turn's
-        context, replace with a preview + size marker. Returns
-        ``(possibly_modified_result, was_truncated)``.
+        context, replace it with a preview + (when ``artifact_dir`` is
+        set) an on-disk path the model can read for the rest.
 
-        ``max_tool_result_chars=0`` disables truncation — caller passes
-        results through verbatim. Useful for benchmarks that need full
-        fidelity."""
+        Two modes, picked by ``budget.artifact_dir``:
+
+          - **artifact_dir set** — write the full result to a file
+            under that directory and hand back a marker dict pointing
+            at it::
+
+                {"_truncated": True, "original_chars": N,
+                 "preview": "first 1.5K chars",
+                 "artifact_path": "<instance>/logs/tool_results/<id>.json"}
+
+            The model can ``read_file(artifact_path)`` if it needs
+            more than the preview. This is the right shape for
+            embodied work — sensor dumps, screenshots, big ``run_shell``
+            captures, browser HTML — where blunt truncation loses
+            information that may matter later in the turn.
+
+          - **artifact_dir is None** (legacy fallback) — emit a
+            preview + size marker only. Used by tests / bench harness
+            where no instance layout is bound.
+
+        Returns ``(possibly_modified_result, was_truncated)``.
+
+        ``max_tool_result_chars=0`` disables truncation entirely —
+        caller passes results through verbatim. Useful for benchmarks
+        that need full fidelity."""
         cap = self.budget.max_tool_result_chars
         if cap <= 0:
             return result, False
@@ -354,20 +384,62 @@ class ContextGuard:
             return result, False
 
         preview = serialised[: self.budget.preview_chars]
-        marker = (
+        artifact_path = self._persist_artifact(serialised)
+        marker_msg = (
             f"\n\n[result truncated — original was {len(serialised)} chars "
             f"({len(serialised) // max(1, int(self.budget.chars_per_token))} "
-            f"tokens approx); first {self.budget.preview_chars} chars kept]"
+            f"tokens approx); first {self.budget.preview_chars} chars kept"
+            + (f"; full result saved to {artifact_path}" if artifact_path else "")
+            + "]"
         )
         # If the original was a dict-shape, hand back a dict marker so
         # the model can still ``[key]``-into it without crashing.
         if isinstance(result, dict):
-            return ({
+            marker_dict: dict[str, Any] = {
                 "_truncated": True,
                 "original_chars": len(serialised),
                 "preview": preview,
-            }, True)
-        return preview + marker, True
+            }
+            if artifact_path:
+                marker_dict["artifact_path"] = str(artifact_path)
+                marker_dict["hint"] = (
+                    "Full result persisted — call read_file with the "
+                    "artifact_path if you need the bytes the preview "
+                    "cut off."
+                )
+            return marker_dict, True
+        return preview + marker_msg, True
+
+    def _persist_artifact(self, serialised: str) -> Any:
+        """Write an oversized result body to ``artifact_dir`` and
+        return its absolute path. Returns ``None`` when no directory
+        is configured or the write fails. Best-effort: a failure here
+        falls back to the preview-only path; we never block a tool
+        call over an audit/log-write hiccup."""
+        out_dir = self.budget.artifact_dir
+        if out_dir is None:
+            return None
+        try:
+            import pathlib, uuid, time as _t
+            d = pathlib.Path(out_dir)
+            d.mkdir(parents=True, exist_ok=True)
+            # Filename is timestamp + short uuid — easy for the model
+            # (and the operator) to skim recent artifacts in order.
+            ts = _t.strftime("%Y%m%d-%H%M%S")
+            stub = uuid.uuid4().hex[:8]
+            # If the body is valid JSON we keep the .json extension so
+            # editors render it nicely; otherwise treat as plain text.
+            try:
+                import json as _json
+                _json.loads(serialised)
+                suffix = ".json"
+            except (ValueError, TypeError):
+                suffix = ".txt"
+            path = d / f"{ts}_{stub}{suffix}"
+            path.write_text(serialised, encoding="utf-8")
+            return path
+        except Exception:  # noqa: BLE001 — never break dispatch over an artifact write
+            return None
 
     def _serialise_result(self, result: Any) -> str:
         """Best-effort 'how big would this be on the wire?' — JSON for

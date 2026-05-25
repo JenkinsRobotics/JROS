@@ -1336,6 +1336,55 @@ def _register_builtins(client: Any) -> None:
         return t.stop_background(process_id=process_id)
 
     @register_tool_from_function
+    def pending_background() -> dict:
+        """Drain the queue of background tasks that finished since the
+        last check. Each completion is surfaced at most once. Returns
+        ``{completions: [...], count: N}`` — empty when nothing new has
+        finished. Faster than polling ``check_background`` in a loop."""
+        return t.pending_background()
+
+    @register_tool_from_function
+    def system_health() -> dict:
+        """Run the lean runtime health probe — 8 fast idempotent
+        checks (<3s wall) that verify the live agent's surface: layout
+        writable, sandbox accepts writes, memory round-trips, get_time
+        and calculate respond, every CORE tool resolves, skills are
+        loaded, the drift parser handles a canonical emission.
+
+        Returns ``{ok, passed, total, checks: [...], elapsed_s}``.
+        Call this when the user asks "are you healthy?" / "self-check"
+        / "diagnose yourself" — it's the post-boot counterpart to
+        ``--doctor`` (which only checks deps + config)."""
+        return t.system_health()
+
+    @register_tool_from_function
+    def run_benchmark(tags: str = "", limit: int = 0,
+                      ids: str = "", save: bool = True) -> dict:
+        """Run the agent self-benchmark against the LIVE pipeline.
+
+        Every case fires through the same system prompt, lean surface,
+        drift parser, and dispatch you're using right now — the most
+        honest signal we can get for "did the last change regress
+        routing?"  Use this when the user asks to "run the system
+        benchmark" / "benchmark yourself" / similar.
+
+        Args:
+            tags:  comma-separated tag filter (routing, multistep,
+                   multiturn, recovery, memory, files, web, code,
+                   audio, schedule). Empty = full corpus.
+            limit: cap the number of cases (after tag filter).
+                   0 = no cap. Multi-turn sessions stay whole.
+            ids:   comma-separated case ids — handy for re-running a
+                   single failing case after a fix.
+            save:  when True (default), write the per-row jsonl and
+                   summary markdown under <instance>/logs/bench/<ts>/.
+
+        Returns a summary dict with topline counts, per-tag breakdown,
+        the failure list, and the on-disk report path. The full row
+        dump stays on disk so it doesn't blow context."""
+        return t.run_benchmark(tags=tags, limit=limit, ids=ids, save=save)
+
+    @register_tool_from_function
     def clarify(question: str) -> dict:
         """Ask the user a clarifying question instead of guessing."""
         return t.ask_user(question=question)
@@ -2091,6 +2140,14 @@ def _run_turn_via_jaeger_agent(
         # before the server sees it. See docs/context_guard.md.
         _cfg = _pipeline.get("config")
         _ctx = getattr(getattr(_cfg, "model", None), "ctx", None)
+        # Oversized tool results land under <instance>/logs/tool_results/
+        # so the model can read the full body with read_file if the
+        # in-prompt preview wasn't enough. Falls back to truncate-only
+        # when no layout is bound (shouldn't happen in real boot).
+        _layout = _pipeline.get("layout")
+        _artifact_dir = (
+            (_layout.logs_dir / "tool_results") if _layout is not None else None
+        )
         _jaeger_agents_by_session[key] = build_jaeger_agent(
             client,
             system_prompt=_pipeline["system_prompt"],
@@ -2098,6 +2155,7 @@ def _run_turn_via_jaeger_agent(
             skip_final_tools=SKIP_FINAL_TOOLS,
             callbacks=_status_cb,
             ctx_window=_ctx,
+            artifact_dir=_artifact_dir,
         )
     jaeger_agent = _jaeger_agents_by_session[key]
 
@@ -2806,6 +2864,12 @@ def parse_args() -> argparse.Namespace:
                    help="Run the sandbox/memory/skill smoke tests without loading the LLM.")
     p.add_argument("--doctor", action="store_true",
                    help="Check that every dependency + system library is ready, then exit.")
+    p.add_argument("--doctor-json", action="store_true",
+                   help="With --doctor: emit the report as JSON instead of "
+                        "the human-readable table. Useful for monitoring.")
+    p.add_argument("--doctor-check", action="store_true",
+                   help="With --doctor: non-interactive mode. Skip the "
+                        "install-missing prompt; exit code reflects health.")
     p.add_argument("--no-warmup", action="store_true", help="Skip llama-cpp warmup.")
     p.add_argument("--no-cron", action="store_true", help="Don't start the cron runner.")
     p.add_argument("--set-credential", metavar="NAME",
@@ -3153,15 +3217,38 @@ def main() -> int:
         return tui_main()
     args = parse_args()
     # --doctor: verify every dependency + system library, offer to
-    # install whatever is missing, then exit. Needs no instance/model.
+    # install whatever is missing, then exit. When the named (or
+    # default) instance is already set up, also validate its
+    # config.yaml + model.path + ctx — the failures we see most often.
     if getattr(args, "doctor", False):
         from jaeger_os.core.runtime.preflight import (
-            check_environment, fixable, format_report, install_missing, missing,
+            check_environment, check_instance, fixable, format_report,
+            install_missing, missing, report_as_json,
         )
-        checks = check_environment()
+        # Try to bind an instance for the deeper config check. Fall
+        # back to environment-only when no instance exists yet (a fresh
+        # ``pip install jaeger-os`` user running --doctor pre-setup).
+        try:
+            _doc_inst = args.instance or default_instance_name()
+            _doc_root = resolve_instance_dir(_doc_inst)
+            _doc_layout = InstanceLayout(root=_doc_root)
+            if (_doc_root / "config.yaml").is_file():
+                checks = check_instance(_doc_layout)
+            else:
+                checks = check_environment()
+        except Exception:  # noqa: BLE001
+            checks = check_environment()
+        # --doctor-json: machine-readable output for scripting /
+        # monitoring agents. Skip the human-readable table and the
+        # install prompt; exit code is health-only.
+        if getattr(args, "doctor_json", False):
+            print(report_as_json(checks))
+            return 1 if missing(checks) else 0
         print(format_report(checks))
         cmds = fixable(checks)
-        if cmds and sys.stdin.isatty():
+        # --doctor-check: non-interactive. Skip the install prompt
+        # even when stdin is a TTY; exit code reflects health.
+        if cmds and sys.stdin.isatty() and not getattr(args, "doctor_check", False):
             print("  These can be installed for you:")
             for cmd in cmds:
                 print(f"    {' '.join(cmd)}")

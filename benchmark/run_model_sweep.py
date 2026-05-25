@@ -148,40 +148,33 @@ def _file_size_gb(path: str) -> float:
         return 0.0
 
 
-# Per-level per-row regexes. Each must produce a ``pass`` group (the
-# headline boolean for routing accuracy at that level) and an
-# ``elapsed`` group. Auxiliary signals (``ans``, ``order``, ``surf``)
-# get folded in where they exist; absent fields default to True (don't
-# penalise levels that don't measure them).
-_ROW_RE_L1 = re.compile(
-    r"\[L1 (?P<idx>\d+)\][^\n]*?route=(?P<pass_mark>[✓✗])\s+ans=(?P<ans>[✓✗—])\s+(?P<elapsed>[\d.]+)s",
-)
-_ROW_RE_L2 = re.compile(
-    r"\[L2 (?P<idx>\d+)\][^\n]*?set=(?P<pass_mark>[✓✗])\s+order=(?P<order>[✓✗—])\s+ans=(?P<ans>[✓✗—])\s+(?P<elapsed>[\d.]+)s",
-)
-# L3 puts the pass/fail marker INSIDE the row bracket and prints
-# scenario-level rows (one per multi-turn scenario, not per turn).
-_ROW_RE_L3 = re.compile(
-    r"\[L3 (?P<idx>\d+) (?P<pass_mark>[✓✗])\][^\n]+?(?P<elapsed>[\d.]+)s",
-)
-_ROW_RE_L4 = re.compile(
-    r"\[L4 (?P<idx>\d+)\][^\n]*?recov=(?P<pass_mark>[✓✗—])\s+(?P<elapsed>[\d.]+)s",
+# Flat-bench per-row regex. The flat bench prints
+# ``[ROW <idx>] <case_id>   pass=✓|✗  <elapsed>s`` for every case; the
+# levels concept was retired in 0.1.1 when the bench got flattened into
+# a single corpus. Per-tag drill-downs come from the JSON summary the
+# subprocess writes alongside, not the console output.
+_ROW_RE_FLAT = re.compile(
+    r"\[ROW (?P<idx>\d+)\][^\n]*?pass=(?P<pass_mark>[✓✗])\s+(?P<elapsed>[\d.]+)s",
 )
 
 
 def _parse_bench_output(stdout: str) -> tuple[int, int, int, list[float], list[str], float]:
     """Walk the per-row console output and pull totals + per-row latencies.
 
-    The per-level regex set lets one parser cover all four bench level
-    formats. Headline pass-mark differs per level: L1 ``route=``,
-    L2 ``set=``, L3 in-bracket ✓/✗, L4 ``recov=``. Auxiliary signals
-    (``ans``) populate the answer counter when present.
+    The flat bench prints one ``[ROW <idx>]`` line per case with a
+    ``pass=✓|✗`` and a wall-time. The composite per-case verdict already
+    rolls up routing + answer-check + no-hallucination; we don't need
+    to disaggregate them here. (Detailed breakdown is in the JSON
+    summary the subprocess wrote next to its rows.jsonl.)
 
     Returns (cases, pass_count, answer_ok, latencies, failed_rows, load_s).
+    ``answer_ok`` is reported as equal to ``pass_count`` because the
+    flat bench's pass marker already encodes the answer-check outcome —
+    keeping the tuple shape stable so existing report-rendering code
+    doesn't need to change.
     """
     cases = 0
     pass_count = 0
-    answer_ok = 0
     latencies: list[float] = []
     failures: list[str] = []
     load_s = 0.0
@@ -191,30 +184,21 @@ def _parse_bench_output(stdout: str) -> tuple[int, int, int, list[float], list[s
                 load_s = float(re.search(r"loaded in (\S+)s", raw).group(1))
             except (AttributeError, ValueError):
                 pass
-        # Try each regex; first match wins.
-        for pattern in (_ROW_RE_L1, _ROW_RE_L2, _ROW_RE_L3, _ROW_RE_L4):
-            m = pattern.search(raw)
-            if m:
-                break
+        m = _ROW_RE_FLAT.search(raw)
         if not m:
             continue
         cases += 1
         passed = m.group("pass_mark") == "✓"
         if passed:
             pass_count += 1
-        # ``ans`` is L1/L2-only; L3/L4 rows don't carry it directly.
-        try:
-            if m.group("ans") == "✓":
-                answer_ok += 1
-        except (IndexError, KeyError):
-            pass
         latencies.append(float(m.group("elapsed")))
         if not passed:
-            # Failure summary — short prompt label for the report.
+            # Failure label = the case id (it lives between the bracket
+            # and the ``pass=`` field in the row format).
             mid = raw.split("] ", 1)[1] if "] " in raw else raw
-            label = re.split(r"\s+(?:tool=|set=|recov=)", mid, maxsplit=1)[0].strip()
+            label = mid.split("pass=", 1)[0].strip()
             failures.append(label[:60])
-    return cases, pass_count, answer_ok, latencies, failures, load_s
+    return cases, pass_count, pass_count, latencies, failures, load_s
 
 
 def run_one(model_path: str, *, level: int) -> ModelResult:
@@ -232,8 +216,8 @@ def run_one(model_path: str, *, level: int) -> ModelResult:
         env["PYTHONPATH"] = (str(SRC) + os.pathsep + env.get("PYTHONPATH", ""))
         started = time.perf_counter()
         proc = subprocess.run(
-            [sys.executable, str(REPO / "benchmark" / "run_level.py"),
-             str(level), "--no-warmup"],
+            [sys.executable, str(REPO / "benchmark" / "run_flat_bench.py"),
+             "--no-warmup"],
             cwd=str(REPO),
             env=env,
             stdout=subprocess.PIPE,
@@ -372,8 +356,13 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("models_file",
                     help="Text file with one absolute model path per line.")
-    ap.add_argument("--level", type=int, default=1,
-                    help="Benchmark level (default 1).")
+    # ``--level`` is retained as a no-op for backwards compatibility
+    # with callers that still pass it; the bench is one flat corpus
+    # now and the value is ignored at the row level. Use the flat-bench
+    # subprocess's ``--tags`` flag instead if you want a subset.
+    ap.add_argument("--level", type=int, default=0,
+                    help="Deprecated — kept for backwards compat. The "
+                         "bench is now a single flat corpus.")
     args = ap.parse_args()
 
     with open(args.models_file, "r", encoding="utf-8") as fh:
@@ -384,7 +373,8 @@ def main() -> int:
               file=sys.stderr)
         return 2
 
-    print(f"Sweeping {len(paths)} model(s) at Level {args.level}", flush=True)
+    print(f"Sweeping {len(paths)} model(s) over the flat bench corpus",
+          flush=True)
     results: list[ModelResult] = []
     for p in paths:
         results.append(run_one(p, level=args.level))

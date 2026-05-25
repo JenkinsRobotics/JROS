@@ -24,7 +24,7 @@ import pytest
 from jaeger_os.daemon.client import Client
 
 
-pytestmark = pytest.mark.slow
+pytestmark = [pytest.mark.slow, pytest.mark.subprocess]
 
 
 @pytest.fixture

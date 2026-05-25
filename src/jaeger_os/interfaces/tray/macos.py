@@ -36,6 +36,7 @@ from jaeger_os.interfaces.tray.base import (
     TrayModel,
     TrayState,
     glyph_for,
+    icon_path_for,
     menu_items_for,
 )
 
@@ -81,6 +82,33 @@ def _open_terminal_running(cmd: str) -> None:
     _spawn(["osascript", "-e", script])
 
 
+def _activate_terminal() -> None:
+    """Bring Terminal.app to the foreground without opening a new
+    window. Used when an existing TUI is already running and the user
+    clicked Open TUI again — we just surface the existing window
+    rather than spawning a duplicate."""
+    _spawn(["osascript", "-e", 'tell application "Terminal" to activate'])
+
+
+def _existing_tui_pid_for(instance: str | None) -> int | None:
+    """Check the per-instance TUI PID file. Returns the live PID if a
+    TUI is already running, or ``None`` when the slot is free. Best-
+    effort: any import / lookup failure is treated as 'no existing
+    TUI' so the click still opens a window."""
+    try:
+        from pathlib import Path
+
+        from jaeger_os.core.instance.instance import (
+            default_instance_name, resolve_instance_dir,
+        )
+        from jaeger_os.interfaces.tui.singleton import existing_tui_pid
+        name = instance or default_instance_name()
+        run_dir = Path(resolve_instance_dir(name)) / "run"
+        return existing_tui_pid(run_dir)
+    except Exception:  # noqa: BLE001
+        return None
+
+
 # ── action handlers ───────────────────────────────────────────────
 
 
@@ -100,6 +128,14 @@ def _make_actions(instance: str | None) -> TrayActions:
         _spawn([*jaeger, "restart", *inst_args])
 
     def open_tui() -> None:
+        # Singleton: if a TUI is already running for this instance,
+        # don't spawn a duplicate — just bring Terminal.app to the
+        # front so the user sees the existing window. The TUI itself
+        # writes a per-instance PID file at startup (see
+        # ``interfaces/tui/singleton.py``).
+        if _existing_tui_pid_for(instance) is not None:
+            _activate_terminal()
+            return
         # When the daemon is up, the right verb is ``jaeger attach``
         # (Phase 2 wires it). Until then, ``jaeger`` standalone is the
         # in-process TUI — same agent, fresh process. We use the same
@@ -150,9 +186,25 @@ class MacosTray:
         """Start the rumps event loop. Blocks until quit."""
         import rumps    # local import so the module is testable off macOS
 
+        # Hide the Dock icon — we're a menu-bar agent, not a windowed
+        # app. Without this, every ``jaeger start`` spawns a rocket
+        # icon in the Dock (Python's default) which is confusing and
+        # adds nothing. The "accessory" activation policy is the
+        # PyObjC equivalent of ``LSUIElement=true`` in a bundled
+        # .app's Info.plist — same behaviour, no .app bundling
+        # required. See ``_hide_dock_icon`` for the call.
+        _hide_dock_icon()
+
         # Initial state — pessimistic. The first poll will correct it.
-        title = glyph_for(self.model.state)
-        self._app = rumps.App("Jaeger", title=title, quit_button=None)
+        # We prefer the bundled PNG (the brand mark, with an off/on
+        # variant for daemon state); fall back to the one-character
+        # glyph when the asset isn't on disk (stripped install).
+        icon = icon_path_for(self.model.state)
+        title = "" if icon else glyph_for(self.model.state)
+        self._app = rumps.App(
+            "Jaeger", title=title, icon=icon, quit_button=None,
+            template=False,  # full-colour PNG; not a template image
+        )
 
         # Build the menu the first time.
         self._rebuild_menu()
@@ -166,18 +218,57 @@ class MacosTray:
                 return
             if self.model.update(snapshot):
                 self._rebuild_menu()
-                # Update the menu-bar glyph too.
-                self._app.title = glyph_for(self.model.state)
+                # Update the menu-bar slot — swap the PNG when the
+                # daemon flips on/off; fall back to a one-char glyph
+                # if the asset is missing on this host.
+                new_icon = icon_path_for(self.model.state)
+                if new_icon is not None:
+                    self._app.icon = new_icon
+                    self._app.title = ""
+                else:
+                    self._app.icon = None
+                    self._app.title = glyph_for(self.model.state)
 
-        # Wire Quit Tray to rumps.quit_application so the event loop
-        # actually exits (os._exit is a fallback for non-rumps mains).
-        object.__setattr__(self.actions, "quit_tray",
-                           lambda: rumps.quit_application())
+        # Wire "Quit Jaeger OS" to a full teardown: stop the daemon,
+        # sweep any stray trays, then quit this rumps app. The user
+        # expects Quit to kill EVERYTHING related to the product —
+        # the previous "just close the icon" behaviour left the
+        # daemon (and the model load) running silently.
+        def _quit_all() -> None:
+            # 1) Stop the daemon. Best-effort — if it's already down
+            #    we still proceed to the rest of the teardown.
+            try:
+                self.actions.stop()
+            except Exception:  # noqa: BLE001
+                pass
+            # 2) Sweep every OTHER jaeger-tray process (this process
+            #    is excluded by PID). Catches cases where stray
+            #    trays from earlier sessions are still alive.
+            try:
+                _kill_stray_trays()
+            except Exception:  # noqa: BLE001
+                pass
+            # 3) Quit ourselves last. rumps' quit_application unwinds
+            #    the event loop and runs our atexit cleanup (which
+            #    drops the tray PID file).
+            rumps.quit_application()
+
+        object.__setattr__(self.actions, "quit_tray", _quit_all)
+        # Pull the version live from the package metadata so the About
+        # dialog never drifts behind ``pyproject.toml`` / ``__version__``.
+        try:
+            from jaeger_os import __version__ as _ver
+        except Exception:  # noqa: BLE001
+            _ver = "unknown"
         object.__setattr__(self.actions, "about",
                            lambda: rumps.alert(
-                               title="Jaeger",
-                               message="Jaeger menu-bar tray\n"
-                                       "Phase 1.6 — lifecycle controls",
+                               title="Jaeger OS",
+                               message=(
+                                   f"Jaeger OS — v{_ver}\n"
+                                   "Local-first agentic assistant.\n\n"
+                                   "Menu-bar tray: lifecycle controls\n"
+                                   "for the Jaeger daemon."
+                               ),
                            ))
 
         self._app.run()
@@ -218,6 +309,87 @@ class MacosTray:
         return _on_click
 
 
+# ── Dock-icon suppression ─────────────────────────────────────────
+
+
+def _hide_dock_icon() -> None:
+    """Switch the process to NSApplicationActivationPolicyAccessory.
+
+    The activation policy controls whether the running app appears in
+    the Dock, Command-Tab, and the app switcher:
+
+      * ``Regular`` (default for Python) — Dock icon, switcher entry.
+      * ``Accessory`` — menu-bar / status item only; no Dock icon,
+        no switcher entry. This is the policy a bundled menu-bar
+        app would set via ``LSUIElement=true`` in its Info.plist;
+        because rumps runs from a plain Python interpreter (no
+        bundled app), we set it at runtime instead.
+      * ``Prohibited`` — invisible. Inappropriate here (the tray
+        IS the UI).
+
+    Idempotent and best-effort — if PyObjC isn't loadable for some
+    reason, we leave the policy alone rather than crash."""
+    try:
+        from AppKit import NSApplication
+        # NSApplicationActivationPolicyAccessory == 1; we hard-code
+        # the int so a missing AppKit constant doesn't break the
+        # call.
+        NSApplication.sharedApplication().setActivationPolicy_(1)
+    except Exception:  # noqa: BLE001 — never crash the tray over this
+        pass
+
+
+# ── stale-tray reaper ─────────────────────────────────────────────
+
+
+def _kill_stray_trays() -> int:
+    """SIGTERM every other ``jaeger-tray`` / ``jaeger_os.interfaces.tray``
+    Python process owned by this user. Used by ``--kill-others`` to
+    clean up the stale icons accumulated before the singleton gate
+    landed. Returns the kill count.
+
+    Implementation: walk ``ps -Aww -o pid,command``, match anything
+    invoking the tray module, skip our own PID, SIGTERM the rest.
+    Pure subprocess so we don't need ``psutil`` as a dependency."""
+    import signal
+    killed = 0
+    my_pid = os.getpid()
+    try:
+        out = subprocess.run(
+            ["ps", "-Aww", "-o", "pid=,command="],
+            check=False, capture_output=True, text=True, timeout=5,
+        )
+    except Exception:  # noqa: BLE001
+        return 0
+    for line in (out.stdout or "").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        # Lines look like "12345 /path/to/python -m jaeger_os.interfaces.tray.macos --instance default"
+        # or "12345 /path/to/jaeger tray --instance default".
+        parts = line.split(None, 1)
+        if len(parts) != 2:
+            continue
+        pid_str, cmd = parts
+        try:
+            pid = int(pid_str)
+        except ValueError:
+            continue
+        if pid == my_pid:
+            continue
+        if "jaeger_os.interfaces.tray" not in cmd and \
+           " jaeger tray" not in (" " + cmd):
+            continue
+        try:
+            os.kill(pid, signal.SIGTERM)
+            killed += 1
+        except ProcessLookupError:
+            pass
+        except PermissionError:
+            pass
+    return killed
+
+
 # ── entry point ───────────────────────────────────────────────────
 
 
@@ -230,17 +402,60 @@ def main(argv: list[str] | None = None) -> int:
                         help="Instance name (default: $JAEGER_INSTANCE_NAME or 'default').")
     parser.add_argument("--poll-s", type=float, default=2.0,
                         help="Polling cadence in seconds (default: 2.0).")
+    parser.add_argument("--kill-others", action="store_true",
+                        help="Terminate every other running jaeger-tray "
+                             "process for this user and exit. Use to clear "
+                             "stale icons left behind by older builds.")
     args = parser.parse_args(argv)
+
+    if args.kill_others:
+        killed = _kill_stray_trays()
+        print(f"killed {killed} stray jaeger-tray process(es)")
+        return 0
 
     # Lifecycle is independent of the agent — same `run/` resolution as
     # the daemon CLI, so the tray and `jaeger status` see the same files.
     from jaeger_os.core.instance.instance import (
         default_instance_name, resolve_instance_dir,
     )
+    from jaeger_os.interfaces.tray.singleton import (
+        acquire_tray_slot, existing_tray_pid,
+    )
     name = args.instance or default_instance_name()
     root = Path(resolve_instance_dir(name))
-    paths = LifecyclePaths(run_dir=root / "run")
+    run_dir = root / "run"
+    paths = LifecyclePaths(run_dir=run_dir)
     lifecycle = Lifecycle(paths=paths)
+
+    # Tray singleton — refuse to launch a second menu-bar icon for
+    # this instance. The previous behaviour piled up stale icons on
+    # every ``jaeger start`` / ``restart`` because the launcher
+    # fire-and-forgot a fresh tray every time. The slot file is
+    # cleaned up automatically on a clean exit (rumps Quit Tray
+    # path); a stale PID file from a hard kill auto-clears on the
+    # next launch.
+    existing = existing_tray_pid(run_dir)
+    if existing is not None:
+        print(f"jaeger-tray already running for instance {name!r} "
+              f"(pid={existing}). Quit the existing tray first if you "
+              f"want to relaunch.", file=sys.stderr)
+        return 0
+    # Defense-in-depth: sweep any tray processes that DON'T own the
+    # PID-file slot. These shouldn't exist (the slot gate above
+    # would have refused them), but a tray that pre-dated the gate
+    # or escaped a hard kill could still be alive. Killing them now
+    # — BEFORE we register our own slot — prevents the pile-up the
+    # user reported (3+ icons in the menu bar).
+    swept = _kill_stray_trays()
+    if swept:
+        print(f"[jaeger-tray] swept {swept} stale tray process(es)",
+              file=sys.stderr)
+        # Tiny pause so the OS reaps the menu-bar slots before
+        # the new icon goes up — otherwise the user briefly sees
+        # both the dying icons AND the new one.
+        import time as _time
+        _time.sleep(0.3)
+    acquire_tray_slot(run_dir)
 
     actions = _make_actions(args.instance)
 

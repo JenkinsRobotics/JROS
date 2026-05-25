@@ -82,6 +82,11 @@ dependencies = [
     "python-telegram-bot>=21.0",
     # --- MCP tool servers ---
     "mcp>=0.9",
+    # --- macOS menu-bar tray (``jaeger start`` auto-launches it) ---
+    # rumps is a pure-Python wrapper over PyObjC; only the macOS tray
+    # adapter imports it, so the environment marker keeps Linux /
+    # Windows installs from pulling it in.
+    "rumps>=0.4; sys_platform == 'darwin'",
 ]
 
 [project.optional-dependencies]
@@ -90,6 +95,9 @@ dependencies = [
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
+    # Parallel test workers — scripts/run_tests.sh picks ``-n auto``
+    # automatically when this is installed.
+    "pytest-xdist>=3.5",
     "mypy>=1.8",
     "ruff>=0.4",
 ]
@@ -126,8 +134,17 @@ jaeger_os = [
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-# Mark used by daemon end-to-end tests that fork real subprocesses.
-# Run with ``-m 'not slow'`` to skip them while iterating.
+# Marker tiers — the bench, daemon, model-load, UI, and integration
+# suites take real wall time. Mark them and skip by default; the
+# ``scripts/run_tests.sh`` driver picks the right subset for CI vs
+# local iteration. New tests should pick the closest marker that
+# applies (or none — unmarked = fast deterministic unit test).
 markers = [
     "slow: tests that fork real processes or do real network I/O (a few seconds each).",
+    "integration: cross-module end-to-end paths; may touch the filesystem heavily.",
+    "model: tests that load a real GGUF / external LLM; minutes-scale.",
+    "ui: TUI / rumps tray tests that may render to a terminal or display.",
+    "subprocess: tests that spawn a real Python subprocess (boot, daemon, bench).",
+    "smoke: a tiny set tagged so ``pytest -m smoke`` is a 30-second sanity check.",
+    "regression: pins a specific bug fix — run on every PR even when narrowing markers.",
 ]

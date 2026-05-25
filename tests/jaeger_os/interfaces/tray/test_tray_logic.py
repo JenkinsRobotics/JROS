@@ -37,12 +37,12 @@ from jaeger_os.interfaces.tray.base import (
     (TrayState.STOPPED, "○"),
     (TrayState.STARTING, "◐"),
     (TrayState.RUNNING, "●"),
-    (TrayState.ERROR, "✕"),
+    (TrayState.ERROR, "⚠"),
 ])
 def test_glyph_for_each_state(state, glyph):
-    """The icon glyph carries the daemon state at a glance. Black-and-white
-    glyphs avoid the macOS dark-mode tint problem you get with coloured
-    PNGs and let us ship without bundling image assets."""
+    """One-char text glyph used by hosts that can't render PNG assets
+    (Linux/Windows trays, headless tests). The macOS rumps adapter
+    prefers ``icon_path_for`` — see those tests."""
     assert glyph_for(state) == glyph
 
 
@@ -50,7 +50,7 @@ def test_glyph_for_each_state(state, glyph):
 
 
 def test_menu_when_stopped_offers_start_disables_stop():
-    """Stopped daemon: only 'Start Daemon' is enabled among lifecycle
+    """Stopped: only 'Start Jaeger OS' is enabled among lifecycle
     items. 'Stop' / 'Restart' would be no-ops, so we grey them out
     rather than letting the user fire a doomed subprocess."""
     items = {i.action: i for i in menu_items_for(TrayState.STOPPED) if i.action}
@@ -91,6 +91,28 @@ def test_menu_status_label_reflects_state():
     label = menu_items_for(TrayState.RUNNING)[0]
     assert label.action is None
     assert "running" in label.label.lower()
+
+
+def test_menu_labels_say_jaeger_os_not_daemon():
+    """User-facing labels say 'Jaeger OS' so people know what's being
+    started/stopped — 'daemon' is an internal implementation detail
+    and confused users testing the tray. The status row, the three
+    lifecycle items, the About entry, and the Quit row all carry
+    the product name."""
+    items = menu_items_for(TrayState.RUNNING)
+    labels = [i.label for i in items]
+    joined = " | ".join(labels)
+    assert "Daemon" not in joined, \
+        f"menu still references 'Daemon': {joined!r}"
+    assert any("Start Jaeger OS" == lbl for lbl in labels)
+    assert any("Stop Jaeger OS" == lbl for lbl in labels)
+    assert any("Restart Jaeger OS" == lbl for lbl in labels)
+    assert any("Jaeger OS: running" == lbl for lbl in labels)
+    # Quit tears the WHOLE product down (daemon + every tray) — the
+    # label must signal that, not "just close this icon".
+    assert any("Quit Jaeger OS" == lbl for lbl in labels), \
+        f"Quit label still 'Quit Tray' — must be 'Quit Jaeger OS': " \
+        f"{labels}"
 
 
 def test_open_web_is_disabled_until_web_dashboard_ships():

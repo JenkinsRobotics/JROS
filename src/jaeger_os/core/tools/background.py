@@ -8,6 +8,7 @@ the turn, then let the agent check on it later.
   • list_background()              — every background process + status
   • check_background(process_id)   — one process's status + output
   • stop_background(process_id)    — terminate a running process
+  • pending_background()           — drain unsurfaced completion events
 
 ``start_background`` / ``stop_background`` are gated at WRITE_LOCAL
 (tier 1) — they spawn / kill processes inside the instance. The read
@@ -69,3 +70,18 @@ def stop_background(process_id: str) -> dict[str, Any]:
     """Terminate a running background process by id."""
     layout = _require_layout()
     return _proc.stop_background(layout, process_id)
+
+
+def pending_background() -> dict[str, Any]:
+    """Drain the queue of background tasks that finished since the last
+    check. Each completion is surfaced AT MOST ONCE — once returned,
+    that process won't appear again until it's restarted.
+
+    Useful right after you started a long-running ``start_background``
+    job and want to know when it finishes without polling
+    ``check_background`` in a loop. Returns
+    ``{completions: [...], count: N}`` — empty list when nothing
+    new has finished. Read-only."""
+    layout = _require_layout()
+    completions = _proc.consume_pending_completions(layout)
+    return {"completions": completions, "count": len(completions)}

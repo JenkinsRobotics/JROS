@@ -270,6 +270,69 @@ def test_truncate_returns_a_pure_passthrough_when_disabled():
     assert out == big
 
 
+def test_oversized_dict_persists_to_artifact_dir_when_set(tmp_path):
+    """When ``artifact_dir`` is bound, the full oversized payload is
+    written to disk and the marker dict carries an ``artifact_path``
+    the model can ``read_file`` for the body the preview cut off."""
+    g = ContextGuard(ContextBudget(
+        max_tool_result_chars=500,
+        artifact_dir=tmp_path,
+    ))
+    huge = {"stdout": "y" * 5000, "exit_code": 0}
+    out, was_truncated = g.truncate_oversized_result(huge)
+    assert was_truncated is True
+    assert isinstance(out, dict)
+    assert out.get("_truncated") is True
+    assert "artifact_path" in out
+    # The persisted file actually exists and holds the FULL original.
+    import pathlib
+    persisted = pathlib.Path(out["artifact_path"])
+    assert persisted.is_file()
+    body = persisted.read_text(encoding="utf-8")
+    # The pre-serialised body contains the full stdout payload.
+    assert "y" * 5000 in body
+    # Marker carries a hint so the model knows to read the artifact.
+    assert "hint" in out
+
+
+def test_oversized_string_persists_alongside_preview(tmp_path):
+    """String results take the truncate-with-marker path; the artifact
+    is still written so the operator can recover the full bytes."""
+    g = ContextGuard(ContextBudget(
+        max_tool_result_chars=500,
+        artifact_dir=tmp_path,
+    ))
+    huge = "z" * 50_000
+    out, was_truncated = g.truncate_oversized_result(huge)
+    assert was_truncated is True
+    assert isinstance(out, str)
+    # The marker footer mentions the on-disk path.
+    assert "saved to" in out
+    # Exactly one artifact file landed in the directory.
+    artifacts = list(tmp_path.iterdir())
+    assert len(artifacts) == 1
+    assert artifacts[0].read_text(encoding="utf-8") == huge
+
+
+def test_persistence_failure_falls_back_to_preview_only(tmp_path):
+    """Artifact write is best-effort: a write hiccup must NOT block the
+    tool dispatch — the marker just omits the path."""
+    # Point artifact_dir at a path that can't be created (a file, not a dir).
+    blocking_file = tmp_path / "not_a_dir"
+    blocking_file.write_text("blocker")
+    g = ContextGuard(ContextBudget(
+        max_tool_result_chars=500,
+        artifact_dir=blocking_file / "subdir" / "x",
+    ))
+    huge = {"stdout": "q" * 5000}
+    out, was_truncated = g.truncate_oversized_result(huge)
+    assert was_truncated is True
+    # Dict path returns a marker dict without artifact_path on failure.
+    assert isinstance(out, dict)
+    assert out.get("_truncated") is True
+    assert "artifact_path" not in out
+
+
 # ── group-aware trim (assistant tool_calls + matching tool results) ───
 
 

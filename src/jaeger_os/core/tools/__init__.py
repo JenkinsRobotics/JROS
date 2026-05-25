@@ -108,6 +108,7 @@ from .skill_market import benchmark_skill, package_skill
 from .background import (
     check_background,
     list_background,
+    pending_background,
     start_background,
     stop_background,
 )
@@ -129,6 +130,14 @@ from .todo import reset_todos, todo
 
 # Self-update — the agent editing its own identity.yaml / soul.md
 from .identity_tools import set_name, update_soul
+
+# Agent self-benchmark — runs the flat bench corpus against the live
+# pipeline (the model the user is actually talking to). Tier-1.
+from .bench import run_benchmark
+
+# Runtime diagnostics — fast idempotent health probe (post-boot
+# counterpart to ``--doctor``).
+from .diagnostics import system_health
 
 
 __all__ = [
@@ -173,7 +182,7 @@ __all__ = [
     "package_skill", "benchmark_skill",
     # background processes
     "start_background", "list_background", "check_background",
-    "stop_background",
+    "stop_background", "pending_background",
     # deep think
     "propose_deep_think_task", "list_deep_think_queue",
     # kanban board
@@ -186,4 +195,8 @@ __all__ = [
     "todo", "reset_todos",
     # self-update (own identity / soul)
     "set_name", "update_soul",
+    # agent self-benchmark
+    "run_benchmark",
+    # runtime diagnostics
+    "system_health",
 ]

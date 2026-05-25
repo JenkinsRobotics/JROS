@@ -2950,7 +2950,21 @@ def boot_for_tui(
         # not run; without this line every computer_do call in the TUI
         # fails with "no LLM client available for the loop".
         _pipeline["client"] = client
-        _get_agent(client)
+        agent = _get_agent(client)
+        # Wire plugin readiness into per-tool ``check_fn``. Tools
+        # whose backing plugin isn't ready (missing libs, missing
+        # env / creds, wrong platform) become unavailable — the
+        # model's ``tools`` schema view filters them out so it
+        # can't reach for ``send_message`` when Discord isn't set
+        # up. The wiring is idempotent + best-effort.
+        try:
+            from jaeger_os.core.tools.availability import wire_availability_checks
+            wired = wire_availability_checks(agent)
+            if wired:
+                print(f"[jaeger] availability wired for {wired} plugin-backed tool(s)",
+                      flush=True)
+        except Exception:  # noqa: BLE001 — never break boot over this
+            pass
         if warmup:
             prewarm(client)
             warm_plugins(config)

@@ -18,9 +18,9 @@ from __future__ import annotations
 
 from typing import Any
 
-from .engines import Action
-from . import planner
-from .goal_parser import parse_goal
+from jaeger_os.skills.macos_computer_v1.engines import Action
+from jaeger_os.skills.macos_computer_v1 import planner
+from jaeger_os.skills.macos_computer_v1.goal_parser import parse_goal
 
 
 def computer_do(goal: Any) -> dict:

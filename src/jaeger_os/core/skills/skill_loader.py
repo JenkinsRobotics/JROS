@@ -310,6 +310,26 @@ def load_and_register(
                 print(f"[jaeger-skills] {skill.name}_v{skill.version} ({skill.zone}) skipped: smoke test failed.",
                       flush=True)
                 continue
+        elif run_smoke_tests and not skill.has_smoke and skill.zone != "core":
+            # Marketplace + agent-authored code skills MUST ship a
+            # smoke test. "No smoke means pass" stays only for core
+            # (shipped, trusted) skills; an instance-zone skill
+            # without ``tests/smoke_test.py`` is half-finished and
+            # not safe to auto-register. The user can still load it
+            # manually after authoring a smoke test.
+            reason = ("instance-zone skill has no tests/smoke_test.py — "
+                      "required for non-core code skills")
+            skipped.append((skill, reason))
+            if audit:
+                audit("skill_smoke_missing", {
+                    "skill": skill.name, "version": skill.version,
+                    "zone": skill.zone,
+                })
+            print(f"[jaeger-skills] {skill.name}_v{skill.version} "
+                  f"({skill.zone}) skipped: missing smoke test "
+                  f"(non-core skills must ship tests/smoke_test.py).",
+                  flush=True)
+            continue
 
         # Safety scan — a static content scan (exfiltration, prompt
         # injection, destructive commands, embedded secrets). A `danger`

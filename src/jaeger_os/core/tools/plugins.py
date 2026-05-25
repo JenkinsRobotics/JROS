@@ -28,19 +28,32 @@ _PLUGINS_ROOT = pathlib.Path(__file__).resolve().parents[2] / "plugins"
 
 
 def _read_manifest(plugin_dir: pathlib.Path) -> dict[str, Any] | None:
-    """Parse the plugin's ``plugin.yaml``. Returns None on missing or
-    malformed manifest — the caller treats that as "not a plugin"."""
+    """Parse the plugin's ``plugin.yaml`` through the validated
+    :class:`PluginManifest` schema. Returns the dict-shaped manifest
+    (preserving the legacy caller contract) or ``None`` on missing /
+    malformed input.
+
+    The schema validation surfaces structural bugs (typo'd
+    ``requireds:`` etc.) at doctor time via
+    :func:`jaeger_os.plugins.manifest.audit_plugin_dir`; this
+    function stays permissive — a malformed manifest still parses
+    here so the caller can degrade gracefully."""
     manifest_path = plugin_dir / "plugin.yaml"
     if not manifest_path.is_file() or _yaml is None:
         return None
     try:
-        with manifest_path.open("r", encoding="utf-8") as fh:
-            data = _yaml.safe_load(fh)
-    except Exception:  # noqa: BLE001
-        return None
-    if not isinstance(data, dict):
-        return None
-    return data
+        from jaeger_os.plugins.manifest import load_manifest
+        manifest = load_manifest(manifest_path)
+        return manifest.model_dump()
+    except Exception:  # noqa: BLE001 — fall back to raw YAML on schema fail
+        try:
+            with manifest_path.open("r", encoding="utf-8") as fh:
+                data = _yaml.safe_load(fh)
+        except Exception:  # noqa: BLE001
+            return None
+        if not isinstance(data, dict):
+            return None
+        return data
 
 
 def _library_status(libraries: list[str]) -> dict[str, bool]:

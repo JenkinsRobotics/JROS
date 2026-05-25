@@ -331,8 +331,9 @@ CASES: list[BenchCase] = [
               prompt="Read a file called nonexistent_xyz_12345.txt and tell "
                      "me what's inside.",
               expected_tools=["read_file"],
-              answer_contains_any=["not found", "doesn't exist", "no such",
-                                   "missing", "couldn't find", "could not find",
+              answer_contains_any=["not found", "doesn't exist", "does not exist",
+                                   "no such", "missing", "couldn't find",
+                                   "could not find", "cannot find", "cannot read",
                                    "unable to find", "wasn't able",
                                    "isn't there"],
               hallucination_signals=["the file contains", "the file says"],

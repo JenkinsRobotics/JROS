@@ -25,7 +25,7 @@ from __future__ import annotations
 import time
 from typing import Any
 
-from . import Action, Engine, EngineResult
+from jaeger_os.skills.macos_computer_v1.engines import Action, Engine, EngineResult
 
 
 _NAME = "ax"
@@ -48,7 +48,7 @@ class AXEngine:
     def is_available(self) -> tuple[bool, str]:
         """Delegate to the low-level availability probe — checks
         PyObjC importability + the Accessibility permission state."""
-        from . import _ax_lowlevel
+        from jaeger_os.skills.macos_computer_v1.engines import _ax_lowlevel
         return _ax_lowlevel.is_available()
 
     def can_handle(self, action: Action) -> float:
@@ -81,7 +81,7 @@ class AXEngine:
         return 0.0
 
     def execute(self, action: Action) -> EngineResult:
-        from . import _ax_lowlevel as ax
+        from jaeger_os.skills.macos_computer_v1.engines import _ax_lowlevel as ax
         started = time.perf_counter()
         kind = (action.kind or "").lower()
         args = action.args or {}
@@ -160,7 +160,7 @@ def _ax_set_value(*, app: str, label: str, value: str) -> dict[str, Any]:
 
     Lives here (not in ``_ax_lowlevel``) because the low-level file
     was salvaged from v2 verbatim; this is the new add."""
-    from . import _ax_lowlevel as ax
+    from jaeger_os.skills.macos_computer_v1.engines import _ax_lowlevel as ax
     ready, detail = ax.is_available()
     if not ready:
         return ax._unavailable(detail)
@@ -197,7 +197,7 @@ def ax_menu_select(*, app: str, path: str) -> dict[str, Any]:
     Returns ``{ok, app, path, pressed}`` on success or
     ``{ok=False, error}`` with the missing level surfaced so the
     agent can correct."""
-    from . import _ax_lowlevel as ax
+    from jaeger_os.skills.macos_computer_v1.engines import _ax_lowlevel as ax
     ready, detail = ax.is_available()
     if not ready:
         return ax._unavailable(detail)
@@ -263,7 +263,7 @@ def ax_read_value(*, app: str, label: str = "", role: str = "") -> dict[str, Any
 
     Example: after typing "Hello" into a Notes note, call
     ``ax_read_value(app="Notes", role="AXTextArea")`` to confirm."""
-    from . import _ax_lowlevel as ax
+    from jaeger_os.skills.macos_computer_v1.engines import _ax_lowlevel as ax
     ready, detail = ax.is_available()
     if not ready:
         return ax._unavailable(detail)
@@ -290,7 +290,7 @@ def ax_focused_window(*, app: str = "") -> dict[str, Any]:
     Designed to be the cheap counterpart to a screenshot — the
     agent calls it to see "what's currently on screen" without
     invoking the vision tier."""
-    from . import _ax_lowlevel as ax
+    from jaeger_os.skills.macos_computer_v1.engines import _ax_lowlevel as ax
     ready, detail = ax.is_available()
     if not ready:
         return ax._unavailable(detail)

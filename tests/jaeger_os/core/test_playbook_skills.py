@@ -36,8 +36,19 @@ def test_find_playbook_is_fuzzy() -> None:
 
 
 def test_skill_list() -> None:
+    """``list`` now paginates — ``total`` carries the full corpus
+    count (which we expect to be ≥50 for the bundled library);
+    the response slice is at most ``limit`` (default 20)."""
     r = skill(action="list")
-    assert r["ok"] is True and r["count"] >= 50
+    assert r["ok"] is True
+    assert r["total"] >= 50
+    # The slice respects the default limit so the response stays
+    # under control even when the library grows.
+    assert len(r["skills"]) <= r["limit"]
+    # Category counts are always included so the model can pick a
+    # category before drilling in.
+    assert isinstance(r["category_counts"], dict)
+    assert r["category_counts"]
 
 
 def test_skill_search_finds_by_keyword() -> None:

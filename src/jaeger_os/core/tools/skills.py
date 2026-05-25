@@ -66,11 +66,17 @@ def _read_skill_file(folder: pathlib.Path, relpath: str) -> dict[str, Any]:
 
 
 def skill(action: str, name: str = "", query: str = "",
-          file: str = "") -> dict[str, Any]:
+          file: str = "", category: str = "",
+          limit: int = 20, offset: int = 0) -> dict[str, Any]:
     """Discover and read playbook skills — experienced procedures for a
     task. ``action`` selects the operation:
 
-      - ``list``   — every available skill (name · category · one-liner).
+      - ``list``   — paginated catalog. Default returns category
+        counts + the first ``limit`` (default 20) skills.
+        Filter by ``category=...``; page with ``offset``.
+        With no args, ``list`` is a category summary only — the
+        full corpus is large (~87 playbooks) and dumping every
+        name burns prompt budget on every casual call.
       - ``search`` — skills matching ``query`` (name / description /
         tags / category). Use this FIRST when a task might have a skill.
       - ``view``   — the full instructions of skill ``name``, plus a
@@ -96,11 +102,38 @@ def skill(action: str, name: str = "", query: str = "",
 
     if act in ("list", "all", ""):
         skills = _pb.available_playbooks()
-        return {
-            "ok": True, "count": len(skills),
-            "skills": [{"name": s.name, "category": s.category,
-                        "description": s.description} for s in skills],
+        # Build category counts first — that's the always-cheap
+        # part of the response that lets the model decide whether
+        # to deepen with category= or search.
+        by_cat: dict[str, int] = {}
+        for s in skills:
+            by_cat[s.category] = by_cat.get(s.category, 0) + 1
+        # Filter by category if asked.
+        cat_clean = (category or "").strip().lower()
+        filtered = (
+            [s for s in skills if s.category.lower() == cat_clean]
+            if cat_clean else skills
+        )
+        # Paginate. Negative limit / offset coerced to safe values.
+        cap = max(0, int(limit) if limit else 0)
+        skip = max(0, int(offset) if offset else 0)
+        page = filtered[skip:skip + cap] if cap else filtered[skip:]
+        out: dict[str, Any] = {
+            "ok": True,
+            "total": len(skills),
+            "filtered_total": len(filtered),
+            "category_counts": dict(sorted(by_cat.items())),
+            "offset": skip,
+            "limit": cap,
+            "skills": [
+                {"name": s.name, "category": s.category,
+                 "description": s.description}
+                for s in page
+            ],
         }
+        if cap and skip + cap < len(filtered):
+            out["next_offset"] = skip + cap
+        return out
 
     if act in ("search", "find"):
         q = (query or name).strip().lower()

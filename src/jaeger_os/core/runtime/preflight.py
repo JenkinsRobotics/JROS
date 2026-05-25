@@ -327,6 +327,51 @@ def _check_memory_integrity(layout: object) -> list[Check]:
     return out
 
 
+def _check_plugin_manifests() -> list[Check]:
+    """Every bundled plugin's ``plugin.yaml`` must validate against
+    the :class:`PluginManifest` schema. A typo'd ``requireds:``
+    instead of ``requires:`` would otherwise silently mean "no
+    requirements"; this check catches it at doctor time."""
+    out: list[Check] = []
+    try:
+        import pathlib
+        from jaeger_os.plugins.manifest import audit_plugin_dir
+        plugins_root = (
+            pathlib.Path(__file__).resolve().parent.parent.parent / "plugins"
+        )
+        rows = audit_plugin_dir(plugins_root)
+    except Exception as exc:  # noqa: BLE001
+        out.append(Check(
+            "plugins.manifests", "plugins", False,
+            f"audit raised: {type(exc).__name__}: {exc}",
+        ))
+        return out
+
+    bad = [r for r in rows if not r.get("ok")]
+    if not rows:
+        out.append(Check(
+            "plugins.manifests", "plugins", True,
+            "0 plugins discovered (empty plugins/ dir)",
+        ))
+        return out
+    if bad:
+        out.append(Check(
+            "plugins.manifests", "plugins", False,
+            f"{len(bad)} of {len(rows)} manifests failed validation: "
+            + "; ".join(
+                f"{r['name']}: {r['errors'][0]}"
+                for r in bad[:3]
+            ),
+            "fix the manifest fields named in the error and re-run",
+        ))
+    else:
+        out.append(Check(
+            "plugins.manifests", "plugins", True,
+            f"{len(rows)} manifest(s) validated",
+        ))
+    return out
+
+
 def _check_tool_registry() -> list[Check]:
     """Every name in CORE / LEAN_CORE must resolve to a real
     registered tool. A rename or accidental deletion that the lean-
@@ -452,6 +497,7 @@ def check_instance(layout: object) -> list[Check]:
         + _check_daemon(layout)
         + _check_memory_integrity(layout)
         + _check_tool_registry()
+        + _check_plugin_manifests()
         + _check_skills_health(layout)
     )
 
@@ -491,7 +537,7 @@ def install_missing(checks: list[Check]) -> list[Check]:
 def format_report(checks: list[Check]) -> str:
     """A grouped, human-readable report for ``jaeger-os --doctor``."""
     lines = ["", "  Jaeger-OS — environment check", ""]
-    for category in ("instance", "daemon", "runtime", "memory", "skills",
+    for category in ("instance", "daemon", "runtime", "memory", "plugins", "skills",
                      "voice", "vision", "external", "messaging", "system"):
         group = [c for c in checks if c.category == category]
         if not group:

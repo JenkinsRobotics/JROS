@@ -2944,7 +2944,7 @@ def boot_for_tui(
         install_policy(PermissionPolicy(confirmation=_confirmation_provider(config, layout)))
 
         client = make_client(config, layout, warmup=warmup)
-        # Skills that loop with the model — computer_use_v2's computer_do —
+        # Skills that loop with the model — macos_computer's computer_do —
         # read the live client from _pipeline["client"]. The full CLI path
         # sets this in init_extensions, which the TUI deliberately does
         # not run; without this line every computer_do call in the TUI

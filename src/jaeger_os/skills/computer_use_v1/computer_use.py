@@ -1,4 +1,4 @@
-"""computer_use_v1 — drive any macOS app through the accessibility tree.
+"""computer_use — drive any macOS app through the accessibility tree.
 
 Jaeger-OS's flagship skill. "Using a computer" is a *composed* capability
 — perceive the screen, find an element, act, verify — not a primitive,

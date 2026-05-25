@@ -1,4 +1,4 @@
-"""Benchmark for computer_use_v1 — scored evaluation of the pure logic.
+"""Benchmark for computer_use — scored evaluation of the pure logic.
 
 The act tools need a live desktop + permissions, which can't be scored
 deterministically. What CAN be scored is the grounding/parsing logic the

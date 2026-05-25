@@ -45,8 +45,8 @@ Folder names end in `_v<N>` (e.g. `weather_v1/`, `weather_v2/`):
 
 | skill | purpose |
 |---|---|
-| [`computer_use_v2/`](computer_use_v2/) | Drive any macOS app — self-verifying, name-based tools plus an LLM plan/act/verify loop (`computer_do`). The flagship skill. |
-| [`computer_use_v1/`](computer_use_v1/) | The original raw-primitive version — **shadowed by v2** (the loader picks the highest `_v<N>`). Kept as the worked example of override-by-versioning. |
+| [`macos_computer/`](macos_computer/) | **Recommended on macOS.** Capability-ladder Mac control — AppleScript → browser CDP → Accessibility → screenshot fallback. Focus-preserving where possible. The flagship skill for Jaeger on a Mac. |
+| [`computer_use/`](computer_use/) | Universal cross-OS computer control via the screenshot loop. Portable but slow; use as a fallback when the platform doesn't expose a faster object surface, or for canvas/game UIs without semantic objects. |
 
 (The collection is intentionally small — Jaeger ships the agent's
 primitive surface as TOOLS in [`../core/tools/`](../core/tools/), not as

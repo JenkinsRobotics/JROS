@@ -1,4 +1,4 @@
-"""computer_use_v1 — the framework's flagship skill.
+"""computer_use — the framework's flagship skill.
 
 Covers the pure grounding logic (accessibility-tree parsing, click-point
 maths, AppleScript escaping, key-chord resolution) and that the skill

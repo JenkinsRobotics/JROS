@@ -271,7 +271,20 @@ def _ax_size_type() -> int:
 
 def _walk(element: Any, want_role: str, needle: str,
           depth: int, budget: list[int]) -> Any:
-    """Depth/▏node-bounded search for the first matching element."""
+    """Depth/node-bounded search for the first matching element.
+
+    Match strategy — first hit wins (depth-first). The needle is
+    matched against four attributes in priority order:
+
+      * ``AXTitle``       — the obvious label
+      * ``AXDescription`` — fallback label set by accessibility tooling
+      * ``AXValue``       — Calculator-style: digit buttons carry the
+                            digit here, not in the title
+      * ``AXIdentifier``  — developer-set hook; uncommon but cheap
+
+    The exact match (case-insensitive) of any of these is enough. A
+    substring match on title/desc is also accepted to handle apps
+    that use "5 — five" or similar verbose labels."""
     import ApplicationServices as _AX
     if depth > _MAX_DEPTH or budget[0] <= 0:
         return None
@@ -279,9 +292,18 @@ def _walk(element: Any, want_role: str, needle: str,
     role = str(_copy_attr(element, _AX.kAXRoleAttribute) or "")
     title = str(_copy_attr(element, _AX.kAXTitleAttribute) or "")
     desc = str(_copy_attr(element, "AXDescription") or "")
+    value = str(_copy_attr(element, _AX.kAXValueAttribute) or "")
+    ident = str(_copy_attr(element, "AXIdentifier") or "")
     role_ok = (not want_role) or want_role.lower() in role.lower()
-    text_ok = (not needle) or (needle.lower() in title.lower()
-                               or needle.lower() in desc.lower())
+    needle_lc = (needle or "").lower()
+    text_ok = (not needle) or (
+        # Exact match on any of the four attributes.
+        title.lower() == needle_lc or desc.lower() == needle_lc
+        or value.lower() == needle_lc or ident.lower() == needle_lc
+        # Substring on title / description for verbose labels.
+        or (needle_lc and needle_lc in title.lower())
+        or (needle_lc and needle_lc in desc.lower())
+    )
     if role_ok and text_ok and (want_role or needle):
         return element
     for child in (_copy_attr(element, _AX.kAXChildrenAttribute) or []):

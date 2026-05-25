@@ -1,13 +1,13 @@
 ---
 name: computer_use
 version: 1
-kind: human_authored               # human_authored | agent_authored | learned | nn_trained
-category: cognitive                # drives the host computer (software)
-runtime: in_process                # in_process | mcp_subprocess
-permission_tier: 2                 # EXTERNAL_EFFECT — the action tools manipulate the host
-embodiment_requires: []            # runs on any embodiment with a macOS host
+kind: human_authored
+category: cognitive
+runtime: in_process
+permission_tier: 2                 # EXTERNAL_EFFECT
+embodiment_requires: []            # cross-OS — any host with a display
 authored_at: 2026-05-20
-description: Drive any macOS app through the accessibility tree — see the screen, find elements, click, type.
+description: Universal screenshot-based computer control. Works on any host with a display + mouse. Slow but portable. On macOS, prefer the `macos_computer` skill — it uses Accessibility / AppleScript directly and is 10-30× faster.
 registers_tools:
   - computer_screenshot(path) -> {ok, path}
   - computer_read_screen() -> {ok, app, window, elements}
@@ -18,50 +18,48 @@ registers_tools:
   - computer_menu_select(menu, item) -> {ok, selected}
 ---
 
-# computer_use_v1
+# computer_use — universal screenshot path
 
 ## What
-Jaeger-OS's flagship skill — the ability to **use any application on the
-Mac**. "Using a computer" is a composed capability (perceive → find →
-act → verify), not a primitive, which is exactly why it is a skill and
-not a built-in tool.
+Universal cross-OS computer control via the **screenshot loop**: take a
+picture of the screen, find a target visually, click coordinates, take
+another picture, verify. Works on any host with a display + mouse;
+matches the pattern hermes-agent uses by default.
 
-It registers seven tools across two halves:
+This is the **portable fallback**. On macOS, the `macos_computer`
+skill bypasses the visual loop entirely — it talks to the
+Accessibility tree, AppleScript dictionaries, and CDP — and is
+roughly 10-30× faster for the same operation. Use `computer_use`
+when:
 
-- **Perceive** — `computer_screenshot` (capture the screen),
-  `computer_read_screen` (the accessibility tree: every on-screen UI
-  element with its role, name and a click point), `computer_open_app`.
-- **Act** — `computer_click(x, y)`, `computer_type_text`,
-  `computer_press_key`, `computer_menu_select`.
-
-Grounding is **accessibility-tree first**: `computer_read_screen` returns
-real element coordinates from macOS System Events, so the agent clicks a
-known point — no vision model guessing pixels.
+- Running on a host without an Accessibility / AppleScript surface
+  (most Linux desktops, Windows, an embedded Jaeger unit without
+  AX bindings).
+- Targeting a canvas-style UI (games, custom widgets, image
+  viewers) where there IS no semantic object tree to read.
+- Verifying a `macos_computer` action when no AX/value query covers
+  what the human would visually check.
 
 ## When
-Trigger when the task needs an app the agent has no API for — "play Daft
-Punk in the browser", "open Notes and write this down", "click the
-export button". The loop is:
+Trigger when the task needs a UI the agent has no direct API for AND
+the platform doesn't expose a faster object-level surface. The loop
+is:
 
-1. `computer_open_app` to bring the app up.
-2. `computer_read_screen` to see the elements and their x/y points.
-3. `computer_click` / `computer_type_text` / `computer_press_key` to act.
-4. `computer_read_screen` again to verify the result.
-
-Prefer `computer_menu_select` when the action is in a menu (File → New,
-Edit → Copy) — menu names are stable, so it is the most reliable path.
+1. `computer_open_app` to bring the app up (macOS-specific today;
+   future ports add the linux / windows equivalents).
+2. `computer_read_screen` for the on-screen elements + a screenshot.
+3. `computer_click` / `computer_type_text` / `computer_press_key` to
+   act.
+4. `computer_read_screen` again to verify.
 
 ## How
-- The act tools (`click`, `type_text`, `press_key`, `menu_select`) are
-  EXTERNAL_EFFECT — every call is confirmation-gated. The user is asked
-  before the agent manipulates their computer.
-- Coordinates come from `computer_read_screen` — each element's `x`/`y`
-  is its centre point, ready to pass to `computer_click`.
+- Action tools are tier-2 (EXTERNAL_EFFECT) — confirmation-gated. The
+  user approves before the agent moves the mouse / types.
+- The macOS implementation uses `osascript` + `screencapture` (no pip
+  deps). A future cross-OS port would add pyautogui / X11 / Win32.
 
 ## Depends on
-- **macOS** — uses `osascript` (AppleScript / System Events) and
-  `screencapture`, both built into macOS. No Python packages.
-- **Permissions** — the host process (Terminal / your IDE) must be
-  granted **Accessibility** (and **Screen Recording** for screenshots)
-  in System Settings → Privacy & Security. The tools return a clear
-  hint if the permission is missing.
+- A display + an input layer (mouse + keyboard).
+- macOS today: `osascript` + `screencapture` (Accessibility +
+  Screen Recording permissions).
+- Future ports: pluggable per-OS adapter.

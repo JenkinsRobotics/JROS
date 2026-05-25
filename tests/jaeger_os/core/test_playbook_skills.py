@@ -22,7 +22,7 @@ def test_playbooks_are_discovered() -> None:
 
 
 def test_code_skills_are_not_playbooks() -> None:
-    # computer_use_v2 is a Python tool-registering skill — excluded.
+    # macos_computer is a Python tool-registering skill — excluded.
     names = {s.name for s in pb.discover_playbooks()}
     assert "computer_use" not in names
 

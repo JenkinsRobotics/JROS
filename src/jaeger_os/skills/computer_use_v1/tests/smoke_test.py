@@ -1,4 +1,4 @@
-"""Smoke test for computer_use_v1.
+"""Smoke test for computer_use.
 
 Runs as a subprocess from the skill loader before registration. It loads
 the module standalone and checks it is healthy — it does NOT run any
@@ -42,7 +42,7 @@ def main() -> int:
     assert el["role"] == "AXButton" and el["name"] == "Reload", el
     assert el["x"] == 60 and el["y"] == 40, el  # centre of (10,20)+(100,40)
 
-    print("computer_use_v1 smoke OK")
+    print("computer_use smoke OK")
     return 0
 
 

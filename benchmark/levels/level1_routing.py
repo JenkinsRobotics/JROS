@@ -80,15 +80,46 @@ def run_level(client: Any) -> list[dict[str, Any]]:
     """Run every Level-1 prompt. Each gets a UNIQUE session_key so
     memory/episodic state from one prompt doesn't leak into the next
     (single-turn purity)."""
+    # Tool consolidation since v5: many fine-grained tools merged into
+    # umbrella tools that take an ``action=`` arg. The bench prompt
+    # corpus is unchanged from v5 (so historical baselines stay
+    # comparable), but the scorer now treats the umbrella forms as
+    # equivalent — a model that calls ``memory(action="remember", ...)``
+    # is routing just as correctly as one that called ``remember(...)``
+    # back when ``remember`` was a separate tool.
+    _UMBRELLA_EQUIVALENTS: dict[str, set[str]] = {
+        # ``memory`` umbrella covers the five fine-grained verbs.
+        "remember":      {"memory"},
+        "recall":        {"memory"},
+        "forget":        {"memory"},
+        "list_facts":    {"memory"},
+        "search_memory": {"memory"},
+        # ``run_python`` was renamed to ``execute_code``.
+        "run_python":    {"execute_code"},
+        # ``run_shell`` was renamed to ``terminal``.
+        "run_shell":     {"terminal"},
+        # ``list_skill_dir`` was renamed to ``read_dir`` in some
+        # consolidations — accept both spellings.
+        "list_skill_dir": {"read_dir"},
+    }
+
+    def _routing_match(expected: str | None, called: list[str]) -> bool:
+        """Did the model route to the expected tool, or to its
+        currently-named equivalent?"""
+        if expected is None:
+            return len(called) == 0
+        if expected in called:
+            return True
+        equivalents = _UMBRELLA_EQUIVALENTS.get(expected, set())
+        return any(name in called for name in equivalents)
+
     rows: list[dict[str, Any]] = []
     for idx, (prompt, expected_tool, needles) in enumerate(PROMPTS):
         turn: TurnRow = run_turn(client, prompt, session_key=f"l1_{idx}")
         # Routing OK if expected_tool is None (free-text expected) OR
-        # the expected tool appears anywhere in the call sequence.
-        if expected_tool is None:
-            routing_ok = len(turn.tools_called) == 0
-        else:
-            routing_ok = expected_tool in turn.tools_called
+        # the expected tool (or its umbrella equivalent) appears
+        # anywhere in the call sequence.
+        routing_ok = _routing_match(expected_tool, turn.tools_called)
         answer_ok: bool | None = (
             answer_contains_any(turn.answer, needles) if needles else None
         )

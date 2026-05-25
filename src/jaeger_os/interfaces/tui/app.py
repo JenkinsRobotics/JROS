@@ -570,12 +570,20 @@ class JaegerTUI:
     def _current_ctx_max(self) -> int:
         """Active context-window size for the status-bar gauge denominator.
 
-        Reads ``config.model.ctx`` on every status render so a brain swap
-        is reflected immediately, without waiting for the next turn to
-        fire :meth:`_refresh_context_estimate`. Falls back to the cached
-        ``_context_max`` (or 8192) when the pipeline isn't ready yet."""
+        Prefers the *loaded* model client's actual ``n_ctx`` so the
+        denominator matches what's really allocated — for llama-cpp-python
+        builds that also expose ``native_ctx_max``, we still surface the
+        loaded value because that's the hard ceiling for the running
+        process. Falls back to ``config.model.ctx`` (the wizard value)
+        when the client hasn't recorded it yet, then to the cached
+        ``_context_max`` (or 8192) when the pipeline isn't ready."""
         try:
             from jaeger_os.main import _pipeline
+            client = _pipeline.get("client")
+            loaded = int(getattr(client, "loaded_ctx", 0) or 0)
+            if loaded > 0:
+                self._context_max = loaded
+                return loaded
             cfg = _pipeline.get("config")
             ctx = int(getattr(getattr(cfg, "model", None), "ctx", 0) or 0)
             if ctx > 0:
@@ -585,10 +593,32 @@ class JaegerTUI:
             pass
         return self._context_max or 8192
 
+    def _current_native_ctx_max(self) -> int | None:
+        """The model's *trained* native max context (n_ctx_train for
+        llama-cpp-python). Used by the ``/runtime`` panel to flag a
+        loaded ctx that's well below the model's capability — e.g.
+        Qwen3-Coder-30B-A3B at 262K loaded as 16K. ``None`` means the
+        client doesn't expose it."""
+        try:
+            from jaeger_os.main import _pipeline
+            client = _pipeline.get("client")
+            native = int(getattr(client, "native_ctx_max", 0) or 0)
+            return native or None
+        except Exception:  # noqa: BLE001
+            return None
+
     def _refresh_context_estimate(self) -> None:
         """Update the context-token gauge from the session-history size
         — a chars/4 estimate. Rough, but it moves the bottom-bar gauge
-        as the conversation grows, which is what the gauge is for."""
+        as the conversation grows, which is what the gauge is for.
+
+        Handles two message shapes:
+          • Legacy pydantic-ai: ``msg.parts[].content`` (attribute access).
+          • Phase-9 JaegerAgent: TypedDict with ``msg["content"]`` directly,
+            plus ``msg["tool_calls"]`` JSON for assistant tool-call turns.
+
+        The new path was failing silently (0%) because the iterator only
+        looked at the legacy shape."""
         try:
             from jaeger_os.main import (
                 _DEFAULT_SESSION_KEY, _get_session_history, _pipeline,
@@ -597,8 +627,28 @@ class JaegerTUI:
         except Exception:  # noqa: BLE001
             return
         chars = 0
+        import json as _json
         for msg in history:
-            for part in getattr(msg, "parts", []):
+            # ── Phase-9 dict-shape Message ─────────────────────────
+            if isinstance(msg, dict):
+                content = msg.get("content")
+                if isinstance(content, str):
+                    chars += len(content)
+                elif content is not None:
+                    chars += len(_json.dumps(content, default=str))
+                for tc in (msg.get("tool_calls") or []):
+                    args = tc.get("arguments") if isinstance(tc, dict) else None
+                    if args is not None:
+                        try:
+                            chars += len(_json.dumps(args, default=str))
+                        except (TypeError, ValueError):
+                            chars += len(str(args))
+                    name = tc.get("name") if isinstance(tc, dict) else ""
+                    if name:
+                        chars += len(str(name))
+                continue
+            # ── Legacy pydantic-ai message ─────────────────────────
+            for part in getattr(msg, "parts", []) or []:
                 content = getattr(part, "content", None)
                 if content:
                     chars += len(str(content))

@@ -306,11 +306,29 @@ def _parse_drift_payload(raw: str) -> dict[str, Any] | None:
 def _extract_qwen_tool_calls(text: str) -> list[dict[str, Any]]:
     """Salvage Qwen3-Coder's ``<function=…><parameter=…>`` tool calls.
 
+    Two shapes in the wild, both salvaged here:
+
+      - **Strict (chat-template official):**
+        ``<tool_call><function=X><parameter=Y>v</parameter></function></tool_call>``
+      - **Loose (the model sometimes drops the wrapper):**
+        ``<function=X><parameter=Y>v</parameter></function>``
+        — and sometimes appends a stray ``</tool_call>`` closer with no
+        matching opener.
+
+    The user reported the loose form leaking into chat text on
+    Qwen3-Coder-30B-A3B; the agent never dispatched because the parser
+    only scanned inside ``<tool_call>`` wrappers. Now we accept either.
+
     Returns ``[{name, args}]`` — internal shape conversion lives in the
     public :func:`extract_tool_calls`. Parameter values are kept as raw
     strings; downstream Pydantic validation coerces them.
     """
     out: list[dict[str, Any]] = []
+    seen_spans: set[tuple[int, int]] = set()
+
+    # 1. Strict form first — any <function=> *inside* a <tool_call>
+    #    wrapper. Recording the span lets us skip the same function
+    #    block in the loose-form pass below.
     for tc in _QWEN_TOOLCALL.finditer(text):
         for fn in _QWEN_FUNCTION.finditer(tc.group(1)):
             name = fn.group(1).strip()
@@ -320,6 +338,22 @@ def _extract_qwen_tool_calls(text: str) -> list[dict[str, Any]]:
             for pm in _QWEN_PARAM.finditer(fn.group(2)):
                 args[pm.group(1).strip()] = pm.group(2)
             out.append({"name": name, "args": args})
+        seen_spans.add((tc.start(), tc.end()))
+
+    # 2. Loose form — any <function=> NOT covered by a strict wrapper.
+    #    Iterate top-level and skip matches that fall inside a span we
+    #    already processed.
+    for fn in _QWEN_FUNCTION.finditer(text):
+        start, end = fn.start(), fn.end()
+        if any(s <= start and end <= e for s, e in seen_spans):
+            continue
+        name = fn.group(1).strip()
+        if not name:
+            continue
+        args = {}
+        for pm in _QWEN_PARAM.finditer(fn.group(2)):
+            args[pm.group(1).strip()] = pm.group(2)
+        out.append({"name": name, "args": args})
     return out
 
 

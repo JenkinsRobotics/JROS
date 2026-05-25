@@ -160,11 +160,47 @@ Behavior:
 """
 
 RUNTIME_TOOLSET_SCOPED = """\
-- You see a focused CORE set of tools. If a task needs a capability you
-  don't see a tool for, call `load_toolset` to make the right group
-  visible BEFORE concluding you can't do it — the tools you need are
-  one `load_toolset` call away.
+- You see a focused CORE set of tools. The categories below list every
+  OTHER tool that's installed but not currently in your active set.
+  Two ways to reach them:
+    • `describe_tool("name")` — peek at one tool's exact schema
+      without loading anything. Cheap. Use this when you just need to
+      know "can I call X?" or "what args does X take?"
+    • `load_toolset("category")` — add a whole category to your
+      active set for the rest of the session. Use this when you'll
+      need several tools from the same area.
+  Tools you don't see do NOT mean a capability is missing — it just
+  means it's one `describe_tool` or `load_toolset` call away.
 """
+
+
+def _build_toolset_catalog() -> str:
+    """A compact tool catalog: every loadable toolset → one-line summary.
+
+    Lives at the end of the runtime tail so the model has a stable
+    answer to "what capabilities exist?" without us shipping all 70+
+    tool schemas every turn. Built-in classes appear first; runtime-
+    registered skill toolsets follow. Empty string if no scoping is
+    on (full surface visible — the catalog would just duplicate the
+    schemas the adapter already sends)."""
+    try:
+        from jaeger_os.core.skills.toolsets import (
+            _scoping_enabled, all_toolsets, TOOLSET_SUMMARY,
+        )
+    except Exception:
+        return ""
+    if not _scoping_enabled():
+        return ""
+    rows = all_toolsets()
+    if not rows:
+        return ""
+    # Built-in classes first (stable order), then skill toolsets.
+    builtin = [(k, rows[k]) for k in TOOLSET_SUMMARY if k in rows]
+    skills = [(k, v) for k, v in rows.items() if k not in TOOLSET_SUMMARY]
+    lines = ["TOOL CATALOG — categories you can describe_tool / load_toolset:"]
+    for name, summary in builtin + skills:
+        lines.append(f"  • {name:<14} — {summary}")
+    return "\n".join(lines)
 
 RUNTIME_TOOLSET_UNSCOPED = """\
 - The full built-in tool surface is visible. Pick the specific tool that
@@ -264,4 +300,24 @@ def build_system_prompt(layout: InstanceLayout) -> str:
         parts.append(CORE_PROMPT_PATH.read_text(encoding="utf-8").strip())
 
     parts.append(_runtime_tail())
-    return "\n\n".join(parts)
+
+    # Tool catalog — only appears when scoping is on; tells the model
+    # which categories exist beyond its current visible set so it can
+    # describe_tool / load_toolset deliberately.
+    catalog = _build_toolset_catalog()
+    if catalog:
+        parts.append(catalog)
+
+    assembled = "\n\n".join(parts)
+
+    # Three Laws — prepended as the very first block in the system
+    # prompt so the model sees the safety frame before identity, rules,
+    # tool instructions, or anything else. ``with_three_laws`` is
+    # idempotent, so a caller that has already wrapped its own prompt
+    # (e.g. a delegated sub-agent) doesn't double the block.
+    try:
+        from jaeger_os.core.safety.safety_rules import with_three_laws
+        assembled = with_three_laws(assembled)
+    except Exception:  # noqa: BLE001 — never break boot over a safety wrap
+        pass
+    return assembled

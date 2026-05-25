@@ -34,7 +34,7 @@ no Docker, no special OS versions, no dependency hell. It is `pip install`
 simple; a virtual environment is enough.
 
 - 🧠 **Local-first** — runs entirely on-device on an in-process LLM. No cloud account required.
-- 🛠️ **54 built-in tools** — files (read / write / edit / search), memory, web, code execution, scheduling, background processes, delegation.
+- 🛠️ **~70 built-in tools across 11 toolset categories** — files (read / write / edit / search), memory, web, code execution, scheduling, background processes, kanban, delegation. A 20-tool CORE is always visible; the rest are reachable via `describe_tool` / `load_toolset` when scoping is enabled.
 - 📋 **Kanban task board** — the agent plans multi-step work as cards; Deep Think jobs live on the same board. `/board` to view it.
 - 📚 **Self-authored skills** — the agent researches, writes, smoke-tests, benchmarks, and versions its own skills.
 - 🖥️ **Computer use** — the flagship skill: drive any macOS app through the accessibility tree (see the screen, click, type, work menus).
@@ -44,8 +44,12 @@ simple; a virtual environment is enough.
 - 🤖 **Embodiment-ready** — the body contract and the capability-gated skill loader are already in place for hardware.
 
 > **Status — `0.1.0` alpha.** The agent layer is feature-complete and
-> benchmarked. The hardware-node layer (transport, motors, LEDs) is the
-> roadmap.
+> benchmarked (L1 routing **97.1%** on the default Gemma 4 26B-A4B —
+> see [`benchmark/levels/history/BENCHMARK_v0.1.0_baseline.md`](benchmark/levels/history/BENCHMARK_v0.1.0_baseline.md)).
+> A persistent daemon scaffold + macOS tray ship with this release; the
+> agent-into-daemon move is the next track ([docs/daemon_split_plan.md](docs/daemon_split_plan.md)).
+> Next major beat: **hardware-node layer** (transport, motors, LEDs) on
+> JP01.
 
 ---
 

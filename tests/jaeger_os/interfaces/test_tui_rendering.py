@@ -179,3 +179,95 @@ def test_prompt_message_is_just_the_caret_when_bar_hidden() -> None:
     tui._statusbar_on = False
     frags = tui._prompt_message()
     assert frags == [(f"fg:{ACCENT_PTK} bold", "❯ ")]
+
+
+# ── ctx gauge: bugfix coverage ────────────────────────────────────────
+
+
+def test_ctx_max_prefers_client_loaded_ctx_over_config(monkeypatch) -> None:
+    """Status gauge denominator must come from the LOADED model's
+    actual ctx (``client.loaded_ctx``), not just the config value.
+    Otherwise a `/switch-model` to a fatter ctx isn't reflected until
+    the config file is edited — exactly the wrong direction."""
+    import jaeger_os.main as main
+
+    class _StubClient:
+        loaded_ctx = 32_768
+        native_ctx_max = 262_144
+
+    class _StubCfg:
+        class model:
+            ctx = 8192   # what the wizard wrote — should LOSE to the live client
+
+    monkeypatch.setitem(main._pipeline, "client", _StubClient())
+    monkeypatch.setitem(main._pipeline, "config", _StubCfg())
+
+    tui = _tui()
+    assert tui._current_ctx_max() == 32_768
+    assert tui._current_native_ctx_max() == 262_144
+
+
+def test_ctx_max_falls_back_to_config_when_client_lacks_loaded_ctx(monkeypatch) -> None:
+    """Older clients (cloud adapters, MLX) don't expose ``loaded_ctx``.
+    We must still produce a sensible denominator from config."""
+    import jaeger_os.main as main
+
+    class _OldClient:
+        pass  # no loaded_ctx attribute
+
+    class _StubCfg:
+        class model:
+            ctx = 16_384
+
+    monkeypatch.setitem(main._pipeline, "client", _OldClient())
+    monkeypatch.setitem(main._pipeline, "config", _StubCfg())
+
+    tui = _tui()
+    assert tui._current_ctx_max() == 16_384
+
+
+def test_context_estimate_counts_phase9_dict_messages(monkeypatch) -> None:
+    """The Phase-9 agent loop produces TypedDict messages with
+    ``msg['content']`` directly — not the legacy pydantic-ai
+    ``msg.parts[].content`` shape. The estimator was iterating only the
+    legacy shape, so the new-loop sessions always read 0%. Pin both
+    shapes count."""
+    import jaeger_os.main as main
+
+    fake_history = [
+        {"role": "user", "content": "x" * 400},
+        {"role": "assistant", "content": "y" * 800,
+         "tool_calls": [{"id": "c1", "name": "get_time",
+                         "arguments": {"timezone": "UTC"}}]},
+        {"role": "tool", "tool_call_id": "c1",
+         "name": "get_time", "content": "noon"},
+    ]
+    monkeypatch.setattr(main, "_get_session_history",
+                        lambda key: fake_history)
+
+    tui = _tui()
+    tui._refresh_context_estimate()
+    # ~ (400 + 800 + 4 + 20 + 8 + 4) / 4 — exact arithmetic isn't the
+    # point; we just need it to be non-zero for the dict shape.
+    assert tui._context_tokens > 100, (
+        "Phase-9 dict messages produced 0 tokens — the estimator "
+        "isn't counting the new shape"
+    )
+
+
+def test_context_estimate_still_counts_legacy_parts_shape(monkeypatch) -> None:
+    """Backward-compat: the same estimator must still handle the
+    pydantic-ai ``msg.parts[].content`` shape so a hybrid session
+    (early turns on legacy, later on Phase-9) still gauges correctly."""
+    import jaeger_os.main as main
+    from types import SimpleNamespace
+
+    legacy_msg = SimpleNamespace(parts=[
+        SimpleNamespace(content="hello " * 200),
+        SimpleNamespace(content="world " * 100),
+    ])
+    monkeypatch.setattr(main, "_get_session_history",
+                        lambda key: [legacy_msg])
+    tui = _tui()
+    tui._refresh_context_estimate()
+    assert tui._context_tokens > 100

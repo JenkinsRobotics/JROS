@@ -126,3 +126,8 @@ jaeger_os = [
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# Mark used by daemon end-to-end tests that fork real subprocesses.
+# Run with ``-m 'not slow'`` to skip them while iterating.
+markers = [
+    "slow: tests that fork real processes or do real network I/O (a few seconds each).",
+]

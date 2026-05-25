@@ -34,6 +34,7 @@ from jaeger_os.agent.loop.loop_backstop import (
 from jaeger_os.agent.schemas.message_types import Message, ToolCall
 from jaeger_os.agent.schemas.tool_registry import get_tool, get_tools, has_tool
 from jaeger_os.agent.schemas.tool_schema import ToolDef
+from jaeger_os.agent.util.context_guard import ContextGuard, ContextOverflow
 
 
 # Type alias for the skip-final finalizer. Takes the tool name, the
@@ -61,6 +62,7 @@ class JaegerAgent:
         callbacks: AgentCallbacks | None = None,
         skip_final_tools: set[str] | frozenset[str] | None = None,
         skip_final_finalizer: SkipFinalFinalizer | None = None,
+        context_guard: "ContextGuard | None" = None,
     ) -> None:
         self.primary_adapter = adapter
         self.fallback_adapters: list[ProviderAdapter] = list(fallback_adapters or [])
@@ -72,14 +74,22 @@ class JaegerAgent:
         # Toolsets are the Hermes-style pattern that keeps per-turn
         # context tight: only the relevant ~10 tools land in the
         # model's schema, not all 80.
+        # ``_all_tools`` holds the FULL registered set the agent can
+        # dispatch + validate against. ``tools`` (the property below)
+        # filters this per access through :func:`tool_visible` so a
+        # mid-session ``load_toolset`` call expands what the model sees
+        # on the very next turn — without rebuilding the agent.
         if tools is not None:
-            self.tools: list[ToolDef] = list(tools)
+            self._all_tools: list[ToolDef] = list(tools)
+            self._tools_filter_locked = True   # explicit list = caller knows best
         elif toolsets is not None:
             from jaeger_os.agent.schemas.toolsets import resolve_toolsets
             wanted = resolve_toolsets(set(toolsets))
-            self.tools = [t for t in get_tools() if t.name in wanted]
+            self._all_tools = [t for t in get_tools() if t.name in wanted]
+            self._tools_filter_locked = False
         else:
-            self.tools = get_tools()
+            self._all_tools = get_tools()
+            self._tools_filter_locked = False
         # Record the originally-requested toolset names for diagnostics
         # (the ``/runtime`` panel surfaces this); not used by the loop.
         self.toolsets: frozenset[str] = frozenset(toolsets or ())
@@ -96,6 +106,12 @@ class JaegerAgent:
         self.skip_final_finalizer: SkipFinalFinalizer = (
             skip_final_finalizer or _default_skip_final_finalizer
         )
+
+        # Pre-flight context guardrail. The loop hands every prompt to
+        # ``guard.trim_to_fit`` before formatting, so an overflow is
+        # caught here rather than as a hard error from the server. A
+        # None default disables the guard (legacy callers / tests).
+        self.context_guard: ContextGuard | None = context_guard
 
         # Running state — fresh per agent, never reused across instances.
         self.messages: list[Message] = []
@@ -122,6 +138,35 @@ class JaegerAgent:
         # status bar and distinguish fast-finalised turns from full
         # multi-iteration turns.
         self.last_skip_final: bool = False
+
+    # ── tool visibility ─────────────────────────────────────────────
+
+    @property
+    def tools(self) -> list[ToolDef]:
+        """The tools visible to the model THIS turn.
+
+        Recomputed on every access so a mid-session ``load_toolset``
+        call (which mutates the shared visibility state in
+        :mod:`jaeger_os.core.skills.toolsets`) takes effect on the
+        next turn without rebuilding the agent. The full set the agent
+        can dispatch + validate against lives in ``self._all_tools`` —
+        ``describe_tool`` reads from there so the model can peek at a
+        hidden tool's schema without loading the whole category."""
+        if self._tools_filter_locked:
+            # Caller passed ``tools=[...]`` explicitly — honour it.
+            return list(self._all_tools)
+        try:
+            from jaeger_os.core.skills.toolsets import tool_visible
+        except Exception:  # noqa: BLE001
+            return list(self._all_tools)
+        return [t for t in self._all_tools if tool_visible(t.name)]
+
+    @property
+    def all_tools(self) -> list[ToolDef]:
+        """Every tool the agent can dispatch — including ones currently
+        hidden from the model. Used by ``describe_tool`` + by the
+        loop-backstop's "did you mean…?" suggestions."""
+        return list(self._all_tools)
 
     # ── public surface ──────────────────────────────────────────────
 
@@ -152,6 +197,17 @@ class JaegerAgent:
         self.last_iteration_count = 0
         self.last_skip_final = False
 
+        # Per-turn dedupe trackers in tool modules (file_read's
+        # "unchanged since last read" suppression in particular). The
+        # legacy pydantic-ai loop reset this implicitly via its own
+        # turn lifecycle; Phase-9 has to do it here or a *legitimate*
+        # next-turn read of the same file returns an empty-stub result.
+        try:
+            from jaeger_os.core.tools.files import reset_read_tracker
+            reset_read_tracker()
+        except Exception:  # noqa: BLE001 — never break a turn over a reset
+            pass
+
         self.messages.append({"role": "user", "content": user_message})
 
         tool_calls_made = 0
@@ -159,7 +215,7 @@ class JaegerAgent:
             self.last_iteration_count = iteration
 
             if self._interrupt_event.is_set():
-                self.last_halt_reason = "the turn was interrupted"
+                self.last_halt_reason = "interrupted"
                 break
 
             # 1-3: format → call → parse, with Phase-8 retry on length
@@ -186,10 +242,20 @@ class JaegerAgent:
             # second model call. Subsequent iterations don't qualify —
             # by then the model is mid-conversation and needs the full
             # loop.
+            #
+            # Additionally suppress skip-final when the user message
+            # has multi-step intent ("and then", "first … then",
+            # numbered lists, etc.) — those tasks legitimately need
+            # the full loop even if the model's *first* call happens
+            # to be a deterministic skip-final tool. Without this
+            # check, "what's the time, then look up the weather" was
+            # finalising on ``get_time`` and silently dropping the
+            # weather step.
             if (
                 iteration == 1
                 and len(tool_calls) == 1
                 and tool_calls[0].get("name", "") in self.skip_final_tools
+                and not _looks_multistep(user_message)
             ):
                 tc = tool_calls[0]
                 tool_calls_made += 1
@@ -206,7 +272,7 @@ class JaegerAgent:
             for tc in tool_calls:
                 tool_calls_made += 1
                 if self._interrupt_event.is_set():
-                    self.last_halt_reason = "the turn was interrupted"
+                    self.last_halt_reason = "interrupted"
                     return self._final_text_or_halt()
 
                 self._dispatch_one_tool(tc)
@@ -397,6 +463,26 @@ class JaegerAgent:
         adapter exception — the fallback chain gets a chance.
         """
         adapters = [self.primary_adapter, *self.fallback_adapters]
+        # Pre-flight context guard. Trim oldest history until the
+        # prompt fits the server's ctx window; if even max trimming
+        # can't fit, the guard raises ``ContextOverflow`` and we
+        # surface that to the caller without hitting the model.
+        if self.context_guard is not None:
+            try:
+                trim = self.context_guard.trim_to_fit(
+                    self.messages,
+                    system_prompt=self.system_prompt,
+                    tools=self.tools,
+                )
+            except ContextOverflow:
+                raise
+            if trim.dropped_count > 0:
+                self.callbacks.on_thinking(
+                    f"[context-guard] trimmed {trim.dropped_count} old "
+                    f"message(s) to fit ctx budget"
+                )
+                self.messages = trim.messages
+
         last_exc: Exception | None = None
         for adapter in adapters:
             try:
@@ -412,8 +498,13 @@ class JaegerAgent:
                 return adapter.parse_response(raw)
             except AgentInterrupted:
                 # Interrupt propagates — handled by ``run_turn`` via the
-                # event check at the top of the next iteration.
+                # event check at the top of the next iteration. Set the
+                # halt reason here so observers (TUI status, latency log,
+                # voice loop's "cancel actually took effect" check) can
+                # distinguish a user cancel from a clean finish even
+                # though run_turn returns whatever text was assembled.
                 self._interrupt_event.set()
+                self.last_halt_reason = "interrupted"
                 return {"role": "assistant", "content": None}
             except Exception as exc:  # noqa: BLE001 — adapter chain absorbs
                 last_exc = exc
@@ -443,6 +534,25 @@ class JaegerAgent:
         args = tc.get("arguments") or {}
         call_id = tc.get("id") or ""
 
+        # Normalise drifted tool names ONCE at the loop boundary — case
+        # variants, separator swaps, ``_tool`` suffixes, ``CamelCase``.
+        # No fuzzy matching: an unrecognised name returns unchanged and
+        # surfaces a clean "unknown tool" error so the model can
+        # self-correct, rather than silently dispatching a guess.
+        if name and not has_tool(name):
+            try:
+                from jaeger_os.agent.parsing.drift_parser import normalize_tool_name
+                valid = frozenset(t.name for t in self._all_tools)
+                normalised = normalize_tool_name(name, valid)
+                if normalised != name and has_tool(normalised):
+                    name = normalised
+                    # Patch the tool_call in place so the loop's bookkeeping
+                    # (backstop signatures, post-dispatch hook) sees the
+                    # corrected name too.
+                    tc["name"] = name  # type: ignore[typeddict-item]
+            except Exception:  # noqa: BLE001
+                pass
+
         # Backstop bookkeeping — counted *before* dispatch so a tight
         # loop trips the ceiling immediately rather than after one
         # extra wasted call.
@@ -459,14 +569,60 @@ class JaegerAgent:
                 content: Any = {
                     "ok": False,
                     "error": f"unknown tool {name!r}",
+                    "error_type": "unknown_tool",
+                    "retryable": False,
                 }
             else:
                 content = get_tool(name).dispatch(args)
         except Exception as exc:  # noqa: BLE001 — surfaced to the model
+            # Tag safety/permission failures distinctly so the model
+            # (and the latency log) can tell "retry with different
+            # args" from "user said no, don't try again". The legacy
+            # generic-catch lumped them together and the model would
+            # cheerfully retry a denied PRIVILEGED call.
+            err_type = "tool_error"
+            retryable = True
+            required_tier: str | None = None
+            try:
+                from jaeger_os.core.safety.permissions import (
+                    PermissionDenied,
+                    ConfirmationRequired,
+                    HumanOverrideRequired,
+                )
+                if isinstance(exc, (PermissionDenied,
+                                    ConfirmationRequired,
+                                    HumanOverrideRequired)):
+                    err_type = "permission_denied"
+                    retryable = False
+                    required_tier = getattr(exc, "tier", None) or getattr(
+                        exc, "required_tier", None,
+                    )
+            except Exception:  # noqa: BLE001 — never break the loop over typing
+                pass
+            # Hardline guard refusals (run_shell catastrophic-command
+            # blocklist) come back as a typed dict, not an exception;
+            # they don't land here. But if a future refusal layer
+            # raises, treat it the same as permission_denied.
             content = {
                 "ok": False,
                 "error": f"{type(exc).__name__}: {exc}",
+                "error_type": err_type,
+                "retryable": retryable,
             }
+            if required_tier:
+                content["required_tier"] = str(required_tier)
+
+        # Per-tool-result oversize guard. A single ``run_shell`` dump
+        # or screenshot can dominate the next turn's context; cap it
+        # here so the history-trim pass downstream isn't fighting a
+        # losing battle. Runs before the user-provided after_tool_call
+        # hook so an external budget (if any) sees the trimmed shape.
+        if self.context_guard is not None:
+            content, truncated = self.context_guard.truncate_oversized_result(content)
+            if truncated:
+                self.callbacks.on_thinking(
+                    f"[context-guard] truncated oversized {name!r} result"
+                )
 
         # Post-dispatch hook — budget can substitute a pointer if the
         # payload is oversized. ``None`` means "leave content alone".
@@ -535,6 +691,43 @@ class JaegerAgent:
             if msg.get("role") == "assistant" and msg.get("content"):
                 return msg["content"]  # type: ignore[return-value]
         return f"[halted: {self.last_halt_reason or 'no response'}]"
+
+
+_MULTISTEP_PATTERNS = (
+    " and then ", " then ", " after that", " next, ",
+    " followed by ", " ; ",
+    "step 1", "step 2", "step 3",
+    "first,", "first ,", "second,", "third,",
+    "finally,",
+)
+_MULTISTEP_RE = None  # built lazily
+
+
+def _looks_multistep(user_message: str) -> bool:
+    """Heuristic: does the user's message ask for more than one
+    deliberate action?
+
+    Used to suppress :attr:`JaegerAgent.skip_final_tools` short-circuit
+    on prompts like *"what's the time, then look up the weather"*. The
+    skip-final path can drop subsequent steps because it ends the turn
+    after the first deterministic tool call — fine for one-shot
+    questions, wrong for chained tasks.
+
+    Conservative on purpose: a false POSITIVE (declaring single-step
+    work multi-step) just falls back to the full loop — one extra
+    model call. A false NEGATIVE silently drops user work. So we err
+    toward calling it multi-step when in doubt.
+    """
+    if not user_message:
+        return False
+    text = " " + user_message.strip().lower() + " "
+    if any(p in text for p in _MULTISTEP_PATTERNS):
+        return True
+    # Numbered list — "1. … 2. …" — also signals multi-step.
+    import re
+    if re.search(r"\b1[.)]\s.+\b2[.)]\s", text):
+        return True
+    return False
 
 
 def _stringify(content: Any) -> str:

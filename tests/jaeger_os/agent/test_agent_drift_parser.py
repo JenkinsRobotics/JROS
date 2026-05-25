@@ -84,6 +84,60 @@ def test_extract_qwen_xml_form():
     assert calls[0]["id"].startswith("qwen_")
 
 
+def test_extract_qwen_loose_function_form_no_tool_call_wrapper():
+    """Qwen3-Coder sometimes emits ``<function=name>...</function>`` WITHOUT
+    the outer ``<tool_call>`` wrapper — a stray ``</tool_call>`` closer
+    with no matching opener can even tag along. The parser must still
+    dispatch the call instead of letting the XML leak into the answer
+    text (which is exactly what the operator reported on
+    Qwen3-Coder-30B-A3B-Instruct-Q4_K_M)."""
+    text = (
+        "I'll help. Let me check the system.\n\n"
+        "<function=system_status>\n"
+        "</function>\n"
+        "</tool_call>\n"
+    )
+    calls = extract_tool_calls(text)
+    assert len(calls) == 1
+    assert calls[0]["name"] == "system_status"
+    # No <parameter=> blocks → empty args, which is correct for
+    # ``system_status`` (it takes none).
+    assert calls[0]["arguments"] == {}
+    assert calls[0]["id"].startswith("qwen_")
+
+
+def test_extract_qwen_loose_function_form_with_parameters():
+    """The same loose form but with parameter blocks — make sure args
+    still flow through. Mirrors the strict-form test for parity."""
+    text = (
+        "<function=web_search>"
+        "<parameter=query>weather in tokyo</parameter>"
+        "<parameter=max_results>3</parameter>"
+        "</function>"
+    )
+    calls = extract_tool_calls(text)
+    assert len(calls) == 1
+    assert calls[0]["name"] == "web_search"
+    assert calls[0]["arguments"] == {
+        "query": "weather in tokyo",
+        "max_results": "3",
+    }
+
+
+def test_loose_and_strict_forms_do_not_double_count():
+    """If the model emits both — a strict ``<tool_call>...</tool_call>``
+    AND another loose ``<function=...>`` outside it — they should be
+    extracted as two distinct calls, NOT the strict one twice."""
+    text = (
+        "<tool_call><function=a></function></tool_call>"
+        " interlude "
+        "<function=b><parameter=x>1</parameter></function>"
+    )
+    calls = extract_tool_calls(text)
+    names = [c["name"] for c in calls]
+    assert names == ["a", "b"]
+
+
 def test_extract_multiple_calls_in_one_response():
     text = (
         '<tool_call>{"name": "a", "arguments": {}}</tool_call>'

@@ -132,6 +132,7 @@ def build_jaeger_agent(
     skip_final_tools: set[str] | frozenset[str] | None = None,
     callbacks: AgentCallbacks | None = None,
     max_iterations: int = 24,
+    ctx_window: int | None = None,
 ) -> JaegerAgent:
     """Construct a :class:`JaegerAgent` wired against the provided
     JROS client. The skip-final finalizer is the legacy bounded-chat
@@ -145,8 +146,17 @@ def build_jaeger_agent(
     is filtered to just those Hermes-style groups. When ``None``
     (default) every registered tool is exposed — useful for the
     transition period but burns ~10K tokens of schema per turn.
+
+    ``ctx_window`` plumbs ``config.model.ctx`` into the agent's
+    pre-flight :class:`ContextGuard`. When ``None`` the caller wants
+    the guard disabled (legacy bench paths); otherwise a
+    :class:`ContextGuard` with the matching budget is installed and
+    every turn's prompt is trimmed/refused before it hits the model.
     """
+    from jaeger_os.agent.util.context_guard import ContextBudget, ContextGuard
+
     adapter = _adapter_for_client(client, system_prompt=system_prompt)
+    guard = ContextGuard(ContextBudget(ctx_window=ctx_window)) if ctx_window else None
     return JaegerAgent(
         adapter=adapter,
         system_prompt=system_prompt,
@@ -155,6 +165,7 @@ def build_jaeger_agent(
         skip_final_finalizer=_make_fast_finalize_finalizer(client),
         callbacks=callbacks or AgentCallbacks(),
         max_iterations=max_iterations,
+        context_guard=guard,
     )
 
 
@@ -213,9 +224,34 @@ def drive_one_turn(
       • ``new_messages``   — the ``Message`` slice produced this turn
         (for history extension)
     """
+    from jaeger_os.agent.util.context_guard import ContextOverflow
+    from jaeger_os.core.runtime.cloud_errors import friendly_overflow_text
+
     pre_len = len(agent.messages)
     started = time.perf_counter()
-    answer = agent.run_turn(user_text)
+    try:
+        answer = agent.run_turn(user_text)
+    except ContextOverflow as overflow:
+        # Pre-flight refusal — the prompt couldn't be trimmed enough to
+        # fit. Surface an actionable message and end the turn cleanly
+        # so the TUI doesn't see a backtrace.
+        elapsed = time.perf_counter() - started
+        return {
+            "answer": friendly_overflow_text(
+                estimated=overflow.estimated,
+                budget=overflow.budget,
+                system_prompt_tokens=overflow.system_prompt_tokens,
+                tools_tokens=overflow.tools_tokens,
+                latest_user_tokens=overflow.latest_user_tokens,
+            ),
+            "tool_activity": [],
+            "first_decision": None,
+            "elapsed_s": elapsed,
+            "skipped": False,
+            "halt_reason": "context_overflow",
+            "iterations": 0,
+            "new_messages": [],
+        }
     elapsed = time.perf_counter() - started
 
     new_messages = agent.messages[pre_len:]

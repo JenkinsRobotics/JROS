@@ -55,15 +55,51 @@ def test_no_soul_md_still_builds_a_prompt(tmp_path) -> None:
     assert "Mandatory tool rules" in sp
 
 
-def test_prompt_matches_default_unscoped_tool_surface(tmp_path, monkeypatch) -> None:
+def test_prompt_defaults_to_unscoped_tool_surface(tmp_path, monkeypatch) -> None:
+    """Default is UNSCOPED — full tool surface visible to the model.
+
+    History: we briefly flipped this to SCOPED-by-default after adding
+    ``describe_tool`` + the catalog, but a/b benching against v5 showed
+    Gemma 4 26B-A4B routing accuracy dropped from 100% to 67.6% under
+    the new default. Reverted to unscoped (opt-in via env) until
+    auto-load-on-intent lands. See docs/lean_surface.md and the
+    code_review_2026_05_24 disposition doc for context."""
     monkeypatch.delenv("JAEGER_TOOLSET_SCOPING", raising=False)
+    monkeypatch.delenv("JAEGER_FULL_TOOLS", raising=False)
     sp = build_system_prompt(InstanceLayout(root=tmp_path))
-    assert "The full built-in tool surface is visible" in sp
-    assert "You see a focused CORE set of tools" not in sp
+    assert "full built-in tool surface is visible" in sp
+    assert "focused CORE set of tools" not in sp
+    assert "TOOL CATALOG" not in sp
 
 
-def test_prompt_mentions_load_toolset_when_scoping_enabled(tmp_path, monkeypatch) -> None:
+def test_prompt_scoped_when_explicit_env(tmp_path, monkeypatch) -> None:
+    """``JAEGER_TOOLSET_SCOPING=1`` opts into the lean surface — the
+    model sees CORE + a one-line-per-category catalog, can peek at any
+    schema via ``describe_tool``, and widen via ``load_toolset``.
+    Useful for context-tight runs; not the default while routing
+    regressions are open."""
+    monkeypatch.setenv("JAEGER_TOOLSET_SCOPING", "1")
+    monkeypatch.delenv("JAEGER_FULL_TOOLS", raising=False)
+    sp = build_system_prompt(InstanceLayout(root=tmp_path))
+    assert "focused CORE set of tools" in sp
+    assert "TOOL CATALOG" in sp
+    assert "describe_tool" in sp
+
+
+def test_prompt_full_tools_env_overrides_explicit_scoping(tmp_path, monkeypatch) -> None:
+    """``JAEGER_FULL_TOOLS=1`` is the kill-switch — wins even when
+    ``JAEGER_TOOLSET_SCOPING=1`` asks for the lean surface. Used by
+    bench harnesses that want guaranteed parity across env."""
+    monkeypatch.setenv("JAEGER_FULL_TOOLS", "1")
     monkeypatch.setenv("JAEGER_TOOLSET_SCOPING", "1")
     sp = build_system_prompt(InstanceLayout(root=tmp_path))
-    assert "You see a focused CORE set of tools" in sp
-    assert "call `load_toolset`" in sp
+    assert "full built-in tool surface is visible" in sp
+    assert "TOOL CATALOG" not in sp
+
+
+def test_prompt_unscoped_when_toolset_scoping_env_disabled(tmp_path, monkeypatch) -> None:
+    """Explicit ``JAEGER_TOOLSET_SCOPING=0`` is the older way to opt out."""
+    monkeypatch.setenv("JAEGER_TOOLSET_SCOPING", "0")
+    monkeypatch.delenv("JAEGER_FULL_TOOLS", raising=False)
+    sp = build_system_prompt(InstanceLayout(root=tmp_path))
+    assert "full built-in tool surface is visible" in sp

@@ -1,6 +1,6 @@
 # Jaeger-OS — Pipeline Runtime-Verification Status
 
-**Date:** 2026-05-22
+**Date:** 2026-05-24 *(baselined for `0.1.0`)*
 **Why this doc:** the two hermes-parity audits
 (`hermes_tool_skill_audit.md`, `hermes_internals_audit.md`) compare
 *features and architecture* — "does JROS have a 6-tier permission
@@ -46,5 +46,51 @@ has actually been exercised and works.
 
 - Main-loop R4–R8 rebuild — internals **A1** (context compression) + **A10** (memory pipeline) + tool/skill **#5** (result formatter) + **#11** (result budget).
 - tool/skill **#7** (MCP OAuth), **#10** (tool registry).
+- **Daemon split — Phase 2** (move agent into daemon). Phase 1 scaffold (protocol, server, client, lifecycle, tray) shipped in 0.1.0. See `docs/daemon_split_plan.md`.
+- **Tool guardrail controller** (review finding #4 — deferred). Loop-backstop still catches the worst case.
+- **Parallel tool execution** (review finding #5 — deferred). Read-only / path-disjoint batches.
+- **L2 / L3 / L4 bench coverage** with the corrected umbrella-aware scorer. L1 is baselined; deeper levels need a re-run after the scorer's `_UMBRELLA_EQUIVALENTS` map is applied to L2/L3/L4 modules.
 
-**Test suite: 533 passing.**
+---
+
+## 0.1.0 ship-state — what landed this cycle
+
+**Tests:** 997 passing. (Was ~533 at the prior STATUS snapshot.)
+
+**Major adds:**
+- **Daemon scaffold + macOS tray** (`src/jaeger_os/daemon/`, `src/jaeger_os/interfaces/tray/`). Lifecycle CLI: `jaeger start | stop | status | restart`. Phase 1.6 tray icon talks to the daemon via the same socket. **Agent still lives in the TUI process** — Phase 2 of the daemon split moves it.
+- **Pre-flight context guardrail** (`src/jaeger_os/agent/util/context_guard.py`). Prevents the "Requested tokens exceed context window" hard fail by trimming history before the call; raises typed `ContextOverflow` when even max trim won't fit. Per-tool-result truncator caps oversized payloads. Group-aware trim preserves tool-call/result pairs.
+- **Lean tool surface** (`describe_tool`, catalog injection in system prompt) — **opt-in via `JAEGER_TOOLSET_SCOPING=1`**, default OFF per the 0.1.0 bench data. Infrastructure ready, default revert documented in `docs/lean_surface.md`.
+- **Kanban grid view** for `/board` — Rich `Columns` + `Panel`, 5-column layout. Replaces the prior vertical list.
+- **`remote_terminal` SSH tool** — Tier-4 wrapper around `ssh user@host -- <cmd>` with `BatchMode=yes` + `ConnectTimeout=10` pinned. Inbound covered by plain sshd + tmux (see `docs/remote_access.md`).
+
+**Bug fixes from the 2026-05-24 code review** (see `docs/code_review_2026_05_24.md`):
+- `reset_read_tracker()` called at the top of every `run_turn` (was leaking across turns).
+- `AgentInterrupted` now sets `last_halt_reason="interrupted"` at both interrupt sites (was empty assistant message with no halt_reason).
+- Tool-name normalization runs at the loop boundary against the registered set (was raw drift names landing in dispatch).
+- Skip-final short-circuit suppressed when the user prompt has multi-step intent (was prematurely ending chained tasks).
+- Permission / safety errors now tag `error_type` + `retryable` + (optional) `required_tier` (was generic stringified exception).
+- Three Laws block wraps every system prompt via `with_three_laws()`.
+- Tool-time and loop-time captured in `LatencyReport` (was both 0.0).
+
+**TUI status-bar fixes:**
+- Loaded ctx (from `client.loaded_ctx`) shown instead of just config ctx.
+- `/runtime` surfaces "model trained for up to N tokens — bump config.model.ctx" when loaded < native.
+- 0%-gauge bug fixed: estimator now walks both the Phase-9 dict message shape AND the legacy pydantic-ai `msg.parts[].content`.
+
+**Drift parser:**
+- Loose `<function=…>` form (Qwen3-Coder emits this without the `<tool_call>` wrapper) is now salvaged. Was leaking tool-call XML into chat text.
+
+**Bench infrastructure:**
+- `benchmark/run_model_sweep.py` drives multi-model comparisons; YAML-aware config-swap; multi-level row parser.
+- Scorer in `level1_routing.py` accepts umbrella forms (`memory` for the five fine-grained memory verbs, `execute_code` for `run_python`).
+- L1 baseline in `benchmark/levels/history/BENCHMARK_v0.1.0_baseline.md`.
+
+**Model recommendation (from `BENCHMARK_v0.1.0_baseline.md`):**
+
+| Use case | Model |
+|---|---|
+| **Default / voice-interactive** | gemma-4-E4B-it-Q4_K_M (97.1% routing, 1.6s p50, 5.3 GB) |
+| Conservative default | gemma-4-26B-A4B-it-Q4_K_M (97.1%, 3.0s p50, 15.7 GB) — current JROS default |
+| Deep Think coder | Qwen3-Coder-30B-A3B (94.1%, 3.2s p50, 18.6 GB) — already the configured coder |
+| Smallest viable | gemma-4-E2B-it-Q4_K_M (94.1%, 1.2s p50, 3.4 GB) |

@@ -1224,12 +1224,6 @@ def _board_for_ctx(ctx: SlashContext):
     return board_for_layout(layout)
 
 
-_BOARD_COLUMN_STYLE = {
-    "backlog": "dim", "ready": "cyan", "in_progress": "bold yellow",
-    "blocked": "red", "done": "green",
-}
-
-
 def _board(ctx: SlashContext, args: str) -> SlashResult:
     """``/board``                  show the kanban board
        ``/board add <title>``      add a card (straight to ready)
@@ -1292,24 +1286,13 @@ def _board(ctx: SlashContext, args: str) -> SlashResult:
                 ctx.console.print(f"[green]Moved[/] {rest} → {col}")
         return SlashResult()
 
-    # ── show the board (no subcommand) ──
-    summary = board.summary()
-    if not summary.get("total"):
-        ctx.console.print("[dim]The board is empty. "
-                          "[bold]/board add <title>[/] to start.[/]")
+    # ── show the board (no subcommand) — five-column grid ──
+    from jaeger_os.interfaces.tui.board_view import render_board, render_board_empty_hint
+    cards = board.list()
+    if not cards:
+        ctx.console.print(render_board_empty_hint())
         return SlashResult()
-    for col in COLUMNS:
-        cards = board.list(column=col)
-        style = _BOARD_COLUMN_STYLE.get(col, "white")
-        header = Text()
-        header.append(f"▼ {col}", style=f"bold {style}")
-        header.append(f"  ({len(cards)})", style="dim")
-        ctx.console.print(header)
-        for c in cards:
-            tag = f" [dim]{','.join(c.tags)}[/]" if c.tags else ""
-            ctx.console.print(f"  [dim]{c.id}[/]  {c.title}{tag}")
-        if not cards:
-            ctx.console.print("  [dim]—[/]")
+    ctx.console.print(render_board(cards))
     ctx.console.print(
         "[dim]/board add · /board approve <id> · /board done <id> · "
         "/board move <id> <col>[/]"
@@ -1747,6 +1730,21 @@ def _usage(ctx: SlashContext, args: str) -> SlashResult:  # noqa: ARG001
     ctx.console.print(
         f"  context      ~{tok:,} / {mx:,} tokens ({pct}%) "
         "[dim](estimate)[/]")
+    # If the loaded ctx is well below the model's *native* trained
+    # max, surface it so the operator knows headroom is available.
+    # llama-cpp-python: ``client.native_ctx_max == n_ctx_train()``.
+    try:
+        from jaeger_os.main import _pipeline as _pl
+        _client = _pl.get("client")
+        native = int(getattr(_client, "native_ctx_max", 0) or 0)
+        if mx and native and native > mx * 2:
+            ctx.console.print(
+                f"  [dim]model trained for up to {native:,} tokens — "
+                f"raise config.model.ctx (currently {mx:,}) and "
+                f"reload to use the headroom.[/]"
+            )
+    except Exception:  # noqa: BLE001
+        pass
     # Tool usage telemetry — most-called tools, with failure counts.
     try:
         from jaeger_os.core.runtime.usage_stats import top_tools

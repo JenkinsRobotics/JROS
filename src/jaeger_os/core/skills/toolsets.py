@@ -29,16 +29,28 @@ import os
 
 
 def _scoping_enabled() -> bool:
-    """Toolset scoping is OPT-IN. The timing benchmark showed the
-    explicit ``load_toolset`` meta-step REGRESSED routing on Gemma 4
-    (85% → 67%) — the model handles a 64-tool surface fine, but does
-    not reliably realise it must load a toolset first. Default OFF:
-    every tool is visible (the proven 85% behavior).
-    ``JAEGER_TOOLSET_SCOPING=1`` turns scoping on (e.g. to A/B a future
-    auto-load-on-intent variant that drops the meta-step)."""
-    return os.environ.get("JAEGER_TOOLSET_SCOPING", "0").strip().lower() in (
+    """Toolset scoping is OPT-IN (off by default).
+
+    History: we flipped it ON in May 2026 after adding ``describe_tool``
+    and the catalog, hoping the new pattern would offset the routing
+    regression seen with naive scoping. Direct A/B against the v5
+    historical baseline showed Gemma 4 26B-A4B routing dropped from
+    **100% → 67.6%** under the new lean default; Qwen3.6-35B-A3B was
+    largely unaffected. Conclusion: the lean surface is a real win for
+    context budget but a real loss for routing on some models, and we
+    can't commit to it as a global default. It stays OPT-IN until
+    auto-load-on-intent (a follow-up that picks toolsets without an
+    explicit meta-step) lands and re-bench shows no regression.
+
+    ``JAEGER_TOOLSET_SCOPING=1`` enables it for context-tight runs
+    (small ctx windows, tight budgets); ``JAEGER_FULL_TOOLS=1`` is
+    redundant in the OFF default but still honoured as a kill-switch."""
+    if os.environ.get("JAEGER_FULL_TOOLS", "").strip().lower() in (
         "1", "true", "yes", "on",
-    )
+    ):
+        return False
+    val = os.environ.get("JAEGER_TOOLSET_SCOPING", "0").strip().lower()
+    return val in ("1", "true", "yes", "on")
 
 
 # CORE — always visible. The common, high-frequency tools.
@@ -49,7 +61,10 @@ CORE: frozenset[str] = frozenset({
     "web_search", "web_extract", "get_weather",
     "read_file", "write_file",
     "help_me", "clarify",
-    "todo", "load_toolset",
+    "todo",
+    # Tool-surface discovery — always visible so the model can grow its
+    # toolbox mid-session without needing a category-wide load_toolset.
+    "load_toolset", "describe_tool",
 })
 
 

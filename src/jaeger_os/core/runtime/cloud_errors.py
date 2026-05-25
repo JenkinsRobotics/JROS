@@ -114,6 +114,34 @@ def friendly_error_text(error: str, *, model_name: str = "") -> str:
     )
 
 
+def friendly_overflow_text(*,
+                           estimated: int, budget: int,
+                           system_prompt_tokens: int, tools_tokens: int,
+                           latest_user_tokens: int) -> str:
+    """Render the pre-flight :class:`ContextOverflow` from
+    :mod:`jaeger_os.agent.util.context_guard` as actionable advice.
+
+    Parallel to :func:`friendly_error_text` (which catches the *reactive*
+    side — the server's 400 after we sent too much) but fired *before*
+    any network call. The numbers are exact, so we can show the operator
+    where their tokens went."""
+    return (
+        "Refused to send: this turn's prompt won't fit Jaeger's context "
+        f"budget ({budget} tokens of usable prompt room).\n\n"
+        f"  prompt estimate:   ~{estimated} tokens\n"
+        f"  system prompt:     ~{system_prompt_tokens} tokens\n"
+        f"  tool schemas:      ~{tools_tokens} tokens\n"
+        f"  latest user msg:   ~{latest_user_tokens} tokens\n\n"
+        "Fix one of:\n"
+        "  • Raise config.model.ctx (and reload the model on the server "
+        "    so its loaded ctx matches — LMStudio 'Context Length', "
+        "    Ollama 'num_ctx').\n"
+        "  • Send a shorter message, or break the request into steps.\n"
+        "  • Narrow the active toolsets — the tool-schema JSON itself is "
+        "    a few thousand tokens with all toolsets active."
+    )
+
+
 def friendly_message(exc: BaseException, *, provider: str = "") -> str:
     """A one-line, plain message for the agent / user — no stack trace."""
     who = provider or "the model provider"

@@ -50,6 +50,9 @@ from .files import (
 # Time / math / status
 from .time_and_math import calculate, get_time, system_status
 
+# Meta-tools — introspection over the agent's own tool registry.
+from .meta import describe_tool
+
 # Memory
 from .memory import forget, list_facts, memory, recall, remember, search_memory
 
@@ -61,6 +64,9 @@ from .web import get_weather, web_fetch, web_search
 
 # Code execution
 from .code import run_python, run_shell
+
+# Remote execution — ssh wrapper for the agent to run on other hosts
+from .remote import ssh_exec
 
 # Speak (TTS)
 from .speak import (
@@ -142,6 +148,8 @@ __all__ = [
     "web_search", "web_fetch", "get_weather",
     # code
     "run_python", "run_shell",
+    # remote execution
+    "ssh_exec",
     # speak
     "speak", "warm_kokoro",
     "KOKORO_VOICE", "KOKORO_LANG", "KOKORO_SAMPLE_RATE",

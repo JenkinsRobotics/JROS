@@ -1050,6 +1050,16 @@ def _register_builtins(client: Any) -> None:
         return t.run_shell(command=command, timeout_s=timeout_s)
 
     @register_tool_from_function
+    def remote_terminal(host: str, command: str, timeout_s: float = 60.0) -> dict:
+        """Run one command on a REMOTE host over SSH. ``terminal`` runs
+        locally; this runs the same shape of command on another machine.
+        ``host`` follows ssh's destination grammar — ``[user@]host[:port]``
+        or any ``Host`` alias from ~/.ssh/config. Auth uses the local
+        user's ssh keychain (BatchMode=yes — no password prompts; missing
+        key fails fast). PRIVILEGED-tier, audited like ``terminal``."""
+        return t.ssh_exec(host=host, command=command, timeout_s=timeout_s)
+
+    @register_tool_from_function
     def install_package(package: str) -> dict:
         """Install a third-party Python package into this instance's
         own venv (isolated from the framework). Use when a skill you're
@@ -1243,6 +1253,33 @@ def _register_builtins(client: Any) -> None:
         scratchpad — for durable cross-session work use the kanban
         board. When every item is completed, the task is done."""
         return t.todo(todos=todos, merge=merge)
+
+    @register_tool_from_function
+    def describe_tool(name: str) -> dict:
+        """Show the FULL schema (description + parameter shape) of a
+        single tool — even one that is not currently in your visible
+        toolset. Use this when you see a tool name in the catalog and
+        want to know exactly what arguments it takes BEFORE deciding
+        to use it (or before calling ``load_toolset`` to bring its
+        whole category in).
+
+        Cheaper than ``load_toolset`` when you only need one specific
+        tool: the catalog tells you what exists, ``describe_tool``
+        shows you how to call it. Returns ``{name, description,
+        parameters}`` or ``{ok: false, error}`` for an unknown name."""
+        from jaeger_os.agent.schemas.tool_registry import get_tool, has_tool
+        clean = (name or "").strip()
+        if not clean or not has_tool(clean):
+            return {"ok": False, "error": f"unknown tool {name!r}"}
+        tool = get_tool(clean)
+        schema = tool.to_openai_schema() if hasattr(tool, "to_openai_schema") else {}
+        function = schema.get("function", {}) if isinstance(schema, dict) else {}
+        return {
+            "ok": True,
+            "name": function.get("name") or tool.name,
+            "description": function.get("description", ""),
+            "parameters": function.get("parameters", {}),
+        }
 
     @register_tool_from_function
     def load_toolset(name: str = "") -> dict:
@@ -1544,11 +1581,14 @@ def _delegate_internal(client: Any, subtask: str) -> dict[str, Any]:
         # to the delegate's work (a child agent doesn't inherit the
         # parent's context — the spec calls this out).
         from jaeger_os.agent.loop.runtime_bridge import build_jaeger_agent, drive_one_turn
+        _cfg = _pipeline.get("config")
+        _ctx = getattr(getattr(_cfg, "model", None), "ctx", None)
         sub_agent = build_jaeger_agent(
             client,
             system_prompt=_pipeline["system_prompt"],
             toolsets=_pipeline.get("toolsets"),
             skip_final_tools=SKIP_FINAL_TOOLS,
+            ctx_window=_ctx,
         )
         lock = _pipeline.get("llm_lock")
         if lock is not None:
@@ -2014,25 +2054,54 @@ def _run_turn_via_jaeger_agent(
     if key not in _jaeger_agents_by_session:
         _get_agent(client)  # populates the new registry via _get_agent's mirror
         from .agent import AgentCallbacks
+        # Per-turn tool-time accumulator. The latency log was reporting
+        # ``tool=0.0`` even when tools were the dominant cost; now we
+        # sum the ``done`` event's ``elapsed_s`` so the report has the
+        # one breakdown number we can actually capture without adapter
+        # cooperation. ``_pipeline['turn_tool_time']`` is reset at the
+        # start of every turn (just before ``drive_one_turn``) and read
+        # immediately after.
+        _pipeline.setdefault("turn_tool_time", 0.0)
+
+        def _tool_progress(name: str, phase: str, data: Any) -> None:
+            if phase == "start":
+                set_agent_status("tool", detail=name)
+            else:
+                set_agent_status("thinking", detail="")
+                if phase == "done" and isinstance(data, dict):
+                    try:
+                        _pipeline["turn_tool_time"] = (
+                            _pipeline.get("turn_tool_time", 0.0)
+                            + float(data.get("elapsed_s", 0.0) or 0.0)
+                        )
+                    except (TypeError, ValueError):
+                        pass
+
         _status_cb = AgentCallbacks(
-            tool_progress=lambda name, phase, data: set_agent_status(
-                "tool" if phase == "start" else "thinking",
-                detail=name if phase == "start" else "",
-            ),
+            tool_progress=_tool_progress,
             heartbeat=lambda elapsed_s: None,  # ``since_ts`` carries elapsed
         )
+        # Pipe the configured ctx window into the agent's pre-flight
+        # ContextGuard so an oversized prompt is trimmed (or refused)
+        # before the server sees it. See docs/context_guard.md.
+        _cfg = _pipeline.get("config")
+        _ctx = getattr(getattr(_cfg, "model", None), "ctx", None)
         _jaeger_agents_by_session[key] = build_jaeger_agent(
             client,
             system_prompt=_pipeline["system_prompt"],
             toolsets=_pipeline.get("toolsets"),
             skip_final_tools=SKIP_FINAL_TOOLS,
             callbacks=_status_cb,
+            ctx_window=_ctx,
         )
     jaeger_agent = _jaeger_agents_by_session[key]
 
     lock = _pipeline["llm_lock"]
     started = time.perf_counter()
     set_agent_status("thinking", detail="")
+    # Reset the per-turn tool-time accumulator before the dispatch so
+    # cross-turn leakage doesn't inflate this turn's report.
+    _pipeline["turn_tool_time"] = 0.0
     try:
         if lock is not None:
             with lock:
@@ -2057,14 +2126,20 @@ def _run_turn_via_jaeger_agent(
     elapsed = result["elapsed_s"]
     skipped = result["skipped"]
 
-    # No per-call ``model.last_call_times`` on the new path yet — the
-    # report's breakdown is filled in Phase 7 when the adapter exposes
-    # call timings the same way ``LlamaCppModel`` does.
+    # Tool time we can fill — summed from the ``tool_progress("done")``
+    # callback via the per-turn accumulator. ``decision`` / ``final``
+    # still need adapter cooperation (per-call ``last_call_times``);
+    # they're a follow-up in the adapter layer (Phase 7 item).
+    _tool_time = float(_pipeline.get("turn_tool_time", 0.0) or 0.0)
+    # Loop time is whatever's left after the tools — adapter + parse +
+    # dispatch bookkeeping. Not the model's per-phase breakdown, but
+    # enough to spot a turn where the tools dominate vs the model.
+    _loop_time = max(0.0, elapsed - _tool_time)
     report = LatencyReport(
         total=elapsed,
         tool_calls=len(tool_activity),
-        decision=0.0, decision_ttft=0.0,
-        tool=0.0, final=0.0, final_ttft=0.0,
+        decision=_loop_time, decision_ttft=0.0,
+        tool=_tool_time, final=0.0, final_ttft=0.0,
     )
 
     write_log({
@@ -3033,6 +3108,13 @@ def run_daemon(*, instance_name: str | None = None,
 
 
 def main() -> int:
+    # Daemon subcommands — ``jaeger start | stop | status | restart`` —
+    # peel off BEFORE argparse so they don't collide with the positional
+    # ``prompt`` argument the legacy CLI takes. Standalone ``jaeger``
+    # (no subcommand) falls through to the existing TUI path unchanged.
+    from jaeger_os.daemon.cli import dispatch as _daemon_dispatch, is_daemon_subcommand as _is_daemon
+    if _is_daemon(sys.argv[1:]):
+        return _daemon_dispatch(sys.argv[1:])
     # If --voice is present, peel it off and delegate to the voice_loop
     # daemon. Voice_loop has its own argparse for STT mode, barge-in, AEC,
     # wake-word, chimes, model names, etc. — every flag the user types

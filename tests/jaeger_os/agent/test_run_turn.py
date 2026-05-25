@@ -320,7 +320,7 @@ def test_interrupt_mid_loop_halts_after_current_call():
     agent = JaegerAgent(adapter=adapter)
     agent_holder["agent"] = agent
     agent.run_turn("call the tool that interrupts")
-    assert agent.last_halt_reason == "the turn was interrupted"
+    assert agent.last_halt_reason == "interrupted"
 
 
 # ── callbacks fired ────────────────────────────────────────────────

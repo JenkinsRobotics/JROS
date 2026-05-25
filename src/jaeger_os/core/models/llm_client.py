@@ -265,6 +265,18 @@ class LlamaCppPythonClient:
             flush=True,
         )
 
+        # Record both the loaded ctx (what we allocated via n_ctx) and
+        # the model's *trained* native max. The status bar shows the
+        # former as the live denominator; surfacing the latter lets the
+        # operator notice "you loaded Qwen3-Coder at 16K but it's a 262K
+        # model — bump config.model.ctx if you need the headroom."
+        self.loaded_ctx: int = int(ctx)
+        try:
+            # llama-cpp-python exposes both via methods on the Llama obj.
+            self.native_ctx_max: int = int(self.llm.n_ctx_train())
+        except Exception:  # noqa: BLE001 — older builds may not expose it
+            self.native_ctx_max = int(ctx)
+
         if warmup:
             print("[llama.cpp] Warming up...", flush=True)
             started = time.perf_counter()

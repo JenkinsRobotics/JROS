@@ -25,12 +25,38 @@ def _clean_toolset_state(monkeypatch):
 
 
 def test_scoping_off_by_default_shows_everything(monkeypatch) -> None:
-    """With scoping disabled (the default), every tool is visible —
-    the proven 85%-routing behavior, no load_toolset needed."""
+    """With scoping disabled (the default — reverted after Gemma 4
+    routing regressed from 100% to 67.6% under naive scoping), every
+    tool is visible. Opt into the lean surface via
+    ``JAEGER_TOOLSET_SCOPING=1`` when context is tight."""
     monkeypatch.delenv("JAEGER_TOOLSET_SCOPING", raising=False)
-    assert ts.tool_visible("run_python")      # would be hidden if scoped
+    monkeypatch.delenv("JAEGER_FULL_TOOLS", raising=False)
+    ts.reset_toolsets()
+    assert ts.tool_visible("get_time")
+    assert ts.tool_visible("run_python")       # would be hidden if scoped
     assert ts.tool_visible("schedule_prompt")
     assert ts.tool_visible("anything_at_all")
+
+
+def test_scoping_on_via_env_hides_categorised_tools(monkeypatch) -> None:
+    """``JAEGER_TOOLSET_SCOPING=1`` enables the lean surface — useful
+    for context-tight runs, accepts the routing regression on some
+    models in exchange for prompt-prefix savings."""
+    monkeypatch.setenv("JAEGER_TOOLSET_SCOPING", "1")
+    monkeypatch.delenv("JAEGER_FULL_TOOLS", raising=False)
+    ts.reset_toolsets()
+    assert ts.tool_visible("get_time")        # CORE
+    assert not ts.tool_visible("run_python")  # in the ``code`` toolset → hidden
+    assert ts.tool_visible("anything_at_all")  # fail-open for unclassified
+
+
+def test_full_tools_env_overrides_explicit_scoping(monkeypatch) -> None:
+    """``JAEGER_FULL_TOOLS=1`` wins even when scoping is asked for —
+    a kill-switch for bench harnesses + debug."""
+    monkeypatch.setenv("JAEGER_FULL_TOOLS", "1")
+    monkeypatch.setenv("JAEGER_TOOLSET_SCOPING", "1")
+    assert ts.tool_visible("run_python")
+    assert ts.tool_visible("schedule_prompt")
 
 
 # ── core + built-in classes ─────────────────────────────────────────

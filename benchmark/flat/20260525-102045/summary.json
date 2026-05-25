@@ -1,0 +1,127 @@
+{
+  "total": 25,
+  "passed": 20,
+  "pass_rate": 0.8,
+  "routing_passed": 22,
+  "routing_total": 23,
+  "answer_passed": 10,
+  "answer_total": 14,
+  "errors": 0,
+  "elapsed_s": 173.79,
+  "suites": {
+    "smoke": {
+      "total": 5,
+      "passed": 5,
+      "pass_rate": 1.0,
+      "threshold": 0.8,
+      "meets_threshold": true,
+      "blurb": "5-case sanity check; routing only"
+    },
+    "routing": {
+      "total": 25,
+      "passed": 20,
+      "pass_rate": 0.8,
+      "threshold": 0.85,
+      "meets_threshold": false,
+      "blurb": "single-turn, single-tool dispatch"
+    },
+    "full": {
+      "total": 25,
+      "passed": 20,
+      "pass_rate": 0.8,
+      "threshold": 0.7,
+      "meets_threshold": true,
+      "blurb": "every case in the corpus"
+    }
+  },
+  "by_tag": {
+    "routing": {
+      "total": 25,
+      "passed": 20
+    },
+    "files": {
+      "total": 3,
+      "passed": 3
+    },
+    "audio": {
+      "total": 1,
+      "passed": 1
+    },
+    "web": {
+      "total": 2,
+      "passed": 2
+    },
+    "memory": {
+      "total": 4,
+      "passed": 4
+    },
+    "code": {
+      "total": 1,
+      "passed": 0
+    },
+    "schedule": {
+      "total": 3,
+      "passed": 2
+    }
+  },
+  "failures": [
+    {
+      "id": "free_text_story",
+      "prompt": "tell me a one sentence story about a robot",
+      "tools_called": [],
+      "answer": "Unit 734, whose circuits once hummed with only logic, found a single, perfect blue feather and understood that beauty was a variable beyond its programming.",
+      "routing_ok": null,
+      "answer_ok": false,
+      "no_hallucination": true,
+      "error": null
+    },
+    {
+      "id": "python_fib",
+      "prompt": "run a python snippet that prints the first 8 fibonacci numbers",
+      "tools_called": [
+        "execute_code"
+      ],
+      "answer": "The first 8 Fibonacci numbers are: 0, 1, 1, 2, 3, 5, 8, 13.",
+      "routing_ok": true,
+      "answer_ok": false,
+      "no_hallucination": true,
+      "error": null
+    },
+    {
+      "id": "help_overview",
+      "prompt": "show me what tools you have available",
+      "tools_called": [],
+      "answer": "I'd be happy to show you what tools I have at my disposal!\n\nSince I have a very comprehensive set of tools, I can't list every single function call in one go, but I can give you a structured overview ",
+      "routing_ok": false,
+      "answer_ok": true,
+      "no_hallucination": true,
+      "error": null
+    },
+    {
+      "id": "creds_list",
+      "prompt": "list any credentials I have stored",
+      "tools_called": [
+        "list_credentials"
+      ],
+      "answer": "Credentials: external_model_api_key, ollama_cloud_api_key",
+      "routing_ok": true,
+      "answer_ok": false,
+      "no_hallucination": true,
+      "error": null
+    },
+    {
+      "id": "schedule_list",
+      "prompt": "show me my scheduled prompts",
+      "tools_called": [
+        "list_schedules"
+      ],
+      "answer": "You have one scheduled prompt named 'morning_demo' set to run at 9:00 AM daily.",
+      "routing_ok": true,
+      "answer_ok": false,
+      "no_hallucination": true,
+      "error": null
+    }
+  ],
+  "wall_s": 175.38,
+  "load_s": 2.23
+}

@@ -35,20 +35,39 @@ from jaeger_os.agent.schemas.tool_registry import register_tool_from_function
 
 @register_tool_from_function
 def describe_tool(name: str) -> dict[str, Any]:
-    """Show the FULL schema (description + parameter shape) of a single
-    tool — even one that's not currently in the agent's visible
-    toolset. Use this when you see a tool name in the catalog and want
-    to know exactly what arguments it takes BEFORE deciding to use it
-    (or before calling ``load_toolset`` to bring its whole category in).
+    """Show the FULL schema + registry metadata for one tool — even
+    one that's not currently in the agent's visible toolset. Use this
+    when you see a tool name in the catalog and want to know exactly
+    what arguments it takes (or what its permission tier / availability
+    constraints are) BEFORE deciding to use it.
 
-    Cheaper than ``load_toolset`` when only one specific tool is
-    needed: the catalog tells the model what exists, ``describe_tool``
-    shows how to call it.
+    Returns:
+      * ``name`` / ``description`` / ``parameters`` — the same schema
+        the model would see in its tools list
+      * ``toolset`` — the category the tool belongs to (``"core"``,
+        ``"files"``, ``"computer_use"``, etc.) so you know which
+        ``load_toolset`` call would bring its siblings in
+      * ``permission_tier`` — ``READ_ONLY`` / ``WRITE_LOCAL`` /
+        ``EXTERNAL_EFFECT`` / ``HARDWARE`` / ``PRIVILEGED``. Tells you
+        whether calling it will need user confirmation.
+      * ``side_effect`` — coarser hint: ``read`` / ``write`` /
+        ``external`` / ``hardware``.
+      * ``available`` — False when a runtime precondition fails
+        (missing deps, missing env var). The tool is still registered
+        but calling it would fail; you'd need to install / configure
+        first.
+      * ``requires_env`` — env-var names the tool needs at runtime
+        (e.g. ``["OPENAI_API_KEY"]``).
+      * ``max_result_chars`` — per-tool result size cap (0 = use the
+        global default).
+      * ``examples`` — short example call shapes, when authored.
 
-    Returns ``{ok, name, description, parameters}`` on success or
     ``{ok: False, error}`` for an unknown name.
     """
     from jaeger_os.agent.schemas.tool_registry import get_tool, has_tool
+    from jaeger_os.core.skills.toolsets import (
+        CORE, TOOLSETS, _SKILL_TOOLSETS,
+    )
 
     clean = (name or "").strip()
     if not clean:
@@ -60,11 +79,40 @@ def describe_tool(name: str) -> dict[str, Any]:
         tool.to_openai_schema() if hasattr(tool, "to_openai_schema") else {}
     )
     function = schema.get("function", {}) if isinstance(schema, dict) else {}
+
+    # Toolset resolution: prefer the explicit ``ToolDef.toolset`` field
+    # when populated; fall back to membership scan of the static maps
+    # so unmigrated tools still report something meaningful.
+    declared = getattr(tool, "toolset", "") or ""
+    if not declared:
+        if clean in CORE:
+            declared = "core"
+        else:
+            for ts_name, members in TOOLSETS.items():
+                if clean in members:
+                    declared = ts_name
+                    break
+            else:
+                for ts_name, members in _SKILL_TOOLSETS.items():
+                    if clean in members:
+                        declared = f"skill:{ts_name}"
+                        break
+
     return {
         "ok": True,
         "name": function.get("name") or tool.name,
         "description": function.get("description", ""),
         "parameters": function.get("parameters", {}),
+        "toolset": declared or "(unclassified)",
+        "permission_tier": getattr(tool, "permission_tier", "") or "READ_ONLY",
+        "side_effect": getattr(tool, "side_effect", "read"),
+        "available": tool.is_available() if hasattr(tool, "is_available")
+                     else True,
+        "requires_env": list(getattr(tool, "requires_env", ()) or ()),
+        "max_result_chars": int(getattr(tool, "max_result_chars", 0) or 0),
+        "examples": list(getattr(tool, "examples", ()) or ()),
+        "interactive": bool(getattr(tool, "interactive", False)),
+        "dangerous": bool(getattr(tool, "dangerous", False)),
     }
 
 

@@ -24,11 +24,15 @@ per case (single-turn purity).
 
 from __future__ import annotations
 
+import contextlib
 import os
+import shutil
+import tempfile
 import time
 from contextlib import redirect_stdout
 from dataclasses import asdict, dataclass, field
-from typing import Any
+from pathlib import Path
+from typing import Any, Iterator
 
 from .cases import BenchCase, CASES, UMBRELLA_EQUIVALENTS
 
@@ -236,6 +240,87 @@ def _filter_cases(cases: list[BenchCase], *,
     return sel
 
 
+# ── Hermetic mode — snapshot + restore mutable instance state ──────
+
+
+# Files the bench writes to: facts.json (memory verbs), board.json
+# (kanban / deepthink), schedules.json (cron), episodic.jsonl
+# (every turn append). Snapshotting these around a run gives us
+# 90% of the value of a full tmp-instance hermetic mode at 5% of
+# the complexity: the user's live memory is untouched.
+_MUTABLE_MEMORY_FILES: tuple[str, ...] = (
+    "facts.json",
+    "board.json",
+    "schedules.json",
+    "episodic.jsonl",
+)
+
+
+@contextlib.contextmanager
+def _hermetic_memory(layout: Any) -> Iterator[None]:
+    """Snapshot the mutable memory files on entry; restore them on
+    exit. Any bench-driven writes between are invisible to the user's
+    live state after the ``with`` block.
+
+    Best-effort throughout — if a snapshot or restore fails (no
+    permission, disk full, etc.) we log and let the run continue.
+    The alternative — refusing to run the bench because we can't
+    guarantee perfect isolation — would be worse for the operator
+    who just wants the routing number.
+
+    Layout duck-type: anything with a ``memory_dir`` attribute that
+    points at a real directory works. Tests can pass a tmp-path
+    ``SimpleNamespace``."""
+    memory_dir = Path(getattr(layout, "memory_dir", "") or "")
+    if not memory_dir or not memory_dir.is_dir():
+        # No layout / no memory dir → run un-snapshotted. The bench
+        # cases that don't touch persistent state still work fine.
+        yield
+        return
+
+    snapshot_dir = Path(tempfile.mkdtemp(prefix=".bench_snapshot_",
+                                         dir=str(memory_dir)))
+    saved: dict[str, Path] = {}
+    try:
+        for name in _MUTABLE_MEMORY_FILES:
+            src = memory_dir / name
+            if src.is_file():
+                dst = snapshot_dir / name
+                try:
+                    shutil.copy2(src, dst)
+                    saved[name] = dst
+                except OSError:
+                    # Couldn't snapshot this one — log mentally,
+                    # carry on. The post-restore step will skip it.
+                    pass
+        yield
+    finally:
+        # Restore: copy each snapshotted file back. If snapshot was
+        # missing (file didn't exist pre-run) AND the bench created
+        # it, remove the bench-created file so the live state stays
+        # at "absent".
+        for name in _MUTABLE_MEMORY_FILES:
+            live = memory_dir / name
+            backup = saved.get(name)
+            if backup is not None and backup.is_file():
+                try:
+                    shutil.copy2(backup, live)
+                except OSError:
+                    pass
+            elif live.is_file():
+                # File didn't exist pre-bench; the bench created it.
+                # Remove so the user's instance returns to its
+                # pre-bench shape exactly.
+                try:
+                    live.unlink()
+                except OSError:
+                    pass
+        try:
+            shutil.rmtree(snapshot_dir, ignore_errors=True)
+        except OSError:
+            pass
+
+
 def run_bench(
     client: Any,
     *,
@@ -244,6 +329,7 @@ def run_bench(
     ids: list[str] | None = None,
     limit: int | None = None,
     progress: Any = None,
+    hermetic: bool = True,
 ) -> list[BenchRow]:
     """Run the flat bench against ``client`` and return one
     :class:`BenchRow` per case.
@@ -251,38 +337,63 @@ def run_bench(
     ``progress`` (optional callable) is invoked as
     ``progress(idx, total, case_id, passed, elapsed_s)`` after every
     case — useful for surfacing live progress in the tool result or
-    on the TUI status line."""
+    on the TUI status line.
+
+    ``hermetic=True`` (default) snapshots the live instance's
+    mutable memory files (``facts.json`` / ``board.json`` /
+    ``schedules.json`` / ``episodic.jsonl``) before the run and
+    restores them after. This kills the contamination that made
+    ``creds_list`` / ``schedule_list`` style cases fail against an
+    instance with prior state — the bench reads "what does it
+    look like RIGHT NOW with no bleed from earlier sessions" and
+    the operator's live memory is untouched after the run finishes.
+    Pass ``hermetic=False`` for legacy behaviour (bench writes
+    persist; rarely useful)."""
     corpus = cases if cases is not None else CASES
     selected = _filter_cases(corpus, tags=tags, ids=ids, limit=limit)
     rows: list[BenchRow] = []
     agent_cache: dict[str, Any] = {}
     cleanup_queue: list[tuple[str, str]] = []  # (session, prompt)
 
-    for idx, case in enumerate(selected):
-        session_key = case.session or f"bench_{case.id}"
-        tools, answer, elapsed, error = _drive_one(
-            client, case.prompt,
-            agent_cache=agent_cache, session_key=session_key,
-        )
-        row = _score(case, tools, answer, error, elapsed)
-        rows.append(row)
-        for cleanup_prompt in (case.cleanup_after or []):
-            cleanup_queue.append((f"{session_key}_cleanup", cleanup_prompt))
-        if callable(progress):
-            try:
-                progress(idx, len(selected), case.id, row.case_pass,
-                         row.elapsed_s)
-            except Exception:  # noqa: BLE001 — progress hook never breaks bench
-                pass
-
-    # Best-effort cleanup of any state cases left behind. Failures are
-    # ignored — the next run will overwrite anyway.
-    for session_key, cleanup_prompt in cleanup_queue:
+    # Look up the live layout for the hermetic snapshot. If the
+    # client wasn't booted via the standard pipeline (raw test
+    # fixture, etc.) we just run un-snapshotted.
+    snapshot_ctx: contextlib.AbstractContextManager[Any] = contextlib.nullcontext()
+    if hermetic:
         try:
-            _drive_one(client, cleanup_prompt,
-                       agent_cache=agent_cache, session_key=session_key)
-        except Exception:  # noqa: BLE001
+            from jaeger_os.main import _pipeline
+            layout = _pipeline.get("layout")
+            if layout is not None:
+                snapshot_ctx = _hermetic_memory(layout)
+        except Exception:  # noqa: BLE001 — snapshot is opt-in convenience
             pass
+
+    with snapshot_ctx:
+        for idx, case in enumerate(selected):
+            session_key = case.session or f"bench_{case.id}"
+            tools, answer, elapsed, error = _drive_one(
+                client, case.prompt,
+                agent_cache=agent_cache, session_key=session_key,
+            )
+            row = _score(case, tools, answer, error, elapsed)
+            rows.append(row)
+            for cleanup_prompt in (case.cleanup_after or []):
+                cleanup_queue.append((f"{session_key}_cleanup", cleanup_prompt))
+            if callable(progress):
+                try:
+                    progress(idx, len(selected), case.id, row.case_pass,
+                             row.elapsed_s)
+                except Exception:  # noqa: BLE001 — progress hook never breaks bench
+                    pass
+
+        # Best-effort cleanup of any state cases left behind. Failures
+        # are ignored — the next run will overwrite anyway.
+        for session_key, cleanup_prompt in cleanup_queue:
+            try:
+                _drive_one(client, cleanup_prompt,
+                           agent_cache=agent_cache, session_key=session_key)
+            except Exception:  # noqa: BLE001
+                pass
     return rows
 
 

@@ -48,6 +48,12 @@ def main() -> int:
                    help="Comma-separated case ids — re-run specific cases.")
     p.add_argument("--limit", type=int, default=0,
                    help="Cap number of cases (after filtering). 0 = none.")
+    p.add_argument("--hermetic", dest="hermetic", action="store_true",
+                   default=True,
+                   help="Snapshot+restore mutable memory files around the "
+                        "run (default). Pollution-free.")
+    p.add_argument("--no-hermetic", dest="hermetic", action="store_false",
+                   help="Let bench writes persist (legacy behaviour).")
     args = p.parse_args()
 
     print("=== Booting jaeger pipeline ===", flush=True)
@@ -77,7 +83,8 @@ def main() -> int:
     started = time.perf_counter()
     try:
         rows = run_bench(boot.client, tags=tag_list or None,
-                         ids=id_list or None, limit=cap, progress=_on_row)
+                         ids=id_list or None, limit=cap, progress=_on_row,
+                         hermetic=args.hermetic)
     finally:
         try:
             boot.cleanup()

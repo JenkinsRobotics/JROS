@@ -1018,19 +1018,13 @@ def _register_builtins(client: Any) -> None:
     @register_tool_from_function
     def memory(action: str, key: str = "", value: str = "",
                query: str = "", category: str = "") -> dict:
-        """The agent's memory — ONE tool for everything it must recall
-        across turns and sessions. `action` selects the operation:
-          • remember — store a fact (`key` + `value`, optional
-            `category` like 'contacts'/'preferences'/'projects').
-            MANDATORY whenever the user shares a preference, identity
-            fact, or plan.
-          • recall — look a fact up by `key`. Call BEFORE answering
-            "what did I tell you…" / "do you remember…" questions.
-          • forget — delete a fact by `key`.
-          • list — every stored fact, grouped by category.
-          • search — semantic search over past conversation (`query`).
-        Acknowledging "I'll remember" in text without calling this is
-        forbidden — it lies."""
+        """The agent's persistent memory — one tool, action-dispatched.
+        ``action`` ∈ remember / recall / forget / list / search.
+        ``remember`` takes key+value (and optional category);
+        ``recall`` / ``forget`` take key; ``search`` takes query.
+        See ``describe_tool("memory")`` for the full when-to-call
+        contract — the prompt's MANDATORY_TOOL_RULES section also
+        covers it."""
         return t.memory(action=action, key=key, value=value,
                         query=query, category=category)
 
@@ -1076,12 +1070,14 @@ def _register_builtins(client: Any) -> None:
                    summary="run Python code in the skills workspace")
     def execute_code(code: str, timeout_s: float = 10.0) -> dict:
         """Run Python code and return its output. Reach for this for
-        ANYTHING computational: arithmetic, the current date/time
-        (`from datetime import datetime; print(datetime.now())`), string
-        work, quick logic — and to run files you wrote with write_file
-        (code runs IN the skills/ workspace, so `import name` and
-        `open('file')` see them). 10s default timeout. Isolated from
-        packages installed via install_package."""
+        computational work: arithmetic that can't be done with
+        `calculate`, string transforms, quick logic — and to run files
+        you wrote with write_file (code runs IN the skills/ workspace,
+        so `import name` and `open('file')` see them). 10s default
+        timeout. Isolated from packages installed via install_package.
+
+        For the current date / day / time / timezone, use `get_time` —
+        it's the ONLY source of truth, not Python's clock."""
         return t.run_python(code=code, timeout_s=timeout_s)
 
     @register_tool_from_function
@@ -1211,33 +1207,23 @@ def _register_builtins(client: Any) -> None:
     def browser(action: str, url: str = "", element: int = 0,
                 text: str = "", direction: str = "down",
                 key: str = "Enter") -> dict:
-        """Drive a real web browser — ONE tool. `action` selects the op:
-          • open — load a URL (`url`); returns the page's elements
-          • snapshot — re-list the current page's interactive elements
-          • click — click element `element` (index from a snapshot)
-          • type — type `text` into element `element`
-          • scroll — scroll the page (`direction` up/down)
-          • back — go back · press — press `key` · close — close it
-        Every action returns the page's interactive elements, each with
-        an `index`. Workflow: open a page, read the elements, click/type
-        by index. The browser stays open across calls. Use this for the
-        live web — searching visually, playing a video, filling a form."""
+        """Drive a real web browser — one tool, action-dispatched.
+        Actions: open / snapshot / click / type / scroll / back /
+        press / close. Open a page → read its returned elements →
+        click/type by index. See ``describe_tool("browser")`` for
+        the full action map + per-action args."""
         return t.browser(action=action, url=url, element=element,
                          text=text, direction=direction, key=key)
 
     @register_tool_from_function
     def skill(action: str, name: str = "", query: str = "",
               file: str = "") -> dict:
-        """Discover and read playbook skills — experienced procedures for
-        a task (instructions + often runnable shell/Python). `action`:
-          • list — every available skill (name · category · summary)
-          • search — skills matching `query`; use this FIRST when a task
-            might have a skill ("inspect a codebase", "search arxiv")
-          • view — the full instructions of skill `name` plus a `files`
-            listing of its bundled scripts/references; read them, then
-            carry them out with your normal tools (terminal, execute_code).
-            Pass `file="scripts/foo.py"` to read one bundled file.
-        On-demand — skills are NOT all in your prompt; find what you need."""
+        """Discover and read playbook skills — experienced procedures
+        for a task. ``action`` ∈ list / search / view. Use ``search``
+        FIRST when a task might have a matching playbook (the
+        OPERATING_DISCIPLINE rule). ``view`` returns the full skill
+        body + its bundled-file listing; pass ``file=...`` to read
+        one. See ``describe_tool("skill")`` for the full contract."""
         return t.skill(action=action, name=name, query=query, file=file)
 
     @register_tool_from_function
@@ -1280,22 +1266,15 @@ def _register_builtins(client: Any) -> None:
 
     @register_tool_from_function
     def todo(todos: list[dict] | None = None, merge: bool = False) -> dict:
-        """Your session task list — a scratchpad to plan and track a
-        multi-step job. Use it for ANY task with 3+ steps, or when the
-        user hands you several things to do.
+        """Session task list — a scratchpad for multi-step jobs (3+
+        steps or several things at once). No args = read current
+        list. ``todos`` = list of ``{id, content, status}`` items
+        (pending / in_progress / completed / cancelled). ``merge=False``
+        (default) replaces the list; ``merge=True`` updates by id.
 
-        Call with no arguments to read the current list. Pass `todos`
-        to write — a list of {id, content, status} items where `status`
-        is pending/in_progress/completed/cancelled. List order is
-        priority. `merge=false` (default) replaces the whole list with a
-        fresh plan; `merge=true` updates items by id and appends new
-        ones.
-
-        Keep exactly ONE item `in_progress` at a time. Mark an item
-        `completed` the moment it is done. If a step fails, set it
-        `cancelled` and add a revised item. This is a within-session
-        scratchpad — for durable cross-session work use the kanban
-        board. When every item is completed, the task is done."""
+        Keep exactly ONE item in_progress at a time; use the kanban
+        board for cross-session work. See ``describe_tool("todo")``
+        for the full contract."""
         return t.todo(todos=todos, merge=merge)
 
     # NB: ``describe_tool`` and ``load_toolset`` are NOT redefined here.
@@ -1345,49 +1324,21 @@ def _register_builtins(client: Any) -> None:
 
     @register_tool_from_function
     def system_health(deep: bool = False) -> dict:
-        """Run the runtime health probe.
-
-        ``deep=False`` (default) — 8 fast substrate checks (<3s wall,
-        idempotent). Verifies layout, sandbox, memory round-trip,
-        get_time / calculate, CORE tool registry, skill discovery,
-        and the drift parser. Doesn't touch the LLM.
-
-        ``deep=True`` — adds three agent-loop turns through the LIVE
-        model: free-text answer, read-only tool, sandbox write/read.
-        Proves the agent can actually answer questions, not just
-        that the substrate is healthy. Slower — each turn costs a
-        real model call.
-
-        Call this when the user asks "are you healthy?" / "self-check"
-        / "diagnose yourself" — it's the post-boot counterpart to
-        ``--doctor`` (which only checks deps + config)."""
+        """Fast runtime health probe — 8 substrate checks (<3s).
+        ``deep=True`` adds three live-agent turns (free-text, read,
+        sandbox write). Call when the user asks "are you healthy?".
+        See ``describe_tool("system_health")`` for the full list."""
         return t.system_health(deep=deep)
 
     @register_tool_from_function
     def run_benchmark(tags: str = "", limit: int = 0,
                       ids: str = "", save: bool = True) -> dict:
-        """Run the agent self-benchmark against the LIVE pipeline.
-
-        Every case fires through the same system prompt, lean surface,
-        drift parser, and dispatch you're using right now — the most
-        honest signal we can get for "did the last change regress
-        routing?"  Use this when the user asks to "run the system
-        benchmark" / "benchmark yourself" / similar.
-
-        Args:
-            tags:  comma-separated tag filter (routing, multistep,
-                   multiturn, recovery, memory, files, web, code,
-                   audio, schedule). Empty = full corpus.
-            limit: cap the number of cases (after tag filter).
-                   0 = no cap. Multi-turn sessions stay whole.
-            ids:   comma-separated case ids — handy for re-running a
-                   single failing case after a fix.
-            save:  when True (default), write the per-row jsonl and
-                   summary markdown under <instance>/logs/bench/<ts>/.
-
-        Returns a summary dict with topline counts, per-tag breakdown,
-        the failure list, and the on-disk report path. The full row
-        dump stays on disk so it doesn't blow context."""
+        """Run the agent self-benchmark against the live pipeline.
+        ``tags``: comma-separated filter (routing / multistep /
+        multiturn / recovery / memory / files / web / code / audio
+        / schedule). ``limit``: cap cases; ``ids``: re-run specific
+        case ids. Writes ``<instance>/logs/bench/<ts>/``. See
+        ``describe_tool("run_benchmark")`` for the full contract."""
         return t.run_benchmark(tags=tags, limit=limit, ids=ids, save=save)
 
     @register_tool_from_function

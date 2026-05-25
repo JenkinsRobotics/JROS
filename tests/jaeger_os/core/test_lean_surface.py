@@ -48,14 +48,17 @@ def test_default_is_fail_open(monkeypatch) -> None:
 def test_scoping_on_shows_core_hides_unloaded_toolsets(monkeypatch) -> None:
     """With scoping ON, only CORE tools and tools from *loaded*
     toolsets are visible. Unclassified tools still fail-open (the
-    safer default — a new tool isn't silently hidden)."""
+    safer default — a new tool isn't silently hidden).
+
+    Probe is ``terminal`` — in the ``code`` toolset since
+    ``execute_code`` was promoted into CORE."""
     monkeypatch.setenv("JAEGER_TOOLSET_SCOPING", "1")
     reset_toolsets()
     # CORE always visible.
     assert tool_visible("get_time") is True
-    # ``execute_code`` lives in the ``code`` toolset — hidden until
+    # ``terminal`` lives in the ``code`` toolset — hidden until
     # someone calls load_toolset("code").
-    assert tool_visible("execute_code") is False
+    assert tool_visible("terminal") is False
     # Unclassified tool fails open.
     assert tool_visible("a_brand_new_uncategorised_tool") is True
 
@@ -63,9 +66,9 @@ def test_scoping_on_shows_core_hides_unloaded_toolsets(monkeypatch) -> None:
 def test_load_toolset_reveals_its_members(monkeypatch) -> None:
     monkeypatch.setenv("JAEGER_TOOLSET_SCOPING", "1")
     reset_toolsets()
-    assert tool_visible("execute_code") is False
+    assert tool_visible("terminal") is False
     enable_toolset("code")
-    assert tool_visible("execute_code") is True
+    assert tool_visible("terminal") is True
 
 
 # ── LEAN_CORE / CORE — name sets the doctor pins against ────────

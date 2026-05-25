@@ -332,6 +332,12 @@ def _check_tool_registry() -> list[Check]:
     registered tool. A rename or accidental deletion that the lean-
     surface filter silently hides would mis-route every routing turn.
 
+    Plus a roll-up row: "registered N, visible M, hidden K, unavailable U".
+    That single line is how the operator decides whether the surface
+    has bloated, whether availability is filtering something they
+    expected, or whether a recent skill load actually widened the
+    visible set.
+
     The CORE / LEAN_CORE names are the *agent-facing* names produced
     by ``@register_tool_from_function`` wrappers in
     ``jaeger_os.main.boot_for_tui``, not the function symbols in
@@ -345,7 +351,7 @@ def _check_tool_registry() -> list[Check]:
     """
     out: list[Check] = []
     try:
-        from jaeger_os.core.skills.toolsets import CORE, LEAN_CORE
+        from jaeger_os.core.skills.toolsets import CORE, LEAN_CORE, tool_visible
     except Exception as exc:  # noqa: BLE001
         out.append(Check(
             "tools.registry", "runtime", False,
@@ -355,12 +361,12 @@ def _check_tool_registry() -> list[Check]:
 
     # Discover the agent's registered tools — Phase-9 stores them on
     # the pipeline dict's ``agent`` (when booted via boot_for_tui).
-    registered: set[str] | None = None
+    registered: dict[str, Any] | None = None
     try:
         from jaeger_os.main import _pipeline
         agent = _pipeline.get("agent")
         if agent is not None and hasattr(agent, "_function_toolset"):
-            registered = set(agent._function_toolset.tools.keys())
+            registered = dict(agent._function_toolset.tools)
     except Exception:  # noqa: BLE001
         registered = None
 
@@ -385,6 +391,20 @@ def _check_tool_registry() -> list[Check]:
                 f"tools.{label}", "runtime", True,
                 f"{len(names)} tools resolve",
             ))
+
+    # Surface counts — the operator-facing one-liner.
+    total = len(registered)
+    visible = sum(1 for n in registered if tool_visible(n))
+    hidden = total - visible
+    unavailable = 0
+    for tool in registered.values():
+        if hasattr(tool, "is_available") and not tool.is_available():
+            unavailable += 1
+    out.append(Check(
+        "tools.surface", "runtime", True,
+        f"registered {total}, visible {visible}, hidden {hidden}, "
+        f"unavailable {unavailable}",
+    ))
     return out
 
 

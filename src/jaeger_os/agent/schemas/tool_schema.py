@@ -20,7 +20,7 @@ Flags worth knowing:
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Callable
 
 from pydantic import BaseModel
@@ -36,6 +36,34 @@ class ToolDef:
     handler — it receives keyword args matching the model's fields
     after Pydantic validation. Three renderers convert the same schema
     into the three on-wire formats the adapters use.
+
+    Registry-grade metadata (all optional; defaults preserve old
+    callers):
+
+      * ``toolset``           — canonical category the tool belongs
+        to (matches a key in :mod:`jaeger_os.core.skills.toolsets`
+        ``TOOLSETS``). Lets the registry derive visibility instead
+        of the parallel name-set map. Empty string = unclassified.
+      * ``permission_tier``   — the tier the ``@requires_tier``
+        decorator on ``fn`` enforces. Carried here so the doctor
+        and ``describe_tool`` can report it without re-introspecting.
+      * ``side_effect``       — one of ``"read"`` / ``"write"`` /
+        ``"external"`` / ``"hardware"``. Coarser than tier; used
+        by the audit log and the agent's reasoning about "is this
+        safe to call without asking?".
+      * ``max_result_chars``  — per-tool result size budget. When
+        set, the context guard truncates this tool's result at
+        this cap instead of the global one. ``0`` = use the
+        global default.
+      * ``check_fn``          — optional zero-arg callable returning
+        ``True`` if the tool is currently available (deps installed,
+        credentials present, etc.). Tools that return ``False``
+        get hidden from the model's schema view.
+      * ``requires_env``      — environment variables the tool needs
+        at runtime (e.g. ``("OPENAI_API_KEY",)``). The default
+        ``check_fn`` checks them when nothing else is provided.
+      * ``examples``          — short example invocations for
+        ``describe_tool``. List of ``"call name(args)"`` strings.
     """
 
     name: str
@@ -44,6 +72,36 @@ class ToolDef:
     fn: Callable[..., Any]
     interactive: bool = False
     dangerous: bool = False
+    # Registry metadata — see class docstring.
+    toolset: str = ""
+    permission_tier: str = ""
+    side_effect: str = "read"
+    max_result_chars: int = 0
+    check_fn: Callable[[], bool] | None = None
+    requires_env: tuple[str, ...] = ()
+    examples: tuple[str, ...] = ()
+
+    def is_available(self) -> bool:
+        """True when the tool's runtime preconditions are met.
+
+        Precedence:
+          1. Explicit ``check_fn`` — its bool result wins.
+          2. ``requires_env`` — every named env var must be present
+             and non-empty.
+          3. No constraints declared → always available.
+
+        Errors from ``check_fn`` are treated as "unavailable" rather
+        than propagated; a probe that crashes should never mask the
+        rest of the tool surface."""
+        if self.check_fn is not None:
+            try:
+                return bool(self.check_fn())
+            except Exception:  # noqa: BLE001
+                return False
+        if self.requires_env:
+            import os
+            return all(os.environ.get(k) for k in self.requires_env)
+        return True
 
     # ── on-wire renderers ────────────────────────────────────────────
 

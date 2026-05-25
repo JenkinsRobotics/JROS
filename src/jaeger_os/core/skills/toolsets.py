@@ -53,17 +53,39 @@ def _scoping_enabled() -> bool:
     return val in ("1", "true", "yes", "on")
 
 
-# CORE — always visible. The common, high-frequency tools.
+# CORE — always visible when scoping is on. Curated to the umbrella
+# tools instead of granular siblings: ``memory`` instead of the five
+# fine-grained verbs, ``kanban`` instead of the four ``board_*``
+# operations, ``skill`` instead of skill-dir primitives. Lower
+# routing entropy, same capability surface.
 CORE: frozenset[str] = frozenset({
-    "get_time", "calculate", "system_status",
-    "remember", "recall", "forget", "list_facts", "search_memory",
-    "set_name", "update_soul",
-    "web_search", "web_extract", "get_weather",
+    # Time and math — the cheapest, most-routed pair.
+    "get_time", "calculate",
+    # Files — read + write; ``patch``/``search_files``/``append_file``/
+    # ``delete_file`` are in the ``files`` toolset and load on intent.
     "read_file", "write_file",
-    "help_me", "clarify",
-    "todo",
-    # Tool-surface discovery — always visible so the model can grow its
-    # toolbox mid-session without needing a category-wide load_toolset.
+    # Code execution — high-value; was loadable before, now CORE.
+    "execute_code",
+    # Web — the two everyday primitives. ``get_weather`` is loadable
+    # via the ``web`` toolset for users that don't want it bloating
+    # routing on quiet days.
+    "web_search", "web_extract",
+    # Memory — umbrella ONLY. The five granular tools (remember /
+    # recall / forget / list_facts / search_memory) are still
+    # registered and callable but loadable via the
+    # ``memory_granular`` toolset — keeps routing concentrated on
+    # one tool instead of splitting across five.
+    "memory",
+    # Tasks + board — both umbrellas. Granular ``board_*`` tools
+    # load via the ``board`` toolset.
+    "todo", "kanban",
+    # Skill discovery (umbrella) + delegation. Heavy procedures live
+    # behind ``skill(action="view", name=…)``.
+    "skill", "delegate_task",
+    # User interaction.
+    "clarify", "help_me",
+    # Meta — always visible so the model can grow its toolbox
+    # mid-session without needing a category-wide load_toolset.
     "load_toolset", "describe_tool",
 })
 
@@ -95,22 +117,43 @@ LEAN_CORE: frozenset[str] = frozenset({
 # :func:`tool_visible`, opt-in via ``JAEGER_TOOLSET_SCOPING``.
 
 # Built-in tool classes — loaded on demand via load_toolset(name).
+# Every registered tool should appear in EXACTLY ONE of these
+# toolsets; intentional fail-open is reserved for the two meta-tools
+# (``describe_tool`` / ``load_toolset``) which are themselves in CORE.
+# Classification is checked by ``test_every_registered_tool_is_classified``.
 TOOLSETS: dict[str, frozenset[str]] = {
     "files": frozenset({
+        # ``read_file`` and ``write_file`` are in CORE; the rest of
+        # the file surface (patch, append, delete, search, list_dir)
+        # loads on intent.
         "append_file", "delete_file", "patch", "search_files",
         "list_skill_dir",
     }),
     "code": frozenset({
-        # NB tool was renamed ``run_python`` → ``execute_code`` during
-        # Phase-9. The classifier here drifted; without this fix the
-        # tool was visible under scoping ONLY because ``tool_visible``
-        # fails open for un-classified tools. ``test_toolset_classification``
-        # now pins this.
-        "execute_code", "run_in_venv", "terminal", "remote_terminal",
+        # ``execute_code`` is in CORE; heavy/risky code surfaces load
+        # on intent (terminal, ssh, venv, dep install).
+        "run_in_venv", "terminal", "remote_terminal",
         "install_package", "list_venv_packages",
     }),
     "media": frozenset({
         "text_to_speech", "listen", "vision_analyze", "image_generate",
+    }),
+    "web": frozenset({
+        # ``web_search`` and ``web_extract`` are in CORE; weather is
+        # loadable so it doesn't bloat routing for chat-heavy users.
+        "get_weather",
+    }),
+    "memory_granular": frozenset({
+        # The pre-umbrella granular memory tools — kept registered so
+        # historical callers and the bench corpus's expected_tools
+        # entries still work, but hidden from default routing in
+        # favour of the umbrella ``memory(action=…)`` (in CORE).
+        "remember", "recall", "forget", "list_facts", "search_memory",
+    }),
+    "board": frozenset({
+        # ``kanban`` umbrella is in CORE; the granular ``board_*``
+        # primitives load via this toolset.
+        "board_view", "board_add", "board_move", "board_update",
     }),
     "scheduling": frozenset({
         "schedule_prompt", "list_schedules", "cancel_schedule",
@@ -119,36 +162,44 @@ TOOLSETS: dict[str, frozenset[str]] = {
         "start_background", "list_background", "check_background",
         "stop_background", "pending_background", "open_on_host",
     }),
+    "identity": frozenset({
+        # Self-modifying tools — should never fire by accident on a
+        # routine chat turn. Loadable explicitly when the user asks
+        # the agent to update its name / soul.
+        "set_name", "update_soul",
+    }),
     "skills": frozenset({
+        # Skill authoring + the Deep Think queue. ``skill`` umbrella
+        # is in CORE; the lower-level operators load here.
         "reload_skills", "package_skill", "benchmark_skill",
         "propose_deep_think_task", "list_deep_think_queue",
     }),
-    "board": frozenset({
-        "board_view", "board_add", "board_move", "board_update",
-    }),
+    "computer_use": frozenset({"computer_use", "browser"}),
     "credentials": frozenset({"get_credential", "list_credentials"}),
     "plugins": frozenset({"list_plugins", "setup_plugin", "send_message"}),
     "models": frozenset({"list_models", "download_model", "model_location"}),
-    "delegation": frozenset({"delegate_task"}),
     "bench": frozenset({"run_benchmark"}),
-    "diagnostics": frozenset({"system_health"}),
+    "diagnostics": frozenset({"system_health", "system_status"}),
 }
 
 # One-line description per built-in class — for the load_toolset catalog.
 TOOLSET_SUMMARY: dict[str, str] = {
     "files": "append, delete, patch, search files; list the workspace",
-    "code": "run Python, shell/terminal, install packages, venv exec",
+    "code": "shell/terminal, ssh, install packages, venv exec",
     "media": "text-to-speech, mic capture, vision, image generation",
+    "web": "weather lookups (web_search / web_extract are always-on)",
+    "memory_granular": "the pre-umbrella remember/recall/forget tools",
+    "board": "granular board_view/add/move/update (kanban is always-on)",
     "scheduling": "schedule, list, cancel cron prompts",
     "background": "long-running background processes; open URLs/apps",
+    "identity": "set_name and update_soul — modify the agent's own identity",
     "skills": "reload, package, benchmark skills; deep-think queue",
-    "board": "the kanban task board",
+    "computer_use": "Mac-driving + browser automation",
     "credentials": "list and read stored credentials",
     "plugins": "list, set up plugins; send messages",
     "models": "list and download models",
-    "delegation": "hand subtasks to sub-agents",
     "bench": "run the agent self-benchmark against the live pipeline",
-    "diagnostics": "fast runtime health probe — verify the agent surface",
+    "diagnostics": "system health + cpu/disk status",
 }
 
 # Skill toolsets — populated at runtime by the skill loader. A skill is

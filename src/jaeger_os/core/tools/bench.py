@@ -103,6 +103,7 @@ def run_benchmark(
     limit: int = 0,
     ids: str = "",
     save: bool = True,
+    hermetic: bool = True,
 ) -> dict[str, Any]:
     """Run the flat self-benchmark suite against the live agent.
 
@@ -123,6 +124,12 @@ def run_benchmark(
       save:  when True (default), the per-row jsonl + a summary
              markdown are written under
              ``<instance>/logs/bench/<timestamp>/``.
+      hermetic: when True (default), snapshots the live instance's
+             mutable memory files (facts, board, schedules,
+             episodic) before the run and restores them after, so
+             bench writes don't pollute the user's state and
+             prior state doesn't pollute the bench. Pass False to
+             let bench writes persist (rarely useful).
 
     Returns a summary dict with topline counts plus per-tag breakdown
     and the failure list. Run individual rows by passing ``ids`` —
@@ -148,7 +155,7 @@ def run_benchmark(
     # reach the network or fire computer_use still has to ask.
     with _bench_permission_scope():
         rows = run_bench(client, tags=tag_list or None, ids=id_list or None,
-                         limit=cap)
+                         limit=cap, hermetic=bool(hermetic))
     summary = summarise(rows)
     summary["wall_s"] = round(time.perf_counter() - started, 2)
 

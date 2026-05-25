@@ -41,12 +41,15 @@ def test_scoping_off_by_default_shows_everything(monkeypatch) -> None:
 def test_scoping_on_via_env_hides_categorised_tools(monkeypatch) -> None:
     """``JAEGER_TOOLSET_SCOPING=1`` enables the lean surface — useful
     for context-tight runs, accepts the routing regression on some
-    models in exchange for prompt-prefix savings."""
+    models in exchange for prompt-prefix savings.
+
+    Probe is ``terminal`` (in the ``code`` toolset since the
+    visibility refactor moved ``execute_code`` into CORE)."""
     monkeypatch.setenv("JAEGER_TOOLSET_SCOPING", "1")
     monkeypatch.delenv("JAEGER_FULL_TOOLS", raising=False)
     ts.reset_toolsets()
     assert ts.tool_visible("get_time")        # CORE
-    assert not ts.tool_visible("execute_code")  # in the ``code`` toolset → hidden
+    assert not ts.tool_visible("terminal")    # in the ``code`` toolset → hidden
     assert ts.tool_visible("anything_at_all")  # fail-open for unclassified
 
 
@@ -55,7 +58,7 @@ def test_full_tools_env_overrides_explicit_scoping(monkeypatch) -> None:
     a kill-switch for bench harnesses + debug."""
     monkeypatch.setenv("JAEGER_FULL_TOOLS", "1")
     monkeypatch.setenv("JAEGER_TOOLSET_SCOPING", "1")
-    assert ts.tool_visible("execute_code")
+    assert ts.tool_visible("terminal")
     assert ts.tool_visible("schedule_prompt")
 
 
@@ -63,19 +66,25 @@ def test_full_tools_env_overrides_explicit_scoping(monkeypatch) -> None:
 
 
 def test_core_tools_always_visible() -> None:
-    for name in ("get_time", "remember", "web_search", "todo", "load_toolset"):
+    """CORE was slimmed: the umbrella ``memory`` replaced the five
+    granular memory tools, and ``execute_code`` was promoted from
+    the ``code`` toolset. Pin the new membership."""
+    for name in ("get_time", "memory", "web_search", "todo",
+                 "execute_code", "kanban", "skill", "load_toolset"):
         assert ts.tool_visible(name), name
 
 
 def test_non_core_tool_hidden_until_its_toolset_loads() -> None:
-    assert not ts.tool_visible("execute_code")     # in 'code'
+    """``terminal`` is in the ``code`` toolset (``execute_code`` moved
+    to CORE) — hidden by default, visible after load."""
+    assert not ts.tool_visible("terminal")
     assert ts.enable_toolset("code") is True
-    assert ts.tool_visible("execute_code")
+    assert ts.tool_visible("terminal")
 
 
 def test_loading_one_toolset_does_not_reveal_another() -> None:
     ts.enable_toolset("code")
-    assert ts.tool_visible("execute_code")          # code — loaded
+    assert ts.tool_visible("terminal")              # code — loaded
     assert not ts.tool_visible("schedule_prompt")  # scheduling — not loaded
 
 
@@ -91,7 +100,7 @@ def test_uncategorised_tool_fails_open() -> None:
 def test_reset_returns_to_core_only() -> None:
     ts.enable_toolset("code")
     ts.reset_toolsets()
-    assert not ts.tool_visible("execute_code")
+    assert not ts.tool_visible("terminal")
 
 
 def test_active_toolset_names_always_includes_core() -> None:

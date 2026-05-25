@@ -646,12 +646,51 @@ def repair_arguments(raw: str) -> tuple[dict[str, Any], bool]:
     return {}, False
 
 
+# Explicit alias map: pre-rename / pre-consolidation tool names →
+# their current canonical name. Only added when the rename was
+# documented and the older name had real bench / training data
+# behind it. NOT a fuzzy match table — an alias here only fires
+# if the canonical name is in the agent's registered ``valid`` set,
+# so adding entries is safe.
+#
+# Keep this small and intentional. The point is to absorb known
+# historical drift (``run_python`` → ``execute_code``); we do NOT
+# want a model guessing a tool that doesn't exist and silently
+# landing on something else.
+_TOOL_ALIASES: dict[str, str] = {
+    # Phase-9 rename.
+    "run_python":   "execute_code",
+    "run_shell":    "terminal",
+    # Pre-umbrella memory verbs. The granular tools are still
+    # registered (under the ``memory_granular`` toolset) so this
+    # alias only fires when they're not currently visible AND the
+    # umbrella is.
+    # NB ordering matters — these are checked LAST, after the
+    # exact-case lookup. A model that explicitly calls ``remember``
+    # while the granular toolset is loaded still routes there.
+    # Aliasing only kicks in when ``remember`` is NOT in ``valid``
+    # but ``memory`` is.
+    # Voice / file legacy spellings.
+    "speak":        "text_to_speech",
+    "file_write":   "write_file",
+    "file_read":    "read_file",
+    # Skill index — old names that may surface from training data.
+    "list_tools":   "describe_tool",
+}
+
+
 def normalize_tool_name(name: str, valid: frozenset[str] | set[str]) -> str:
     """Map a drifted tool name onto a real one via exact alias / case /
     separator variants. No fuzzy matching — an unrecognised name is
     returned unchanged so dispatch surfaces a clean 'unknown tool'
     error and the model retries, rather than silently dispatching a
     guess.
+
+    Resolution order (first match wins):
+      1. exact match in ``valid``
+      2. case / separator / trailing-``tool``-suffix variants
+      3. the explicit :data:`_TOOL_ALIASES` table (only when the
+         alias target is itself in ``valid``)
     """
     raw = (name or "").strip()
     if not raw or not valid or raw in valid:
@@ -675,6 +714,12 @@ def normalize_tool_name(name: str, valid: frozenset[str] | set[str]) -> str:
     for candidate in candidates:
         if candidate in valid:
             return candidate
+    # Explicit alias as last resort — only redirects when the alias's
+    # target is a real registered tool.
+    for candidate in candidates + [raw]:
+        target = _TOOL_ALIASES.get(candidate)
+        if target and target in valid:
+            return target
     return raw
 
 

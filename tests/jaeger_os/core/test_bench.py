@@ -275,6 +275,80 @@ def test_bench_scope_auto_approves_sandbox_tiers():
             assert current_policy().confirmation.confirm(req) is True
 
 
+# ── hermetic memory snapshot/restore ──────────────────────────────
+
+
+def test_hermetic_memory_restores_pre_bench_contents(tmp_path):
+    """Live memory files that exist BEFORE the bench must be
+    byte-identical AFTER. Bench writes between are discarded."""
+    import types
+    from jaeger_os.core.bench.runner import _hermetic_memory
+    mem = tmp_path / "memory"
+    mem.mkdir(parents=True, exist_ok=True)
+    facts = mem / "facts.json"
+    facts.write_text('{"user_name": "Jonathan"}', encoding="utf-8")
+
+    layout = types.SimpleNamespace(memory_dir=mem)
+    with _hermetic_memory(layout):
+        # Simulate a bench case writing to facts.
+        facts.write_text('{"polluted": true}', encoding="utf-8")
+    # After the context, the pre-bench contents must be restored.
+    assert facts.read_text(encoding="utf-8") == '{"user_name": "Jonathan"}'
+
+
+def test_hermetic_memory_removes_files_the_bench_created(tmp_path):
+    """A bench case that creates a file that DIDN'T exist before
+    (e.g. first-ever schedule on a fresh instance) must not leave
+    it behind. Pre-bench state was "absent"; post-bench should
+    match."""
+    import types
+    from jaeger_os.core.bench.runner import _hermetic_memory
+    mem = tmp_path / "memory"
+    mem.mkdir(parents=True, exist_ok=True)
+
+    layout = types.SimpleNamespace(memory_dir=mem)
+    schedules = mem / "schedules.json"
+    assert not schedules.exists()
+    with _hermetic_memory(layout):
+        # Bench creates a schedule file mid-run.
+        schedules.write_text('[{"name": "bench_test"}]', encoding="utf-8")
+        assert schedules.is_file()
+    # File is gone — instance returned to its pre-bench shape.
+    assert not schedules.exists()
+
+
+def test_hermetic_memory_no_op_without_layout(tmp_path):
+    """A layout that doesn't carry a memory_dir (raw test fixture)
+    must not crash the bench. The context manager is best-effort."""
+    import types
+    from jaeger_os.core.bench.runner import _hermetic_memory
+    layout = types.SimpleNamespace()  # no memory_dir attr
+    # Just must not raise.
+    with _hermetic_memory(layout):
+        pass
+
+
+def test_hermetic_memory_preserves_episodic_jsonl(tmp_path):
+    """The episodic log is the bench's biggest write target (every
+    turn appends a line). Pin restore on it specifically."""
+    import types
+    from jaeger_os.core.bench.runner import _hermetic_memory
+    mem = tmp_path / "memory"
+    mem.mkdir(parents=True, exist_ok=True)
+    episodic = mem / "episodic.jsonl"
+    pre = '{"turn": 1, "user": "real user", "answer": "..."}\n'
+    episodic.write_text(pre, encoding="utf-8")
+
+    layout = types.SimpleNamespace(memory_dir=mem)
+    with _hermetic_memory(layout):
+        # Bench appends 50 fake turns.
+        with episodic.open("a", encoding="utf-8") as fh:
+            for i in range(50):
+                fh.write(f'{{"turn": {i + 2}, "user": "bench"}}\n')
+    # All 50 bench turns are gone; only the real pre-bench line remains.
+    assert episodic.read_text(encoding="utf-8") == pre
+
+
 def test_bench_scope_still_defers_higher_tiers_to_outer():
     """EXTERNAL_EFFECT / HARDWARE / PRIVILEGED must keep going
     through the outer provider — a recovery case that tried to

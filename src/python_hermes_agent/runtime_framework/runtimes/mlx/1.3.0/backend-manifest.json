@@ -1,0 +1,42 @@
+{
+  "cpu": {
+    "architecture": "ARM64",
+    "instruction_set_extensions": [
+      "AdvSIMD"
+    ]
+  },
+  "domains": [
+    "llm"
+  ],
+  "engine": "mlx-llm",
+  "extension_type": "engine",
+  "gpu": {
+    "make": "Apple",
+    "framework": "Metal"
+  },
+  "manifest_version": "4",
+  "minimum_llmster_version": "0.0.2+2",
+  "minimum_lmstudio_version": "0.4.2+2",
+  "name": "mlx-llm-mac-arm64-apple-metal-advsimd",
+  "platform": "mac",
+  "supported_model_formats": [
+    "safetensors"
+  ],
+  "target_libraries": [
+    {
+      "name": "liblmstudio_bindings.node",
+      "type": "liblmstudio",
+      "version": "0.2.26"
+    },
+    {
+      "name": "llm_engine_mlx_amphibian.node",
+      "type": "llm_engine",
+      "version": "0.1.2"
+    }
+  ],
+  "vendor_lib_package_names": [
+    "_amphibian/app-mlx-generate-mac14-arm64@19",
+    "_amphibian/cpython3.11-mac-arm64@10"
+  ],
+  "version": "1.3.0"
+}

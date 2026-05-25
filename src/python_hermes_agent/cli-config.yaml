@@ -1,0 +1,44 @@
+# Hermes-Agent config — drives the agent with Qwen3.5 on Ollama Cloud.
+#
+# Inference runs on Ollama's cloud GPUs via Hermes' first-class
+# `ollama-cloud` provider. There is no local model and no local Ollama
+# daemon involved — Hermes talks straight to Ollama Cloud. The agent
+# still uses online tools (web search, fetch) and local terminal/file
+# tools as normal.
+#
+# This file is symlinked into ~/.hermes/cli-config.yaml. The full runtime
+# config lives at ~/.hermes/config.yaml; keep the two consistent.
+#
+# Auth: the OLLAMA_API_KEY is read from ~/.hermes/.env — it is NOT stored
+# in this file, so this config is safe to commit.
+
+model:
+  default: "qwen3.5:397b"
+  # First-class Ollama Cloud provider. Uses OLLAMA_API_KEY from ~/.hermes/.env.
+  provider: "ollama-cloud"
+  # The cloud endpoint — must NOT be a localhost Ollama daemon, or the
+  # request never leaves your machine and cloud-only models 404.
+  base_url: "https://ollama.com/v1"
+  # api_key here is just a non-empty placeholder; real auth is OLLAMA_API_KEY.
+  api_key: "ollama"
+  # context_length intentionally unset — Hermes auto-detects Qwen3.5's
+  # 256K window from the Ollama Cloud model catalog and caches it in
+  # ~/.hermes/context_length_cache.yaml.
+
+# Inference defaults — deterministic, matches the bench harness.
+defaults:
+  temperature: 0.0
+  top_p: 0.95
+
+# Toolsets enabled by default. Web + terminal + files mirrors what the
+# bench exercises; messaging/cron/skills stay off because the bench is a
+# one-shot harness, not a long-running agent.
+toolsets:
+  enabled:
+    - web
+    - terminal
+    - files
+
+# Suppress the interactive banner so single-prompt runs stay parseable.
+ui:
+  quiet: true

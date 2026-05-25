@@ -1,0 +1,162 @@
+"""The single assembly entry point for every prompt-building path.
+
+Before consolidation, FIVE codepaths built the agent's system prompt:
+the main turn, sub-agent delegation, Deep Think, the idle-board
+worker, and cron. Each had its own assembly logic; rules drifted
+between them. This module is the single source of truth: every
+codepath now calls :func:`assemble_prompt` with a ``mode``.
+
+Modes:
+
+  * ``"agent"``      — the live TUI turn. Full prompt: identity +
+    runs-on-Jaeger + soul + rules + skill index + (optional v2
+    contract) + runtime tail + board digest + tool catalog.
+  * ``"subagent"``   — a delegated child. Same scaffold MINUS the
+    board digest and v2 contract (the child is task-scoped; the
+    parent owns the standing TODO list). Caller supplies ``goal``
+    and optional ``context`` which become the child's task brief.
+  * ``"deep_think"`` — autonomous skill development. Full agent
+    prompt; the task brief is the synthetic user-role message, not
+    part of the system prompt.
+  * ``"idle_board"`` — the idle worker. Identical to ``"agent"``;
+    listed as a mode so the call site is self-documenting (the
+    diff vs. agent is in the user-role message, not the system
+    prompt).
+  * ``"cron"``       — a scheduled fire. Same as ``"agent"``; ditto.
+
+All modes get the Three Laws wrap at the end. The wrap is
+idempotent so a caller that already wrapped its own prompt (a
+nested sub-agent, say) doesn't double the block.
+"""
+
+from __future__ import annotations
+
+from typing import Literal
+
+from jaeger_os.core.instance.instance import InstanceLayout
+
+from .context_blocks import (
+    build_board_block,
+    build_runtime_tail,
+    build_skill_index_block,
+    build_toolset_catalog,
+    load_identity,
+    load_soul,
+    load_v2_self_improvement,
+)
+from .rules import (
+    JAEGER_OS_CONTEXT,
+    MANDATORY_TOOL_RULES,
+    OPERATING_DISCIPLINE,
+    TOOL_USAGE_RULES,
+)
+
+
+PromptMode = Literal["agent", "subagent", "deep_think", "idle_board", "cron"]
+
+
+# Subagent-specific opener. Mirrors the hermes upstream pattern but
+# uses the same rules/identity scaffold the parent uses, so the child
+# isn't a different agent — it's the same agent running on a focused
+# brief.
+_SUBAGENT_PREAMBLE = (
+    "You are a focused sub-agent spawned by the parent Jaeger to "
+    "complete a single task. Work the task end-to-end with real tool "
+    "calls, then summarise the result so the parent can use it. "
+    "Be terse; the parent reads your final message, not your "
+    "intermediate thinking."
+)
+
+
+def assemble_prompt(
+    layout: InstanceLayout,
+    *,
+    mode: PromptMode = "agent",
+    goal: str = "",
+    context: str = "",
+) -> str:
+    """Build a system prompt for ``mode``. Returns the assembled
+    string, wrapped with the Three Laws block.
+
+    See module docstring for what each mode includes / excludes.
+    ``goal`` and ``context`` are only consulted in ``"subagent"``
+    mode; ignored otherwise.
+    """
+    parts: list[str] = []
+
+    if mode == "subagent":
+        # Child gets a focused brief at the very top so the model
+        # treats the rest as backdrop, not the primary instruction.
+        parts.append(_SUBAGENT_PREAMBLE)
+        if goal:
+            parts.append(f"Task:\n{goal.strip()}")
+        if context:
+            parts.append(f"Context:\n{context.strip()}")
+
+    # Identity — every mode gets it. A sub-agent is still THIS agent;
+    # the brief shape, not the identity, differs.
+    ident = load_identity(layout)
+    if ident:
+        parts.append(ident)
+
+    parts.append(JAEGER_OS_CONTEXT.strip())
+
+    # soul.md right after the structured identity so it reads as
+    # "...and here is how I speak". Skipped for sub-agents — their
+    # task is scoped and the voice doc would just dilute the brief.
+    if mode != "subagent":
+        soul = load_soul(layout)
+        if soul:
+            parts.append(soul)
+
+    parts.append(MANDATORY_TOOL_RULES.strip())
+    parts.append(OPERATING_DISCIPLINE.strip())
+    parts.append(TOOL_USAGE_RULES.strip())
+
+    # Skill index — sub-agents don't need it (they were given a
+    # specific task; ranging across the skill library would expand
+    # scope). Every other mode benefits from knowing what playbooks
+    # exist.
+    if mode != "subagent":
+        skill_block = build_skill_index_block()
+        if skill_block:
+            parts.append(skill_block)
+
+    # v2 self-improvement contract — opt-in, only the main agent
+    # path. Sub-agents and Deep Think have their own narrower
+    # contracts (the sub-agent brief; the DT directive).
+    if mode == "agent":
+        v2 = load_v2_self_improvement(layout)
+        if v2:
+            parts.append(v2)
+
+    parts.append(build_runtime_tail())
+
+    # Board digest — the standing TODO list. Sub-agents skip it
+    # (they have one task); every other mode sees what's actionable.
+    if mode != "subagent":
+        board = build_board_block(layout)
+        if board:
+            parts.append(board)
+
+    # Tool catalog only appears under lean-surface scoping. Same
+    # filter for every mode — the catalog tells the model what it
+    # CAN load, regardless of why it's running.
+    catalog = build_toolset_catalog()
+    if catalog:
+        parts.append(catalog)
+
+    assembled = "\n\n".join(parts)
+
+    # Three Laws — prepended LAST so they're the first thing the
+    # model sees. ``with_three_laws`` is idempotent; a nested call
+    # that already wrapped its own prompt won't double the block.
+    try:
+        from jaeger_os.core.safety.safety_rules import with_three_laws
+        assembled = with_three_laws(assembled)
+    except Exception:  # noqa: BLE001 — never break boot over a safety wrap
+        pass
+    return assembled
+
+
+__all__ = ["assemble_prompt", "PromptMode"]

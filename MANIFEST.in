@@ -1,0 +1,21 @@
+include README.md
+include LICENSE
+include pyproject.toml
+
+recursive-include src/jaeger_os *.md *.yaml *.json *.txt
+recursive-include src/jaeger_os/prompts *
+recursive-include src/jaeger_os/assets *
+recursive-include src/jaeger_os/skills *
+recursive-include src/jaeger_os/instance *
+include src/jaeger_os/instance/.gitignore
+
+recursive-include docs *.md
+recursive-include docs/skill_template *
+recursive-include tests *.py
+recursive-include benchmark *.py *.md
+include models/README.md
+
+# Benchmark run output is local-only — never ship it in the sdist.
+recursive-exclude benchmark BENCHMARK_*.md *_rows.jsonl *.log
+
+global-exclude __pycache__ *.pyc *.pyo .DS_Store

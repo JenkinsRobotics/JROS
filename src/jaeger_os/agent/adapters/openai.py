@@ -121,7 +121,24 @@ def _from_openai_tool_calls(raw_calls: Any) -> list[ToolCall]:
             if not isinstance(arguments, dict):
                 arguments = {"value": arguments}
         except (TypeError, ValueError):
-            arguments = {"_raw_arguments": args_str}
+            # Try the drift parser's argument-repair pass before giving
+            # up. Common model output bugs — trailing commas, single
+            # quotes, Python ``None`` / ``True`` literals, unclosed
+            # braces — are repairable; the previous code dropped them
+            # to ``_raw_arguments`` and forced the model to retry the
+            # whole call. ``repair_arguments`` lives in the drift
+            # parser so it stays close to the in-text Gemma/Qwen
+            # tolerance — same JSON repair, just applied to the
+            # structured tool_calls path too.
+            try:
+                from jaeger_os.agent.parsing.drift_parser import repair_arguments
+                repaired, ok = repair_arguments(args_str)
+                if ok and isinstance(repaired, dict):
+                    arguments = repaired
+                else:
+                    arguments = {"_raw_arguments": args_str}
+            except Exception:  # noqa: BLE001
+                arguments = {"_raw_arguments": args_str}
 
         out.append({"id": tc_id, "name": name, "arguments": arguments})
     return out

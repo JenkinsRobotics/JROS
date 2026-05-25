@@ -48,11 +48,52 @@ def _get_model(name: str) -> Any:
 
 
 def warm_listen() -> dict[str, Any]:
-    """Pre-load the Whisper STT model so the first ``listen`` call is
-    decode-only, not a ~3-5 s cold load. Called by the boot warmup.
-    Idempotent — the model is memoized."""
-    _get_model(_DEFAULT_MODEL)
-    return {"warmed": True, "model": _DEFAULT_MODEL}
+    """Pre-load AND prime Whisper so the first ``listen`` call doesn't
+    pay JIT / kernel-selection overhead in addition to weight load.
+
+    Two stages, matching the Kokoro warm-up:
+
+      1. ``_get_model()`` — load weights (~3–5s cold).
+      2. Run a real ``transcribe`` over a short silent buffer so the
+         decoder graph + numpy/ggml kernels are picked + cached. The
+         transcript is discarded; the side-effect of pipeline priming
+         is what we want.
+
+    Without #2 the first real mic capture pays the kernel-selection
+    cost mid-decode, which on Apple Silicon shows up as the first
+    transcription occasionally producing garbled tokens before the
+    pipeline settles. Idempotent.
+    """
+    started = time.perf_counter()
+    load_s = 0.0
+    prime_s = 0.0
+    try:
+        t0 = time.perf_counter()
+        model = _get_model(_DEFAULT_MODEL)
+        load_s = time.perf_counter() - t0
+
+        # Real decode on a short silent buffer. ``transcribe`` accepts
+        # a numpy float32 array at SAMPLE_RATE. One second of silence
+        # exercises the full pipeline without recording audio.
+        t1 = time.perf_counter()
+        try:
+            import numpy as np
+            silence = np.zeros(_SAMPLE_RATE, dtype=np.float32)
+            # pywhispercpp's transcribe() signature — quietly absorb
+            # any unexpected exception so a priming failure can't
+            # block boot.
+            _ = model.transcribe(silence)
+        except Exception:  # noqa: BLE001 — priming is best-effort
+            pass
+        prime_s = time.perf_counter() - t1
+    except Exception as exc:
+        return {"warmed": False, "model": _DEFAULT_MODEL, "reason": str(exc)}
+    return {
+        "warmed": True, "model": _DEFAULT_MODEL,
+        "seconds": round(time.perf_counter() - started, 3),
+        "load_s": round(load_s, 3),
+        "prime_s": round(prime_s, 3),
+    }
 
 
 def listen(seconds: int = 5, model: str = _DEFAULT_MODEL) -> dict[str, Any]:

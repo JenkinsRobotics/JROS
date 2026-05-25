@@ -90,6 +90,17 @@ class JaegerAgent:
         else:
             self._all_tools = get_tools()
             self._tools_filter_locked = False
+        # Per-agent dispatch map. ``_dispatch_one_tool`` previously
+        # resolved by name against the *global* registry — so an agent
+        # built with ``tools=[a, b, c]`` (an explicit allowlist) would
+        # still happily dispatch any other globally registered tool
+        # the model named. Building the map from ``_all_tools`` here
+        # binds dispatch to the agent's *intended* set.
+        # The map is recomputed on demand whenever the visible set
+        # shifts (see ``_refresh_dispatch_map``).
+        self._dispatch_by_name: dict[str, ToolDef] = {
+            t.name: t for t in self._all_tools
+        }
         # Record the originally-requested toolset names for diagnostics
         # (the ``/runtime`` panel surfaces this); not used by the loop.
         self.toolsets: frozenset[str] = frozenset(toolsets or ())
@@ -534,17 +545,25 @@ class JaegerAgent:
         args = tc.get("arguments") or {}
         call_id = tc.get("id") or ""
 
+        # Resolve the tool against THIS agent's dispatch map (built
+        # from ``_all_tools`` at construction). The previous code
+        # asked the global registry, which silently bypassed an
+        # explicit ``tools=[...]`` allowlist — a model that named any
+        # globally registered tool could get it dispatched even when
+        # the agent was supposed to expose only ``[a, b, c]``.
+        dispatch_map = self._dispatch_by_name
+
         # Normalise drifted tool names ONCE at the loop boundary — case
         # variants, separator swaps, ``_tool`` suffixes, ``CamelCase``.
         # No fuzzy matching: an unrecognised name returns unchanged and
         # surfaces a clean "unknown tool" error so the model can
         # self-correct, rather than silently dispatching a guess.
-        if name and not has_tool(name):
+        if name and name not in dispatch_map:
             try:
                 from jaeger_os.agent.parsing.drift_parser import normalize_tool_name
-                valid = frozenset(t.name for t in self._all_tools)
+                valid = frozenset(dispatch_map.keys())
                 normalised = normalize_tool_name(name, valid)
-                if normalised != name and has_tool(normalised):
+                if normalised != name and normalised in dispatch_map:
                     name = normalised
                     # Patch the tool_call in place so the loop's bookkeeping
                     # (backstop signatures, post-dispatch hook) sees the
@@ -565,7 +584,8 @@ class JaegerAgent:
         guidance = self.callbacks.on_before_tool_call(name, args)
 
         try:
-            if not has_tool(name):
+            tool_def = dispatch_map.get(name)
+            if tool_def is None:
                 content: Any = {
                     "ok": False,
                     "error": f"unknown tool {name!r}",
@@ -573,7 +593,7 @@ class JaegerAgent:
                     "retryable": False,
                 }
             else:
-                content = get_tool(name).dispatch(args)
+                content = tool_def.dispatch(args)
         except Exception as exc:  # noqa: BLE001 — surfaced to the model
             # Tag safety/permission failures distinctly so the model
             # (and the latency log) can tell "retry with different

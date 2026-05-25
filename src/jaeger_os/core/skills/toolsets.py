@@ -118,8 +118,13 @@ TOOLSETS: dict[str, frozenset[str]] = {
         "list_skill_dir",
     }),
     "code": frozenset({
-        "run_python", "run_in_venv", "terminal", "install_package",
-        "list_venv_packages",
+        # NB tool was renamed ``run_python`` → ``execute_code`` during
+        # Phase-9. The classifier here drifted; without this fix the
+        # tool was visible under scoping ONLY because ``tool_visible``
+        # fails open for un-classified tools. ``test_toolset_classification``
+        # now pins this.
+        "execute_code", "run_in_venv", "terminal", "remote_terminal",
+        "install_package", "list_venv_packages",
     }),
     "media": frozenset({
         "text_to_speech", "listen", "vision_analyze", "image_generate",

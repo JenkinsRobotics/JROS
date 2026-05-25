@@ -277,3 +277,73 @@ def test_normalize_returns_unchanged_when_no_alias_matches():
 def test_normalize_empty_input_returns_empty():
     assert normalize_tool_name("", frozenset({"x"})) == ""
     assert normalize_tool_name("anything", frozenset()) == "anything"
+
+
+# ── Llama 3.x / 4 raw-JSON form ──────────────────────────────────────
+
+
+def test_extract_llama_with_python_tag():
+    """Llama 3.x emits a bot token followed by the JSON object."""
+    text = (
+        "Thinking about this...\n"
+        '<|python_tag|>{"name": "get_weather", "parameters": {"location": "Tokyo"}}'
+    )
+    calls = extract_tool_calls(text)
+    assert len(calls) == 1
+    assert calls[0]["name"] == "get_weather"
+    assert calls[0]["arguments"] == {"location": "Tokyo"}
+    assert calls[0]["id"].startswith("llama_")
+
+
+def test_extract_llama_bare_json_no_wrapper():
+    """No bot token, no XML — Llama can drop a bare ``{"name": …,
+    "arguments": …}`` object into chat text. Salvage it iff no other
+    dialect's opening tag is present."""
+    text = 'I will call this: {"name": "calculate", "arguments": {"expression": "1+1"}}'
+    calls = extract_tool_calls(text)
+    assert len(calls) == 1
+    assert calls[0]["name"] == "calculate"
+    assert calls[0]["arguments"] == {"expression": "1+1"}
+
+
+def test_extract_llama_does_not_steal_hermes_envelope():
+    """Critical regression guard — a Hermes JSON envelope inside
+    ``<tool_call>…</tool_call>`` must still match the Hermes path, NOT
+    the Llama branch. Without this check the Llama parser would
+    return an id starting with ``llama_`` instead of ``drift_``."""
+    text = '<tool_call>{"name": "get_time", "arguments": {"tz": "UTC"}}</tool_call>'
+    calls = extract_tool_calls(text)
+    assert len(calls) == 1
+    assert calls[0]["name"] == "get_time"
+    assert calls[0]["id"].startswith("drift_"), (
+        f"Hermes envelope misrouted to a non-drift parser; id={calls[0]['id']}"
+    )
+
+
+# ── Mistral [TOOL_CALLS] form ────────────────────────────────────────
+
+
+def test_extract_mistral_pre_v11_json_array():
+    """Pre-v11 Mistral: ``[TOOL_CALLS]`` followed by a JSON array."""
+    text = (
+        "Sure, calling the tool now."
+        '[TOOL_CALLS] [{"name": "get_time", "arguments": {"timezone": "UTC"}}]'
+    )
+    calls = extract_tool_calls(text)
+    assert len(calls) == 1
+    assert calls[0]["name"] == "get_time"
+    assert calls[0]["arguments"] == {"timezone": "UTC"}
+    assert calls[0]["id"].startswith("mistral_")
+
+
+def test_extract_mistral_v11_interleaved():
+    """v11+ Mistral: ``[TOOL_CALLS]name{args}`` possibly chained."""
+    text = (
+        '[TOOL_CALLS]get_time{"timezone": "UTC"}'
+        '[TOOL_CALLS]calculate{"expression": "2+2"}'
+    )
+    calls = extract_tool_calls(text)
+    assert len(calls) == 2
+    names = [c["name"] for c in calls]
+    assert names == ["get_time", "calculate"]
+    assert calls[1]["arguments"] == {"expression": "2+2"}

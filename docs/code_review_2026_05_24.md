@@ -75,3 +75,84 @@ Concurrent dispatch needs:
 Skipped this pass; tracked for a focused follow-up once the
 already-landed wiring (group-aware trim, normalised names, tool-time
 telemetry) gives us a clean baseline to measure against.
+
+
+---
+
+# Second review (external, post-0.1.0)
+
+A second external code review came in after 0.1.0 shipped with 14
+prioritised findings. Most landed as small focused fixes; a few are
+explicitly deferred below with the reasoning that drove the decision.
+
+## Applied (no deferral)
+
+| # | Finding | Fix |
+|---|---|---|
+| 1 | `reload_skills` `NameError` — `agent` symbol missing in `_register_builtins` scope after Phase-9 | Pass a fresh `_RegistrationSentinel()` (the legacy `agent` was a pydantic-ai Agent that no longer exists). |
+| 2 | `/new` / `/undo` / `/retry` didn't touch `JaegerAgent.messages` (the Phase-9 storage location) | `reset_session` clears both legacy `_session_histories` AND the agent's messages; `pop_last_exchange` prefers the agent path, falls back to legacy for hybrid sessions. 7 new tests. |
+| 3 | Explicit `tools=[...]` allowlists weren't enforced at dispatch — model could call any globally registered tool | `JaegerAgent.__init__` builds a per-instance `_dispatch_by_name` map from `_all_tools`; `_dispatch_one_tool` resolves against it instead of the global registry. |
+| 6 | `schedule_prompt` / `cancel_schedule` were tier-0 despite the autonomous-effects-of-effects argument | Both gated at `WRITE_LOCAL`. Scheduled execution still re-enters the tier ladder for whatever tools it calls. |
+| 7 | Drift parser bailed on text without `<` — Llama raw JSON and Mistral `[TOOL_CALLS]` formats lost | Added `_extract_llama_raw_json_tool_calls` (with `<|python_tag|>` and bare-JSON shapes) and `_extract_mistral_tool_calls` (pre-v11 array + v11+ interleaved). Defensive against misclassifying Hermes envelopes as Llama. 5 new tests. |
+| 8 | OpenAI adapter dropped malformed `arguments` to `_raw_arguments` instead of using `repair_arguments` | `_from_openai_tool_calls` calls `repair_arguments` on JSON decode failure; only falls through to `_raw_arguments` if repair also fails. |
+| 9 | `TOOLSETS["code"]` said `run_python` but the tool was renamed `execute_code` — masked by fail-open | Fixed the name in `core/skills/toolsets.py`. Added a defensive integrity test that every registered tool is either in `CORE`, in a `TOOLSETS` bucket, or on an explicit `_INTENTIONAL_FAIL_OPEN` allowlist. Future renames will surface immediately. |
+| 11 | `describe_tool` defined in both `meta.py` and `main.py`; `load_toolset` trapped in `main.py` | Both now owned by `meta.py` (single source of truth), registered at module-import time via `@register_tool_from_function`. The main.py duplicates are removed. |
+| 13 | `SKIP_FINAL_TOOLS` included mutating writers (`write_file`, `append_file`, `patch`, `delete_file`) — could end a "fix typo" turn after the first write | Removed those four from the set. Read/list ops + deterministic-answer tools stay. The multistep intent check still handles edge cases. |
+| 14 | No tests for `/new` / `/undo` / `/retry` on the new agent path | Added `tests/jaeger_os/core/test_session_commands.py` — 7 tests covering both clears, both fallback paths, and the edge cases (empty session, assistant-only session, in-flight tool chain). |
+
+## Deferred — with reasoning
+
+### #4 — Daemon streaming-client + event correlation (before Phase 2)
+
+`Client.call()` is request/response only; events that arrive while
+waiting are dropped. The Phase-2 permission flow needs a persistent
+streaming connection with an event callback queue and id-based
+response correlation.
+
+**Why deferred:** Phase 2 of the daemon split isn't started yet —
+no real caller is yet exercising the limitation. The streaming
+client is on the Phase 2 critical path; better to design it
+alongside `submit_turn` than to retrofit a one-shot socket. Tracked
+in `docs/daemon_split_plan.md` Phase 2.
+
+### #5 — Permission decisions in the audit chain
+
+`PermissionPolicy.check()` decides allow/deny/prompt without writing
+to the hash-chained audit log. Today `_audit()` is called from a few
+specific tool sites, not from the policy decision point.
+
+**Why deferred:** the right shape is an injected `audit_sink` on the
+policy object — but `PermissionPolicy` is instantiated very early
+(before `_audit`'s layout dependency is bound), so the wiring needs
+careful nullability handling and a redaction pass for prompt content.
+M effort that's better as its own pass. The current `_audit()` calls
+from `_common._audit` already cover the most common tool-invocation
+sites; the gap is the policy-decision audit specifically, which
+matters more once hardware-tier confirmations start firing. Tracked
+as an 0.1.x correctness follow-up.
+
+### #10 — `main.py` tool wrappers move to per-category modules
+
+The 66 inline `@register_tool_from_function` wrappers in `_register_builtins`
+mix registration, permission tiers, prompt-facing docstrings, and
+`_pipeline` access. The `reload_skills` `NameError` was a symptom.
+
+**Why deferred:** correct direction but big refactor — moves
+~1200 lines across ~15 files, and a wrapper move means re-grepping
+every test that imports a wrapper. Better as a focused PR after the
+voice/Kokoro work lands, when no other large diffs are competing for
+the same files. Tracked as 0.2.0 cleanup.
+
+### #12 — Split `_dispatch_one_tool` along testable boundaries
+
+The single method handles name normalization, dispatch-map lookup,
+backstop counts, progress callbacks, guardrail hooks, permission
+error typing, execution, result truncation, failure-signature
+accounting, and transcript mutation. Future policy changes risk
+unintended interactions.
+
+**Why deferred:** the right refactor (resolve / execute / classify /
+postprocess / append), but the per-agent dispatch map (#3) just
+landed in this same function — let it bake against the bench before
+slicing it apart. Worth doing once we have data on the new dispatch
+path's behavior. Tracked alongside #10.

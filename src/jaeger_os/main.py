@@ -84,9 +84,20 @@ SKIP_FINAL_TOOLS = frozenset({
     # off after the read, so "finish the code" turns never reached
     # write_file. Reads now run the full agent.iter loop so the model
     # can chain into the write.
-    "write_file", "append_file", "patch", "delete_file", "list_skill_dir",
+    #
+    # Mutating file writers — ``write_file``, ``append_file``, ``patch``,
+    # ``delete_file`` — were ALSO skip-final in 0.1.0. Removed per
+    # review finding #13: a single user request ("fix the typo in
+    # README") often needs read → patch → verify → explain even if
+    # the model's first call is a write. The lexical multistep guard
+    # helped some, but the safer default is "writers run the full
+    # loop", letting the model self-confirm + answer.
+    "list_skill_dir",
     "clarify",
-    "schedule_prompt", "cancel_schedule",
+    # Scheduling read-only ops (list/cancel) skip-final fine; creation
+    # ``schedule_prompt`` is tier-gated and runs the full loop so its
+    # confirmation prompt isn't truncated.
+    "list_schedules",
     "help_me",
     "list_credentials",
     "reload_skills",
@@ -730,26 +741,59 @@ def reset_session(session_key: str = _DEFAULT_SESSION_KEY) -> int:
     """Clear a session's in-process conversation history (the ``/new``
     command). Returns the number of messages dropped. Episodic memory
     on disk is untouched — only the live context window is reset; the
-    session stays marked loaded so old turns are not re-resumed."""
+    session stays marked loaded so old turns are not re-resumed.
+
+    Phase-9 conversation state lives on ``JaegerAgent.messages`` for
+    sessions that have been routed through the new agent path. We MUST
+    clear that list too — otherwise ``/new`` looks like a no-op from
+    the operator's view but the next turn still sees the old context."""
+    legacy_dropped = 0
     history = _session_histories.get(session_key)
-    dropped = len(history) if history else 0
     if history is not None:
+        legacy_dropped = len(history)
         history.clear()
+    # Phase-9 path: drop the JaegerAgent's internal messages too.
+    agent_dropped = 0
+    agent = _jaeger_agents_by_session.get(session_key)
+    if agent is not None and hasattr(agent, "messages"):
+        agent_dropped = len(agent.messages)
+        agent.messages.clear()
     _session_loaded.add(session_key)
     _session_state.pop(session_key, None)
-    return dropped
+    return legacy_dropped + agent_dropped
 
 
 def pop_last_exchange(session_key: str = _DEFAULT_SESSION_KEY) -> str | None:
     """Drop the most recent user→assistant exchange from a session's
     history (``/undo`` / ``/retry``). Returns the user text of that
     exchange so ``/retry`` can re-send it, or ``None`` when there is
-    nothing to drop."""
+    nothing to drop.
+
+    Prefers the Phase-9 ``JaegerAgent.messages`` list when one exists
+    for the session — that's where the live conversation actually
+    lives. Falls back to the legacy ``_session_histories`` shape for
+    hybrid sessions that ran through the pre-Phase-9 loop."""
+    # ── Phase-9 path: dict-shape messages on the agent. ─────────────
+    agent = _jaeger_agents_by_session.get(session_key)
+    if agent is not None and getattr(agent, "messages", None):
+        msgs = agent.messages
+        cut = None
+        user_text: str | None = None
+        for i in range(len(msgs) - 1, -1, -1):
+            m = msgs[i]
+            if isinstance(m, dict) and m.get("role") == "user":
+                cut = i
+                user_text = str(m.get("content") or "")
+                break
+        if cut is not None:
+            del msgs[cut:]
+            return user_text
+    # ── Legacy pydantic-ai path (kept for hybrid sessions). ────────
     history = _session_histories.get(session_key)
     if not history:
         return None
     cut = None
-    user_text: str | None = None
+    user_text = None
     for i in range(len(history) - 1, -1, -1):
         for part in getattr(history[i], "parts", []):
             if getattr(part, "part_kind", None) == "user-prompt":
@@ -1254,58 +1298,13 @@ def _register_builtins(client: Any) -> None:
         board. When every item is completed, the task is done."""
         return t.todo(todos=todos, merge=merge)
 
-    @register_tool_from_function
-    def describe_tool(name: str) -> dict:
-        """Show the FULL schema (description + parameter shape) of a
-        single tool — even one that is not currently in your visible
-        toolset. Use this when you see a tool name in the catalog and
-        want to know exactly what arguments it takes BEFORE deciding
-        to use it (or before calling ``load_toolset`` to bring its
-        whole category in).
-
-        Cheaper than ``load_toolset`` when you only need one specific
-        tool: the catalog tells you what exists, ``describe_tool``
-        shows you how to call it. Returns ``{name, description,
-        parameters}`` or ``{ok: false, error}`` for an unknown name."""
-        from jaeger_os.agent.schemas.tool_registry import get_tool, has_tool
-        clean = (name or "").strip()
-        if not clean or not has_tool(clean):
-            return {"ok": False, "error": f"unknown tool {name!r}"}
-        tool = get_tool(clean)
-        schema = tool.to_openai_schema() if hasattr(tool, "to_openai_schema") else {}
-        function = schema.get("function", {}) if isinstance(schema, dict) else {}
-        return {
-            "ok": True,
-            "name": function.get("name") or tool.name,
-            "description": function.get("description", ""),
-            "parameters": function.get("parameters", {}),
-        }
-
-    @register_tool_from_function
-    def load_toolset(name: str = "") -> dict:
-        """Make a group of extra tools visible. You start each turn with
-        a small CORE toolset; everything else is grouped — built-in
-        classes (`files`, `code`, `media`, …) and skills (each skill is
-        its own toolset of curated tools).
-
-        Call this the MOMENT a task needs a capability you don't see a
-        tool for — BEFORE concluding you can't do it. The new tools
-        appear on your very next step. Call with no name (or an unknown
-        one) to get the catalog of every toolset and what it holds.
-        Returns the toolsets now active."""
-        from jaeger_os.core.skills.toolsets import (
-            active_toolset_names, all_toolsets, enable_toolset,
-        )
-        clean = (name or "").strip().lower()
-        if enable_toolset(clean):
-            return {"ok": True, "loaded": clean,
-                    "active": sorted(active_toolset_names())}
-        return {
-            "ok": False,
-            "error": (f"unknown toolset {name!r}" if clean
-                      else "give a toolset name — catalog below"),
-            "available": all_toolsets(),
-        }
+    # NB: ``describe_tool`` and ``load_toolset`` are NOT redefined here.
+    # Both are owned by :mod:`jaeger_os.core.tools.meta` and registered
+    # at module-import time. The pre-Phase-9 pattern of wrapping each
+    # built-in tool inside this closure created two copies (one in
+    # ``meta.py`` and one here) that could drift; the meta module is
+    # now the single source of truth. See finding #11 in
+    # docs/code_review_2026_05_24.md.
 
     @register_tool_from_function
     def start_background(code: str, name: str = "") -> dict:
@@ -1495,8 +1494,14 @@ def _register_builtins(client: Any) -> None:
         from jaeger_os.core.skills.skill_loader import load_and_register, _REGISTERED_KEYS
         cfg = _pipeline["config"]
         before = {(n, v, z) for (n, v, z) in _REGISTERED_KEYS}
+        # Phase-9 sentinel: ``load_and_register`` only needs an object
+        # whose ``tool_plain`` is callable (it mirrors registrations
+        # through the global tool registry). The legacy ``agent``
+        # symbol from the pre-Phase-9 closure no longer exists in this
+        # scope — passing a fresh sentinel keeps the call working
+        # without re-introducing pydantic-ai's Agent dependency.
         report = load_and_register(
-            agent,
+            _RegistrationSentinel(),
             _pipeline["layout"],
             run_smoke_tests=cfg.skills.run_smoke_tests,
             enabled_allowlist=list(cfg.skills.enabled_base_skills) or None,
@@ -2165,10 +2170,26 @@ def _run_turn_via_jaeger_agent(
         runner.queue(user_text, run_id=os.environ.get("BENCH_RUN_ID"))
 
     set_agent_status("ready")
+    # ``spoke_via_tool`` tells the voice loop "the model already spoke
+    # the answer through ``text_to_speech`` — don't re-speak the
+    # returned text". Previously this checked for a ``🔊`` emoji in
+    # the activity lines, but the Phase-9 renderer
+    # (:func:`_tool_activity_lines`) emits ``  ▸ tool(args)`` with no
+    # emoji, so the check was always False → every voice turn that
+    # used ``text_to_speech`` played the audio TWICE (once from the
+    # tool, once from the TUI's post-turn ``v.speak(text)`` fallback).
+    # Now we check by tool name AND fall back to the legacy emoji
+    # marker for any caller still on the older formatter.
+    _SPOKEN_TOOLS = ("text_to_speech", "speak")
+    spoke_via_tool = any(
+        "🔊" in line
+        or any(f"▸ {t}(" in line for t in _SPOKEN_TOOLS)
+        for line in tool_activity
+    )
     return {
         "text": answer, "error": None, "tool_activity": tool_activity,
         "first_decision": first_decision, "skipped_final": skipped,
-        "spoke_via_tool": any("🔊" in line for line in tool_activity),
+        "spoke_via_tool": spoke_via_tool,
         "elapsed_s": elapsed, "report": report,
     }
 

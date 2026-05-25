@@ -143,16 +143,63 @@ class KokoroTTS:
         return self._pipeline
 
     def warm(self) -> dict[str, Any]:
-        """Pre-load Kokoro so the first speak() doesn't pay the ~3–5 s
-        weight-load tax. Idempotent."""
+        """Pre-load Kokoro AND prime the synthesis pipeline so the
+        first user-visible utterance doesn't pay the JIT / kernel-
+        selection / graph-compile tax.
+
+        Two stages:
+
+          1. ``_ensure_pipeline()`` — loads weights (~3–5s cold).
+          2. A real synthesis pass over a short primer phrase, audio
+             discarded. This exercises the full inference graph
+             including the MPS / Metal kernel pickers on Apple Silicon
+             — without it, the FIRST real user utterance was the one
+             paying the JIT cost, which manifested as audible
+             distortion + dropped phonemes (a known PyTorch-on-MPS
+             first-batch behaviour). The second utterance always
+             sounded right; now the first does too because warm-up
+             absorbed the cost.
+
+        Idempotent. Audio is built in memory but never played — we
+        don't want a phantom "warming up" sound at boot.
+        """
         started = time.perf_counter()
+        load_s = 0.0
+        prime_s = 0.0
         try:
+            t0 = time.perf_counter()
             pipe = self._ensure_pipeline()
+            # First pass: drain ONE chunk so the model object's
+            # internal lazy state is touched.
             for _ in pipe(" ", voice=self.voice):
                 break
+            load_s = time.perf_counter() - t0
+
+            # Second pass: REAL synthesis on a representative phrase
+            # (mixed phonemes, comma, period). Audio is built and
+            # immediately discarded — never reaches the speaker.
+            t1 = time.perf_counter()
+            primer = "Hello, this is a warm-up pass. One, two, three."
+            import numpy as np
+            chunks: list[Any] = []
+            for r in pipe(primer, voice=self.voice):
+                if r.audio is not None:
+                    chunks.append(np.asarray(r.audio, dtype=np.float32))
+            # Touch the concatenation path too — the synthesis side of
+            # ``speak()`` builds the same shape.
+            if chunks:
+                _ = np.concatenate(chunks)
+            prime_s = time.perf_counter() - t1
         except Exception as exc:
-            return {"warmed": False, "reason": str(exc)}
-        return {"warmed": True, "seconds": round(time.perf_counter() - started, 3)}
+            return {"warmed": False, "reason": str(exc),
+                    "load_s": round(load_s, 3),
+                    "prime_s": round(prime_s, 3)}
+        total = round(time.perf_counter() - started, 3)
+        return {
+            "warmed": True, "seconds": total,
+            "load_s": round(load_s, 3),
+            "prime_s": round(prime_s, 3),
+        }
 
     # ── synthesis + playback ──────────────────────────────────────────
     def _synthesize(self, text: str) -> tuple[Any, bool]:

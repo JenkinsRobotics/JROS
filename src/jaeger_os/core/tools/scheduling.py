@@ -12,10 +12,23 @@ from __future__ import annotations
 from typing import Any
 
 from jaeger_os.core.memory import memory as mem
+from jaeger_os.core.safety.permissions import PermissionTier, requires_tier
 
 
+@requires_tier(
+    PermissionTier.WRITE_LOCAL,
+    skill="scheduling", operation="schedule_prompt",
+    summary="schedule a prompt for autonomous execution",
+)
 def schedule_prompt(cron_expr: str, prompt: str, name: str | None = None) -> dict[str, Any]:
     """Schedule a prompt for unattended execution on a cron expression.
+
+    Gated at WRITE_LOCAL: a scheduled prompt mutates durable on-disk
+    state AND will fire autonomously later. Effects-of-effects matter
+    here — a scheduled "open Safari + email me the news" turn can run
+    while the operator is asleep, so the creation step asks for
+    confirmation up front. (Each fired run is itself a fresh turn that
+    re-passes through the tier ladder for its own tool calls.)
 
     `cron_expr` is standard 5-field cron — e.g. "0 7 * * *" (7am daily),
     "*/10 * * * *" (every 10 minutes). The scheduled prompt fires in the
@@ -30,12 +43,24 @@ def schedule_prompt(cron_expr: str, prompt: str, name: str | None = None) -> dic
 
 
 def list_schedules() -> dict[str, Any]:
-    """List every active scheduled prompt with its next-run timestamp."""
+    """List every active scheduled prompt with its next-run timestamp.
+
+    Read-only — stays at the default READ_ONLY tier (no decorator)."""
     rows = mem.list_schedules()
     return {"count": len(rows), "schedules": rows}
 
 
+@requires_tier(
+    PermissionTier.WRITE_LOCAL,
+    skill="scheduling", operation="cancel_schedule",
+    summary="cancel a scheduled prompt",
+)
 def cancel_schedule(name: str) -> dict[str, Any]:
-    """Remove a previously-scheduled prompt by name."""
+    """Remove a previously-scheduled prompt by name.
+
+    Gated at WRITE_LOCAL (matches ``schedule_prompt``) — a stray
+    cancellation can silently break an automation the operator
+    depends on, so it gets the same prompt-before-mutation treatment
+    as creation."""
     ok = mem.cancel_schedule(name)
     return {"cancelled": ok, "name": name}

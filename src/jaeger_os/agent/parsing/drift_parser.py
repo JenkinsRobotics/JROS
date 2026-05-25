@@ -303,6 +303,113 @@ def _parse_drift_payload(raw: str) -> dict[str, Any] | None:
     return cleaned or None
 
 
+_LLAMA_BOT = "<|python_tag|>"
+
+
+def _extract_llama_raw_json_tool_calls(text: str) -> list[dict[str, Any]]:
+    """Salvage Llama 3.x / 4 raw-JSON tool calls.
+
+    Llama emits something like::
+
+        <|python_tag|>{"name": "get_time", "parameters": {"timezone": "UTC"}}
+
+    or simply (no bot-token)::
+
+        {"name": "get_weather", "arguments": {"location": "Tokyo"}}
+
+    The leading ``<|python_tag|>`` is optional. We use stdlib's
+    ``json.JSONDecoder.raw_decode`` so multiple JSON objects in a row
+    work, and we tolerate surrounding prose. Either ``arguments`` or
+    ``parameters`` is accepted (Llama uses ``parameters``, the rest of
+    the local-model matrix uses ``arguments``)."""
+    # Trim past the bot token if present so the first brace is the
+    # JSON we care about.
+    scan = text.split(_LLAMA_BOT, 1)[1] if _LLAMA_BOT in text else text
+    out: list[dict[str, Any]] = []
+    decoder = json.JSONDecoder()
+    idx = 0
+    while idx < len(scan):
+        # Hop to the next '{' — raw_decode wants a JSON-shaped prefix.
+        brace = scan.find("{", idx)
+        if brace < 0:
+            break
+        try:
+            obj, end = decoder.raw_decode(scan, brace)
+        except json.JSONDecodeError:
+            idx = brace + 1
+            continue
+        if isinstance(obj, dict):
+            name = obj.get("name") or obj.get("tool_name") or ""
+            args = obj.get("arguments")
+            if args is None:
+                args = obj.get("parameters")
+            if isinstance(name, str) and name and isinstance(args, dict):
+                out.append({"name": name.strip(), "args": args})
+        idx = end
+    return out
+
+
+_MISTRAL_BOT = "[TOOL_CALLS]"
+
+
+def _extract_mistral_tool_calls(text: str) -> list[dict[str, Any]]:
+    """Salvage Mistral ``[TOOL_CALLS]`` emissions.
+
+    Two formats, both seen in the wild:
+
+      - **Pre-v11** (JSON array):
+        ``content[TOOL_CALLS] [{"name": "...", "arguments": {...}}, ...]``
+      - **v11+** (interleaved): ``[TOOL_CALLS]name1{"k":"v"}[TOOL_CALLS]name2{"k":"v"}``
+
+    Mirrors Hermes's mistral_parser shape. Refuses to fuzzy-match an
+    unknown name — same conservative stance as the Gemma/Qwen branches."""
+    idx = text.find(_MISTRAL_BOT)
+    if idx < 0:
+        return []
+    out: list[dict[str, Any]] = []
+    decoder = json.JSONDecoder()
+
+    while idx >= 0:
+        # Move past the bot token and any whitespace.
+        cursor = idx + len(_MISTRAL_BOT)
+        while cursor < len(text) and text[cursor] in (" ", "\t", "\n", "\r"):
+            cursor += 1
+        if cursor >= len(text):
+            break
+        ch = text[cursor]
+        if ch == "[":
+            # Pre-v11 — single JSON array of {"name", "arguments"} objects.
+            try:
+                arr, end = decoder.raw_decode(text, cursor)
+            except json.JSONDecodeError:
+                break
+            if isinstance(arr, list):
+                for item in arr:
+                    if not isinstance(item, dict):
+                        continue
+                    name = item.get("name") or ""
+                    args = item.get("arguments") or item.get("parameters") or {}
+                    if isinstance(name, str) and name and isinstance(args, dict):
+                        out.append({"name": name.strip(), "args": args})
+            idx = text.find(_MISTRAL_BOT, end)
+            continue
+        # v11+ — bare ``name{"k":"v"}``; possibly chained with more
+        # [TOOL_CALLS]name{...} segments. Read name up to the first
+        # ``{`` (greedy), then raw_decode the JSON args.
+        brace = text.find("{", cursor)
+        if brace < 0:
+            break
+        name = text[cursor:brace].strip()
+        try:
+            obj, end = decoder.raw_decode(text, brace)
+        except json.JSONDecodeError:
+            break
+        if name and isinstance(obj, dict):
+            out.append({"name": name, "args": obj})
+        idx = text.find(_MISTRAL_BOT, end)
+    return out
+
+
 def _extract_qwen_tool_calls(text: str) -> list[dict[str, Any]]:
     """Salvage Qwen3-Coder's ``<function=…><parameter=…>`` tool calls.
 
@@ -378,6 +485,43 @@ def extract_tool_calls(text: str) -> list[ToolCall]:
     Returned dicts are in *internal* :class:`ToolCall` shape with
     ``arguments`` as a real ``dict`` (not a JSON-encoded string).
     """
+    # Mistral's bot-token form — ``[TOOL_CALLS]`` followed by either a
+    # JSON array (pre-v11) or interleaved name + brace-args (v11+). No
+    # ``<`` needed; check first so we don't fall into the no-``<``
+    # early-return below.
+    if "[TOOL_CALLS]" in text:
+        mistral = _extract_mistral_tool_calls(text)
+        if mistral:
+            return [
+                {"id": _new_id("mistral"), "name": m["name"],
+                 "arguments": m["args"]}
+                for m in mistral
+            ]
+
+    # Llama 3.x/4 raw-JSON form — a bare ``{"name": "...", "arguments":
+    # {...}}`` (or ``parameters``) preceded by ``<|python_tag|>``, OR
+    # the same JSON shape with NO XML wrapping at all. We deliberately
+    # require ``<|python_tag|>`` OR absence of every other dialect's
+    # opening tag — otherwise the JSON-envelope-inside-``<tool_call>``
+    # Hermes shape would be misclassified as Llama.
+    _llama_marker_present = _LLAMA_BOT in text
+    _other_wrapper_present = (
+        "<tool_call>" in text
+        or "<|tool_call|>" in text
+        or "<|tool_call>" in text
+        or "<function=" in text
+    )
+    if (_llama_marker_present or not _other_wrapper_present) and (
+        "{" in text and ('"name"' in text or '"tool_name"' in text)
+    ):
+        llama = _extract_llama_raw_json_tool_calls(text)
+        if llama:
+            return [
+                {"id": _new_id("llama"), "name": l["name"],
+                 "arguments": l["args"]}
+                for l in llama
+            ]
+
     if "<" not in text:
         return []
 

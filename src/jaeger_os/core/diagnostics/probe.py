@@ -245,16 +245,30 @@ def _run_one(check: HealthCheck) -> HealthResult:
 
 def run_health_checks(
     checks: list[HealthCheck] | None = None,
+    *,
+    deep: bool = False,
 ) -> dict[str, Any]:
     """Run every check and roll up a summary dict.
 
     Returns ``{ok, passed, total, checks: [...], elapsed_s}``.
 
+    ``deep=False`` (default) — the lean substrate probes only:
+    layout, sandbox, memory, time, calculate, tool_registry, skills,
+    drift_parser. Under 3 seconds total, idempotent, safe for cron.
+
+    ``deep=True`` — adds the agent-loop probes (see
+    :data:`DEEP_CHECKS`). These drive the LIVE agent through three
+    representative turns (no-tool answer, read-only tool, sandbox
+    write) so the operator can verify "the agent can actually answer
+    a question" — not just "the substrate is healthy".
+
     ``ok`` is True only when every probe passed — strict roll-up so a
     caller can branch on the topline boolean without inspecting
     individual rows. The full results list stays in ``checks`` for
     drill-down."""
-    selected = checks if checks is not None else DEFAULT_CHECKS
+    selected = list(checks) if checks is not None else list(DEFAULT_CHECKS)
+    if deep and checks is None:
+        selected += DEEP_CHECKS
     started = time.perf_counter()
     results = [_run_one(c) for c in selected]
     elapsed_s = time.perf_counter() - started
@@ -263,6 +277,7 @@ def run_health_checks(
         "ok": passed == len(results),
         "passed": passed,
         "total": len(results),
+        "deep": bool(deep and checks is None),
         "checks": [
             {"name": r.name, "ok": r.ok, "detail": r.detail,
              "elapsed_ms": r.elapsed_ms}
@@ -272,7 +287,103 @@ def run_health_checks(
     }
 
 
+# ── deep checks — drive the LIVE agent loop ────────────────────────
+
+
+def _check_agent_no_tool() -> tuple[bool, str]:
+    """One free-text turn through the real agent. No tools required —
+    proves the model loads, decodes, and produces a final answer.
+    Cheap (~1-3s on a warm model)."""
+    try:
+        from jaeger_os.main import _pipeline, run_command
+    except Exception as exc:  # noqa: BLE001
+        return False, f"could not import agent: {exc}"
+    client = _pipeline.get("client")
+    if client is None:
+        return False, "no booted client — start the TUI first"
+    try:
+        out = run_command(client, "Reply with one word: alive",
+                          session_key="health_probe_no_tool")
+    except Exception as exc:  # noqa: BLE001
+        return False, f"agent raised: {type(exc).__name__}: {exc}"
+    text = (out.get("text") or "").strip().lower()
+    if not text:
+        return False, "agent returned empty answer"
+    return True, f"answered in {out.get('elapsed_s', 0):.1f}s"
+
+
+def _check_agent_read_tool() -> tuple[bool, str]:
+    """One turn that should route to a READ-only tool — calculate
+    is the cheapest: a wrong answer is a hard fail, a right answer
+    proves dispatch + the post-call finalizer."""
+    try:
+        from jaeger_os.main import _pipeline, run_command
+    except Exception as exc:  # noqa: BLE001
+        return False, f"could not import agent: {exc}"
+    client = _pipeline.get("client")
+    if client is None:
+        return False, "no booted client"
+    try:
+        out = run_command(client, "calculate 7 times 6",
+                          session_key="health_probe_read")
+    except Exception as exc:  # noqa: BLE001
+        return False, f"agent raised: {type(exc).__name__}: {exc}"
+    text = (out.get("text") or "")
+    if "42" not in text:
+        return False, f"calculate didn't return 42: {text[:80]!r}"
+    return True, f"calculate→42 in {out.get('elapsed_s', 0):.1f}s"
+
+
+def _check_agent_sandbox_write() -> tuple[bool, str]:
+    """One write+read round-trip through the agent. Proves the
+    permission tier system isn't blocking sandboxed writes and the
+    finalizer's "shortest possible reply" rule still surfaces the
+    work."""
+    try:
+        from jaeger_os.main import _pipeline, run_command
+        from jaeger_os.core.tools._common import _require_layout
+    except Exception as exc:  # noqa: BLE001
+        return False, f"could not import agent: {exc}"
+    client = _pipeline.get("client")
+    if client is None:
+        return False, "no booted client"
+    probe_name = "_health_probe_write.txt"
+    try:
+        run_command(
+            client,
+            f"Write the text 'health ok' to {probe_name} and then "
+            f"read it back to confirm.",
+            session_key="health_probe_write",
+        )
+    except Exception as exc:  # noqa: BLE001
+        return False, f"agent raised: {type(exc).__name__}: {exc}"
+    # Verify the file actually landed in the sandbox.
+    layout = _require_layout()
+    probe_path = layout.skills_dir / probe_name
+    if not probe_path.is_file():
+        return False, f"sandbox write did not produce {probe_path}"
+    body = probe_path.read_text(encoding="utf-8")
+    try:
+        probe_path.unlink()
+    except OSError:
+        pass
+    if "health ok" not in body.lower():
+        return False, f"file present but content mismatch: {body[:60]!r}"
+    return True, "write+read+verify ok"
+
+
+# Drives the LIVE agent through three turns — substantially slower
+# than the lean probes (each LLM call costs whatever the loaded
+# model costs). Only fires when ``run_health_checks(deep=True)``.
+DEEP_CHECKS: list[HealthCheck] = [
+    HealthCheck("agent.no_tool",       _check_agent_no_tool),
+    HealthCheck("agent.read_tool",     _check_agent_read_tool),
+    HealthCheck("agent.sandbox_write", _check_agent_sandbox_write),
+]
+
+
 __all__ = [
+    "DEEP_CHECKS",
     "DEFAULT_CHECKS",
     "HealthCheck",
     "HealthResult",

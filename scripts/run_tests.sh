@@ -39,12 +39,25 @@ export LC_ALL="C.UTF-8"
 export PYTHONHASHSEED="0"
 # Headless: don't open Terminal.app / Safari windows during tests.
 export JAEGER_TEST_HEADLESS="1"
-# No accidental API calls — strip every common auth var so a test
-# that forgets to mock won't quietly hit a live endpoint.
-for v in OPENAI_API_KEY ANTHROPIC_API_KEY HUGGINGFACE_TOKEN HF_TOKEN \
-         GROQ_API_KEY MISTRAL_API_KEY TOGETHER_API_KEY DEEPSEEK_API_KEY; do
-    unset "$v" 2>/dev/null || true
-done
+# No accidental API calls — strip every credential-shaped env var so
+# a test that forgets to mock won't quietly hit a live endpoint.
+# Pattern sweep: anything ending in API_KEY / TOKEN / SECRET / PASSWORD
+# plus the AWS / GitHub / OAuth canonicals. The earlier hand-list
+# missed e.g. ``OPENROUTER_API_KEY`` / ``COHERE_API_KEY`` / new
+# providers as they appear; the glob catches them automatically.
+while IFS='=' read -r name _value; do
+    case "$name" in
+        *_API_KEY|*_TOKEN|*_SECRET|*_PASSWORD|\
+        AWS_ACCESS_KEY_ID|AWS_SECRET_ACCESS_KEY|AWS_SESSION_TOKEN|\
+        GITHUB_TOKEN|GH_TOKEN|GIT_ASKPASS|\
+        OPENAI_API_KEY|ANTHROPIC_API_KEY|HUGGINGFACE_TOKEN|HF_TOKEN|\
+        GROQ_API_KEY|MISTRAL_API_KEY|TOGETHER_API_KEY|DEEPSEEK_API_KEY|\
+        OPENROUTER_API_KEY|COHERE_API_KEY|XAI_API_KEY|GOOGLE_API_KEY|\
+        GEMINI_API_KEY)
+            unset "$name" 2>/dev/null || true
+            ;;
+    esac
+done < <(env)
 
 # ── flag parsing ───────────────────────────────────────────────────
 
@@ -80,8 +93,12 @@ if [ ! -x "$PYTEST" ]; then
 fi
 
 # pytest-xdist parallel workers if installed — falls back to serial.
+# ``-n auto`` uses every core; that's noisy on a dev laptop and
+# exposes CI-vs-local differences (test ordering, fixture races).
+# ``JROS_TEST_WORKERS`` pins the count for reproducibility; export
+# it = 1 to debug a flake.
 if "$PYTEST" --help 2>/dev/null | grep -q -- '-n NUMPROCESSES'; then
-    XDIST_ARGS=(-n auto)
+    XDIST_ARGS=(-n "${JROS_TEST_WORKERS:-4}")
 else
     XDIST_ARGS=()
 fi

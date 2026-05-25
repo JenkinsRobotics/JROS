@@ -26,26 +26,31 @@ from __future__ import annotations
 from typing import Any
 
 
-def system_health() -> dict[str, Any]:
-    """Run the lean runtime health probe — 8 fast checks (<3s wall
-    total, idempotent).
+def system_health(deep: bool = False) -> dict[str, Any]:
+    """Run the runtime health probe.
 
-    Each check verifies a layer most likely to break silently after
-    a config or refactor change: layout writable, sandbox accepts
-    writes, memory round-trips, get_time / calculate respond, every
-    CORE tool resolves, at least one skill is loaded, the drift
-    parser handles a canonical emission.
+    ``deep=False`` (default) — 8 fast substrate checks (<3s wall,
+    idempotent). Verifies the layers most likely to break silently
+    after a config or refactor change: layout writable, sandbox
+    accepts writes, memory round-trips, get_time / calculate
+    respond, every CORE tool resolves, at least one skill is
+    loaded, the drift parser handles a canonical emission. Does NOT
+    touch the LLM — safe for cron / monitoring.
 
-    Returns ``{ok, passed, total, checks: [...], elapsed_s}``. ``ok``
-    is True only when every probe passed — call this first when the
-    user says "are you healthy?" / "self-check" / "diagnose yourself"
-    and branch on the topline boolean.
+    ``deep=True`` — adds three agent-loop turns through the LIVE
+    model: a free-text answer, a read-only tool call (calculate),
+    and a sandbox write+read round-trip. Slower (each turn pays
+    the model's per-turn cost) but proves "the agent can actually
+    answer questions" — not just "the substrate is healthy".
 
-    Use ``--doctor`` from the CLI for dep / config-file checks. Use
-    ``run_benchmark`` for routing accuracy. Use this for "is the
-    runtime actually working right now"."""
+    Returns ``{ok, passed, total, deep, checks: [...], elapsed_s}``.
+    ``ok`` is True only when every probe passed.
+
+    Use ``--doctor`` for dep / config-file checks. Use
+    ``run_benchmark`` for routing accuracy across many cases. Use
+    this for "is the runtime actually working right now"."""
     from jaeger_os.core.diagnostics import run_health_checks
-    return run_health_checks()
+    return run_health_checks(deep=bool(deep))
 
 
 __all__ = ["system_health"]

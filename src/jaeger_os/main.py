@@ -1344,18 +1344,24 @@ def _register_builtins(client: Any) -> None:
         return t.pending_background()
 
     @register_tool_from_function
-    def system_health() -> dict:
-        """Run the lean runtime health probe — 8 fast idempotent
-        checks (<3s wall) that verify the live agent's surface: layout
-        writable, sandbox accepts writes, memory round-trips, get_time
-        and calculate respond, every CORE tool resolves, skills are
-        loaded, the drift parser handles a canonical emission.
+    def system_health(deep: bool = False) -> dict:
+        """Run the runtime health probe.
 
-        Returns ``{ok, passed, total, checks: [...], elapsed_s}``.
+        ``deep=False`` (default) — 8 fast substrate checks (<3s wall,
+        idempotent). Verifies layout, sandbox, memory round-trip,
+        get_time / calculate, CORE tool registry, skill discovery,
+        and the drift parser. Doesn't touch the LLM.
+
+        ``deep=True`` — adds three agent-loop turns through the LIVE
+        model: free-text answer, read-only tool, sandbox write/read.
+        Proves the agent can actually answer questions, not just
+        that the substrate is healthy. Slower — each turn costs a
+        real model call.
+
         Call this when the user asks "are you healthy?" / "self-check"
         / "diagnose yourself" — it's the post-boot counterpart to
         ``--doctor`` (which only checks deps + config)."""
-        return t.system_health()
+        return t.system_health(deep=deep)
 
     @register_tool_from_function
     def run_benchmark(tags: str = "", limit: int = 0,

@@ -1,8 +1,22 @@
 """Lean tool surface + the consolidated memory tool.
 
-The model sees a hermes-sized core (~20 tools), not all ~60 — routing
-on a local model degrades as the surface grows. And memory is ONE
-action-dispatch tool instead of five (remember/recall/forget/list/search).
+There used to be TWO visibility models in this module:
+
+  * ``model_visible()`` — "hermes-sized lean surface by default,
+    JAEGER_FULL_TOOLS as kill-switch". An aspirational design that
+    nothing in the agent loop ever actually called.
+  * ``tool_visible()`` — the gate the agent *actually* uses. Opt-in
+    via ``JAEGER_TOOLSET_SCOPING``; defaults to "every registered
+    tool visible" (fail-open) and tightens to "CORE plus loaded
+    toolsets" when scoping is on.
+
+The duplicate was a footgun, so ``model_visible`` was removed. This
+file pins ``tool_visible`` — the live gate — at both default and
+scoped settings.
+
+It also pins LEAN_CORE's *size* as a name set (used by the doctor's
+tool-registry check) and the consolidated memory tool's
+action-dispatch contract.
 """
 
 from __future__ import annotations
@@ -12,42 +26,64 @@ from types import SimpleNamespace
 import pytest
 
 from jaeger_os.core import tools
-from jaeger_os.core.skills.toolsets import LEAN_CORE, model_visible
+from jaeger_os.core.skills.toolsets import (
+    CORE, LEAN_CORE, enable_toolset, reset_toolsets, tool_visible,
+)
 
 
-# ── lean surface ─────────────────────────────────────────────────────
+# ── tool_visible — the live gate ──────────────────────────────────
 
 
-def test_core_tools_are_visible_to_the_model() -> None:
-    for name in ("execute_code", "memory", "read_file", "write_file",
-                 "web_search", "todo", "computer_use"):
-        assert model_visible(name), name
+def test_default_is_fail_open(monkeypatch) -> None:
+    """With ``JAEGER_TOOLSET_SCOPING`` unset (the shipped default),
+    every tool is visible. A model that gets too many tools is a
+    routing concern, not a hard refusal."""
+    monkeypatch.delenv("JAEGER_TOOLSET_SCOPING", raising=False)
+    reset_toolsets()
+    assert tool_visible("get_time") is True
+    assert tool_visible("execute_code") is True
+    assert tool_visible("anything_unregistered") is True
 
 
-def test_archived_tools_are_hidden_from_the_model() -> None:
-    # Still registered + callable — just off the model's view.
-    for name in ("get_time", "calculate", "board_add", "schedule_prompt",
-                 "remember", "run_python", "install_package"):
-        assert not model_visible(name), name
+def test_scoping_on_shows_core_hides_unloaded_toolsets(monkeypatch) -> None:
+    """With scoping ON, only CORE tools and tools from *loaded*
+    toolsets are visible. Unclassified tools still fail-open (the
+    safer default — a new tool isn't silently hidden)."""
+    monkeypatch.setenv("JAEGER_TOOLSET_SCOPING", "1")
+    reset_toolsets()
+    # CORE always visible.
+    assert tool_visible("get_time") is True
+    # ``execute_code`` lives in the ``code`` toolset — hidden until
+    # someone calls load_toolset("code").
+    assert tool_visible("execute_code") is False
+    # Unclassified tool fails open.
+    assert tool_visible("a_brand_new_uncategorised_tool") is True
 
 
-def test_full_tools_env_exposes_everything(monkeypatch) -> None:
-    monkeypatch.setenv("JAEGER_FULL_TOOLS", "1")
-    assert model_visible("get_time") is True
-    assert model_visible("anything_at_all") is True
+def test_load_toolset_reveals_its_members(monkeypatch) -> None:
+    monkeypatch.setenv("JAEGER_TOOLSET_SCOPING", "1")
+    reset_toolsets()
+    assert tool_visible("execute_code") is False
+    enable_toolset("code")
+    assert tool_visible("execute_code") is True
+
+
+# ── LEAN_CORE / CORE — name sets the doctor pins against ────────
 
 
 def test_lean_core_is_hermes_sized() -> None:
-    assert 12 <= len(LEAN_CORE) <= 26  # ~20, not ~60 — the whole point
+    """LEAN_CORE is a curated name set (used by ``--doctor`` for
+    tool-registry coverage). Pin its size so a runaway addition
+    doesn't quietly bloat the bench's idea of "core"."""
+    assert 12 <= len(LEAN_CORE) <= 26
 
 
-def test_mcp_tools_are_not_lean_filtered() -> None:
-    # A configured MCP server is deliberately loaded — the lean surface
-    # must not hide the tools it re-exports.
-    from jaeger_os.core.skills.toolsets import register_mcp_tools
-    assert model_visible("weather-server:get_forecast") is False
-    register_mcp_tools(["weather-server:get_forecast"])
-    assert model_visible("weather-server:get_forecast") is True
+def test_core_and_lean_core_share_an_intentional_subset() -> None:
+    """LEAN_CORE is the hermes-style action-dispatch tier; CORE is
+    the JROS always-visible set. They overlap on the obvious
+    primitives — ``read_file``, ``write_file``, ``memory`` — so the
+    doctor can cross-check both name sets resolve."""
+    assert CORE & LEAN_CORE  # non-empty intersection
 
 
 # ── consolidated memory tool ─────────────────────────────────────────

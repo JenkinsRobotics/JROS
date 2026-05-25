@@ -287,10 +287,16 @@ CASES: list[BenchCase] = [
               notes="Pronoun resolution: 'what about X' inherits weather intent."),
 
     # ── Recovery — failure surface + anti-hallucination (was L4) ──
+    # Each case now pins ``expected_tools`` — without that, a model
+    # could "answer plausibly" without actually exercising the failure
+    # path (e.g. claim "the file doesn't exist" without calling
+    # read_file at all). The point of recovery cases is to verify
+    # tool BEHAVIOUR under failure, not just answer text.
     BenchCase(id="rec_python_syntax",
               prompt="Use run_python to execute this code (it has a syntax "
                      "error on purpose): print(   — note the unclosed "
                      "parenthesis. After it fails, tell me what went wrong.",
+              expected_tools=["run_python"],
               answer_contains_any=["syntax", "error", "fail", "broken",
                                    "invalid", "couldn't", "could not",
                                    "unable", "unclosed"],
@@ -300,6 +306,7 @@ CASES: list[BenchCase] = [
               prompt="Use run_python to evaluate the expression one divided "
                      "by zero. After it fails, tell me what error name "
                      "Python raised.",
+              expected_tools=["run_python"],
               answer_contains_any=["zero", "division", "zerodivision",
                                    "error", "couldn't", "could not", "unable"],
               hallucination_signals=["infinity", "undefined as math"],
@@ -307,6 +314,7 @@ CASES: list[BenchCase] = [
     BenchCase(id="rec_read_missing",
               prompt="Read a file called nonexistent_xyz_12345.txt and tell "
                      "me what's inside.",
+              expected_tools=["read_file"],
               answer_contains_any=["not found", "doesn't exist", "no such",
                                    "missing", "couldn't find", "could not find",
                                    "unable to find", "wasn't able",
@@ -315,6 +323,7 @@ CASES: list[BenchCase] = [
               tags=["recovery", "files"]),
     BenchCase(id="rec_delete_missing",
               prompt="Delete the file totally_not_a_real_file_8675309.txt.",
+              expected_tools=["delete_file"],
               answer_contains_any=["not found", "doesn't exist", "no such",
                                    "missing", "couldn't find", "could not find",
                                    "unable to find", "wasn't able",
@@ -323,6 +332,7 @@ CASES: list[BenchCase] = [
               tags=["recovery", "files"]),
     BenchCase(id="rec_calc_divbyzero",
               prompt="Calculate 12345 divided by 0.",
+              expected_tools=["calculate"],
               answer_contains_any=["zero", "undefined", "infinity", "cannot",
                                    "error", "division", "infinite"],
               hallucination_signals=["the answer is 0", "the result is 12345"],
@@ -330,11 +340,13 @@ CASES: list[BenchCase] = [
     BenchCase(id="rec_search_no_denial",
               prompt="Search the web for 'jaeger distributed tracing uber'. "
                      "Use the result to tell me who built jaeger.",
+              expected_tools=["web_search"],
               hallucination_signals=["don't have access", "don't have a web",
                                      "i can't search", "not able to search"],
               tags=["recovery", "web"]),
     BenchCase(id="rec_weather_unknown",
               prompt="What's the weather in Atlantis_FakeCity_99999?",
+              expected_tools=["get_weather"],
               answer_contains_any=["unknown", "not found", "couldn't",
                                    "could not", "unable", "fail", "error",
                                    "sorry"],
@@ -343,6 +355,7 @@ CASES: list[BenchCase] = [
     BenchCase(id="rec_recall_missing",
               prompt="Recall what my secret_password_xyz_9999 is. Tell me "
                      "whether you actually have a value stored for it.",
+              expected_tools=["recall"],
               answer_contains_any=["no value", "not", "don't", "haven't",
                                    "missing", "empty", "couldn't", "no record"],
               hallucination_signals=["your password is", "the value is",
@@ -350,6 +363,7 @@ CASES: list[BenchCase] = [
               tags=["recovery", "memory"]),
     BenchCase(id="rec_schedule_cancel_missing",
               prompt="Cancel the scheduled prompt named never_existed_demo_xyz.",
+              expected_tools=["cancel_schedule"],
               answer_contains_any=["no schedule", "not found", "doesn't exist",
                                    "couldn't find", "could not find",
                                    "unable to find", "no such", "wasn't able"],

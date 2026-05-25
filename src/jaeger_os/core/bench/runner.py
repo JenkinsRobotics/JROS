@@ -289,11 +289,55 @@ def run_bench(
 # ── Summarising ────────────────────────────────────────────────────
 
 
+# Named suites the bench rolls up against. Each suite is a tag-filter
+# over the corpus plus a pass-rate threshold the report grades against.
+# Reporting in suites (rather than just topline) keeps regressions
+# legible: "routing 22/25, multistep 7/9, recovery 5/9" tells the
+# operator which category dropped — a flat "44/57" hides it.
+#
+# Thresholds are advisory — the bench still reports the raw pass count.
+# Tune them per-model in a follow-up once we have data; current values
+# are conservative ballparks based on the gemma-4-E4B baseline.
+SUITES: dict[str, dict[str, Any]] = {
+    "smoke":     {"tags": {"routing"}, "limit": 5,  "threshold": 0.80,
+                  "blurb": "5-case sanity check; routing only"},
+    "routing":   {"tags": {"routing"},          "threshold": 0.85,
+                  "blurb": "single-turn, single-tool dispatch"},
+    "multistep": {"tags": {"multistep"},        "threshold": 0.65,
+                  "blurb": "single-turn, multiple-tool chaining"},
+    "multiturn": {"tags": {"multiturn"},        "threshold": 0.70,
+                  "blurb": "multi-turn conversations with carried history"},
+    "recovery":  {"tags": {"recovery"},         "threshold": 0.60,
+                  "blurb": "failure surface + anti-hallucination"},
+    "full":      {"tags": None,                 "threshold": 0.70,
+                  "blurb": "every case in the corpus"},
+}
+
+
+def _suite_rows(rows: list[BenchRow], suite_name: str) -> list[BenchRow]:
+    """Filter ``rows`` to the cases that belong to ``suite_name``. The
+    ``smoke`` suite additionally clips to ``limit`` cases so the
+    summary stays honest about what was actually exercised."""
+    spec = SUITES.get(suite_name)
+    if spec is None:
+        return []
+    tags = spec.get("tags")
+    if tags is None:
+        out = list(rows)
+    else:
+        out = [r for r in rows if tags.intersection(r.tags)]
+    limit = spec.get("limit")
+    if limit:
+        out = out[:int(limit)]
+    return out
+
+
 def summarise(rows: list[BenchRow]) -> dict[str, Any]:
     """Reduce a list of bench rows into a single dict the agent (or a
     rendering layer) can format. Keeps individual rows under ``rows``
-    for drill-down while exposing the topline counts the agent will
-    quote back to the user."""
+    for drill-down while exposing the topline counts AND a per-suite
+    breakdown — a flat "97% pass rate" hides which category regressed,
+    so we publish "routing 22/25, multistep 7/9, recovery 5/9" too."""
     total = len(rows)
     passed = sum(1 for r in rows if r.case_pass)
     routing_checked = [r for r in rows if r.routing_ok is not None]
@@ -309,6 +353,27 @@ def summarise(rows: list[BenchRow]) -> dict[str, Any]:
             if r.case_pass:
                 slot["passed"] += 1
 
+    # Per-suite roll-up — grades against each suite's advisory
+    # threshold so the report says "routing FAIL (passed below 0.85)"
+    # instead of just dumping counts.
+    suites: dict[str, dict[str, Any]] = {}
+    for name, spec in SUITES.items():
+        suite_rows = _suite_rows(rows, name)
+        if not suite_rows:
+            continue
+        s_total = len(suite_rows)
+        s_passed = sum(1 for r in suite_rows if r.case_pass)
+        rate = s_passed / s_total if s_total else 0.0
+        threshold = float(spec.get("threshold", 0.0))
+        suites[name] = {
+            "total": s_total,
+            "passed": s_passed,
+            "pass_rate": round(rate, 3),
+            "threshold": threshold,
+            "meets_threshold": rate >= threshold,
+            "blurb": spec.get("blurb", ""),
+        }
+
     return {
         "total": total,
         "passed": passed,
@@ -319,6 +384,7 @@ def summarise(rows: list[BenchRow]) -> dict[str, Any]:
         "answer_total": len(answer_checked),
         "errors": errors,
         "elapsed_s": round(total_elapsed, 2),
+        "suites": suites,
         "by_tag": by_tag,
         "failures": [
             {"id": r.id, "prompt": r.prompt[:100],

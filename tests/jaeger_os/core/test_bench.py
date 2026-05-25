@@ -226,3 +226,89 @@ def test_summarise_empty_rows_does_not_crash():
     assert s["total"] == 0
     assert s["pass_rate"] == 0.0
     assert s["failures"] == []
+
+
+# ── per-suite roll-up ──────────────────────────────────────────────
+
+
+def test_summarise_emits_a_suite_block_per_named_suite():
+    """The summary roll-up must include named suites — flat
+    "44/57" is less actionable than "routing 22/25, recovery 5/9"."""
+    rows = [
+        _row("r1", pass_=True,  tags=["routing"]),
+        _row("r2", pass_=True,  tags=["routing"]),
+        _row("r3", pass_=False, tags=["routing"]),
+        _row("m1", pass_=True,  tags=["multistep"]),
+        _row("rec1", pass_=False, tags=["recovery"]),
+    ]
+    s = summarise(rows)
+    # The "routing" suite reports 2/3 (66%) — below the advisory 85%.
+    assert "routing" in s["suites"]
+    assert s["suites"]["routing"]["passed"] == 2
+    assert s["suites"]["routing"]["total"] == 3
+    assert s["suites"]["routing"]["meets_threshold"] is False
+    # "full" rolls up everything.
+    assert s["suites"]["full"]["total"] == 5
+    assert s["suites"]["full"]["passed"] == 3
+
+
+# ── bench permission scope ─────────────────────────────────────────
+
+
+def test_bench_scope_auto_approves_sandbox_tiers():
+    """Inside the bench scope, sandboxed WRITE_LOCAL ops auto-approve.
+    Without this, every write_file / delete_file in the bench corpus
+    would prompt the outer user — making the bench unusable under
+    confirm mode."""
+    from jaeger_os.core.safety.permissions import (
+        PermissionRequest, PermissionTier,
+    )
+    from jaeger_os.core.tools.bench import _bench_permission_scope
+    from jaeger_os.core.safety.permissions import current_policy
+
+    with _bench_permission_scope():
+        for tier in (PermissionTier.READ_ONLY, PermissionTier.WRITE_LOCAL):
+            req = PermissionRequest(
+                skill="test", operation="probe", tier=tier,
+                summary="bench-scope probe",
+            )
+            assert current_policy().confirmation.confirm(req) is True
+
+
+def test_bench_scope_still_defers_higher_tiers_to_outer():
+    """EXTERNAL_EFFECT / HARDWARE / PRIVILEGED must keep going
+    through the outer provider — a recovery case that tried to
+    reach the network shouldn't bypass the user just because the
+    bench is running."""
+    from jaeger_os.core.safety.permissions import (
+        PermissionPolicy, PermissionRequest, PermissionTier, install_policy,
+    )
+    from jaeger_os.core.tools.bench import _bench_permission_scope
+    from jaeger_os.core.safety.permissions import current_policy
+
+    # Track what the outer provider sees.
+    seen: list[PermissionTier] = []
+
+    class _RecordingDeny:
+        def confirm(self, request):
+            seen.append(request.tier)
+            return False
+
+    install_policy(PermissionPolicy(confirmation=_RecordingDeny()))
+    try:
+        with _bench_permission_scope():
+            # EXTERNAL_EFFECT must fall through to the outer
+            # provider (and be denied, in this test).
+            req = PermissionRequest(
+                skill="net", operation="post",
+                tier=PermissionTier.EXTERNAL_EFFECT,
+                summary="probe",
+            )
+            ok = current_policy().confirmation.confirm(req)
+            assert ok is False
+            assert PermissionTier.EXTERNAL_EFFECT in seen
+    finally:
+        # Restore the fail-safe default so the leak doesn't pollute
+        # other tests.
+        from jaeger_os.core.safety.permissions import DenyAllProvider
+        install_policy(PermissionPolicy(confirmation=DenyAllProvider()))

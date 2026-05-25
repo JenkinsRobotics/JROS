@@ -13,17 +13,83 @@ Tier: WRITE_LOCAL — the bench writes per-run markdown + jsonl under
 ``<instance>/logs/bench/``. Without that gate a curious user could
 poke at the bench and unknowingly trigger a multi-minute model
 session; the confirm/tier system lets the user opt in deliberately.
+
+**Permission gating during the bench.** Many bench cases call
+WRITE_LOCAL tools (write_file, delete_file, schedule_prompt,
+execute_code). Under a strict confirm provider, EACH of those calls
+would prompt the user — which both ruins the bench latency numbers
+and effectively breaks the bench when run non-interactively. We
+solve this by installing a *bench scope* permission policy for the
+duration of the inner run: WRITE_LOCAL is auto-approved (the user
+already approved by saying "run the benchmark"); higher tiers
+(EXTERNAL_EFFECT, HARDWARE, PRIVILEGED, DEV_BYPASS) still defer to
+the outer provider, so a runaway case can't reach for the network /
+shell / hardware without the user explicitly approving each one.
 """
 
 from __future__ import annotations
 
+import contextlib
 import json
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
 from ._common import _require_layout
-from jaeger_os.core.safety.permissions import PermissionTier, requires_tier
+from jaeger_os.core.safety.permissions import (
+    ConfirmationProvider,
+    PermissionPolicy,
+    PermissionRequest,
+    PermissionTier,
+    current_policy,
+    requires_tier,
+    use_policy,
+)
+
+
+# Tiers the bench scope auto-approves on the user's behalf. Anything
+# stricter than this still goes through the outer confirm provider —
+# a recovery case that tries to ssh out, run a shell command, or
+# poke at hardware still has to ask. The bench corpus deliberately
+# stays inside the sandbox so this set is tight by design.
+_BENCH_AUTO_APPROVED: frozenset[PermissionTier] = frozenset({
+    PermissionTier.READ_ONLY,
+    PermissionTier.WRITE_LOCAL,
+})
+
+
+class _BenchScopeProvider:
+    """Confirmation provider that auto-approves bench-scoped tiers.
+
+    Anything in :data:`_BENCH_AUTO_APPROVED` is approved without
+    prompting. Anything stricter falls through to the wrapped
+    "outer" provider — so the user still controls EXTERNAL_EFFECT
+    (web posts, send_message), HARDWARE (computer_use, listen),
+    PRIVILEGED, and DEV_BYPASS. The outer provider's "yes" / "no"
+    decision wins for those tiers exactly as it would outside the
+    bench."""
+
+    def __init__(self, outer: ConfirmationProvider) -> None:
+        self._outer = outer
+
+    def confirm(self, request: PermissionRequest) -> bool:
+        if request.tier in _BENCH_AUTO_APPROVED:
+            return True
+        return self._outer.confirm(request)
+
+
+@contextlib.contextmanager
+def _bench_permission_scope() -> Iterator[None]:
+    """Install a bench-scoped confirmation provider for the duration
+    of the ``with`` block. The outer provider is preserved as the
+    fall-through for any tier the bench scope doesn't auto-approve."""
+    outer_policy = current_policy()
+    scoped_policy = PermissionPolicy(
+        mode=outer_policy.mode,
+        confirmation=_BenchScopeProvider(outer_policy.confirmation),
+    )
+    with use_policy(scoped_policy):
+        yield
 
 
 @requires_tier(
@@ -75,8 +141,14 @@ def run_benchmark(
     cap = int(limit) if limit and int(limit) > 0 else None
 
     started = time.perf_counter()
-    rows = run_bench(client, tags=tag_list or None, ids=id_list or None,
-                     limit=cap)
+    # Inside the scope: bench cases auto-approve sandboxed
+    # WRITE_LOCAL operations (write_file, delete_file, etc.) so the
+    # user isn't prompted for every single case. Higher tiers still
+    # defer to the outer provider — a recovery case that tries to
+    # reach the network or fire computer_use still has to ask.
+    with _bench_permission_scope():
+        rows = run_bench(client, tags=tag_list or None, ids=id_list or None,
+                         limit=cap)
     summary = summarise(rows)
     summary["wall_s"] = round(time.perf_counter() - started, 2)
 
@@ -130,11 +202,28 @@ def _render_markdown(summary: dict[str, Any]) -> str:
         f"- elapsed: {summary.get('elapsed_s', 0)}s "
         f"(wall: {summary.get('wall_s', 0)}s)",
         "",
-        "## By tag",
+        "## By suite (graded against advisory thresholds)",
         "",
-        "| Tag | Passed | Total |",
-        "|---|---:|---:|",
+        "| Suite | Passed | Total | Rate | Threshold | OK |",
+        "|---|---:|---:|---:|---:|:---:|",
     ]
+    # Suites are the operator-facing roll-up — "routing 22/25" reads
+    # straight; "routing 88% (threshold 85% ✓)" tells them whether to
+    # cut a release without staring at the per-case table.
+    suites = summary.get("suites") or {}
+    for name, s in suites.items():
+        rate_pct = 100 * s.get("pass_rate", 0.0)
+        thresh_pct = 100 * s.get("threshold", 0.0)
+        ok = "✓" if s.get("meets_threshold") else "✗"
+        lines.append(
+            f"| {name} | {s.get('passed', 0)} | {s.get('total', 0)} | "
+            f"{rate_pct:.0f}% | {thresh_pct:.0f}% | {ok} |"
+        )
+    lines.append("")
+    lines.append("## By tag (every tag the corpus uses)")
+    lines.append("")
+    lines.append("| Tag | Passed | Total |")
+    lines.append("|---|---:|---:|")
     for tag, counts in sorted((summary.get("by_tag") or {}).items()):
         lines.append(
             f"| {tag} | {counts.get('passed', 0)} | {counts.get('total', 0)} |"

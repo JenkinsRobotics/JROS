@@ -85,31 +85,14 @@ LEAN_CORE: frozenset[str] = frozenset({
 })
 
 
-def _lean_surface() -> bool:
-    """The model sees only LEAN_CORE by default — the hermes-sized
-    surface. ``JAEGER_FULL_TOOLS=1`` turns it off (every tool visible)."""
-    return os.environ.get("JAEGER_FULL_TOOLS", "0").strip().lower() not in (
-        "1", "true", "yes", "on",
-    )
-
-
-def model_visible(name: str) -> bool:
-    """Whether tool ``name`` is exposed to the model this turn.
-
-    Lean surface on (default) ⇒ LEAN_CORE **plus every skill-registered
-    tool** — a loaded skill is a deliberately-chosen curated bundle, so
-    all of its tools show (the lean filter only trims the raw builtin
-    surface). Lean off ⇒ every registered tool."""
-    if not _lean_surface():
-        return True
-    if name in LEAN_CORE:
-        return True
-    if name in _MCP_TOOLS:
-        return True
-    for members in _SKILL_TOOLSETS.values():
-        if name in members:
-            return True
-    return False
+# ``_lean_surface`` / ``model_visible`` lived here as a parallel
+# visibility model — Hermes-style "lean-by-default with JAEGER_FULL_TOOLS
+# as kill-switch". Nothing ever called them: every visibility check in
+# the agent goes through :func:`tool_visible` below. Two competing
+# models was a footgun, so the unused pair was removed. The lean-tool
+# surface concept survives as the LEAN_CORE name set (used by the
+# doctor's tool-registry check); the actual gate the agent uses is
+# :func:`tool_visible`, opt-in via ``JAEGER_TOOLSET_SCOPING``.
 
 # Built-in tool classes — loaded on demand via load_toolset(name).
 TOOLSETS: dict[str, frozenset[str]] = {

@@ -7,30 +7,9 @@ recursive-include src/jaeger_os/prompts *
 recursive-include src/jaeger_os/assets *
 recursive-include src/jaeger_os/skills *
 
-# instance/ — ship only the skeleton (README + the parent .gitignore +
-# every directory's .gitkeep). Anything else under instance/ is runtime
-# state authored on the user's machine; the 0.1.0 wheel accidentally
-# shipped dev-machine config.yaml / identity.yaml / logs / memory /
-# skills authored at runtime, which is what HYGIENE-1 fixes. Keep the
-# include list narrow here so the same accident can't reoccur.
-recursive-include src/jaeger_os/instance *.md
-include src/jaeger_os/instance/.gitignore
-recursive-include src/jaeger_os/instance .gitkeep
-# Exclude everything else explicitly, even if a future contributor adds
-# a broad recursive-include above by mistake.
-recursive-exclude src/jaeger_os/instance/default config.yaml identity.yaml manifest.json permissions.json soul.md
-recursive-exclude src/jaeger_os/instance/default *.lock
-recursive-exclude src/jaeger_os/instance/default/memory *
-recursive-exclude src/jaeger_os/instance/default/logs *
-recursive-exclude src/jaeger_os/instance/default/credentials *
-recursive-exclude src/jaeger_os/instance/default/skills *
-recursive-exclude src/jaeger_os/instance/default/run *
-recursive-exclude src/jaeger_os/instance/default/.git *
-# Restore the only thing we DO want under those dirs — the placeholder.
-recursive-include src/jaeger_os/instance/default/memory .gitkeep
-recursive-include src/jaeger_os/instance/default/logs .gitkeep
-recursive-include src/jaeger_os/instance/default/credentials .gitkeep
-recursive-include src/jaeger_os/instance/default/skills .gitkeep
+# INST-10 (0.2.0): src/jaeger_os/instance/ no longer exists. User
+# state lives at ~/.jaeger/instances/<name>/ and is created by the
+# wizard on first run; nothing about it ships in the wheel.
 
 recursive-include docs *.md
 recursive-include docs/skill_template *

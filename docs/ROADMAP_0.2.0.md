@@ -219,43 +219,283 @@ Cost: ~2 days. The biggest chunk after Group 1.
 
 ### Group 4 — Voice defaults & robustness
 
-The mic-grabs-podcast bug + the install-time AEC question.
+**Done 2026-05-25.** The mic-grabs-podcast bug + install-time AEC
+story are both fixed; the always-on mic is now strictly opt-in.
 
-- [ ] **VOICE-1** — `voice.enabled: false` is the wizard default.
-      User opts in explicitly.
-- [ ] **VOICE-2** — When `voice.enabled: true` AND `speexdsp` is
-      not installed: the wizard offers `pip install speexdsp` as
-      a one-tap install, OR writes a clear note that always-on
-      mic will grab background audio without AEC.
-- [ ] **VOICE-3** — Wake-word gate tightened: require the wake
-      phrase to be the FIRST 2 tokens of a transcript, not just
-      appear anywhere in it.
-- [ ] **VOICE-4** — Pre-wake transcripts shown as `[mic heard X
-      — not sent]` rather than submitted to the agent.
-
-Cost: half-day.
+- [x] **VOICE-1** — `VoiceConfig.enabled` schema default flipped
+      `True → False`. The wizard only writes `enabled=True` when
+      the user explicitly picks voice as the default interaction
+      mode AND opts in to the always-on mic via a y/n prompt. The
+      other voice toggles (wake_word / follow_up / barge_in) stay
+      ON so the safe defaults are in place when voice DOES turn on.
+- [x] **VOICE-2** — Wizard probes for `speexdsp` (via
+      `importlib.util.find_spec`) when the user picks voice. If
+      missing, offers a one-tap `pip install speexdsp` (120s
+      timeout, non-fatal on failure); if installed, prints a
+      "echo cancellation will work" confirmation. Either way the
+      user gets a clear y/n on enabling the mic immediately.
+- [x] **VOICE-3** — `_find_wake_in_text` and continuous-mode
+      `_extract_command` both gated to the FIRST N tokens of the
+      transcript (matching the wake-phrase token count). "yes I
+      think hey jaeger is cool" no longer triggers. Fuzzy fallback
+      still works for Whisper mishearings ("yeager", "jager") on
+      the same head window.
+- [x] **VOICE-4** — `_commit` in continuous mode and the
+      no-wake-match branch in two-pass mode both now print
+      `[mic heard X — not sent]` when the wake gate rejects a
+      transcript. Previously the rejection was silent, making
+      the always-on mic feel broken on every utterance that
+      didn't open with a wake phrase.
 
 ### Group 5 — Bug + polish sweep
 
-The small ones from 0.1.0's first boot.
+**Done 2026-05-25 (except POLISH-3, deferred — see below).**
 
-- [ ] **POLISH-1** — Drop "pydantic-ai core" from the banner
-      footer. Replace with "framework-free Phase-9 loop" or just
-      remove the tag entirely.
-- [ ] **POLISH-2** — Boot panel's "Available Tools" listing
-      respects `JAEGER_TOOLSET_SCOPING` — show what the model
-      actually sees, not the full registry.
-- [ ] **POLISH-3** — Flip lean-surface default to ON
-      (was the original QW-1; now reinforced by the ctx-overflow
-      experience). The bench held 96% at the new CORE — safe.
-- [ ] **POLISH-4** — `requires_toolsets` auto-load when viewing
-      a skill (carried from prior plan).
-- [ ] **POLISH-5** — `docs/agent_contract.md` auto-generated
-      from `rules.py` (carried over).
-- [ ] **POLISH-6** — Tool docstring behavioural-text sweep
-      (carried over).
+- [x] **POLISH-1** — TAGLINE in `interfaces/tui/banner.py` no
+      longer says "pydantic-ai core" (stale since Phase 9). Now
+      reads "framework-free Phase-9 loop". Shared by both the
+      0.1.0 `jaeger tui` and the new `jaeger rich-tui` since they
+      import the same banner.
+- [x] **POLISH-2** — `status._visible_tool_groups()` filters
+      `TOOL_GROUPS` to the `CORE` intersection when
+      `JAEGER_TOOLSET_SCOPING` is on; the header annotation reads
+      "(17/55 · lean surface ON · others load on demand)" so the
+      user sees both the active count and the total registry.
+      No-op when scoping is off — the existing panel renders
+      unchanged.
+- [ ] **POLISH-3** — **DEFERRED.** The roadmap text says "bench
+      held 96% at the new CORE — safe", but `toolsets.py`'s own
+      docstring records a routing regression on Gemma 4 26B
+      (100% → 67.6%) under the new lean default. The conflicting
+      evidence means a flip needs a fresh bench before it can
+      land. Tracking as a separate item; the env-var override
+      (`JAEGER_TOOLSET_SCOPING=1`) still works.
+- [x] **POLISH-4** — `skill(action="view")` now auto-calls
+      `enable_toolset(...)` for every entry in the skill's
+      `requires_toolsets` list. The response carries
+      `auto_loaded_toolsets` + the updated `active_toolsets` so
+      the model can see what just became visible. Saves one
+      `load_toolset` round-trip per `skill(view)`. No-op when
+      scoping is off.
+- [x] **POLISH-5** — `scripts/generate_agent_contract.py` reads
+      every public `RULE_NAME = """..."""` constant from
+      `core/prompts/rules.py` and writes a 7-section
+      `docs/agent_contract.md`. `--check` mode exits 1 if the
+      doc is out of date — wire it into CI to catch drift.
+- [x] **POLISH-6** — `test_docstring_purity.py` is the linter
+      `rules.py` already referenced. Pattern set tuned to skip
+      input-spec language ("must be a key", "must appear once")
+      while catching real behavioural directives. Currently runs
+      as a **scoreboard** (6 baseline findings — all in
+      `credentials.py`, `identity_tools.py`, `memory.py`,
+      `meta.py`, `time_and_math.py`); a future sweep moves them
+      into `rules.py` and flips `ENFORCE_CEILING=True`.
 
-Cost: half-day.
+### Group 8 — Instance lifecycle verbs
+
+The platform layer. **Done 2026-05-25.** 0.2.0 now wraps the
+installed instance with real operational verbs: explicit setup,
+sticky default, backup, restore, update with migration,
+per-instance subprocess HOME, and a distribution manifest. The
+0.1.0 → 0.2.0 layout move (`~/.jaeger/<name>/` → `~/.jaeger/instances/<name>/`)
+runs automatically on first 0.2.0 boot, with a pre-migration
+backup so the user can always roll back.
+
+**Design rationale + Hermes Agent comparison:** see
+[docs/lifecycle_design.md](lifecycle_design.md). All decisions
+recorded there came out of the 2026-05-25 design session.
+
+**Decisions taken:**
+- Concept name stays **instance** (not "profile").
+- Install path: **pipx** documented + pip for devs.
+  `curl | sh` deferred to 0.3.0+; Docker out of scope (Mac is
+  primary, Docker UX on Mac is poor).
+- Sticky-default precedence: `--instance` flag >
+  `JAEGER_INSTANCE_DIR` env > `JAEGER_INSTANCE_NAME` env >
+  `~/.jaeger/active_instance` file > literal `"default"`.
+- `jaeger update` finds N stale instances and prompts per-instance
+  (interactive, with auto-backup) — not silent batch.
+- CORE_VERSION bump 1.0.0 → 1.1.0 with a no-op migration ships in
+  this group so the migration runner is exercised before a real
+  schema change rides on it.
+- `jaeger backup` includes user-authored skills by default
+  (they're core to the agent's identity); excludes credentials,
+  runtime state, regenerable caches.
+- `jaeger update` prints "restart to apply" rather than
+  auto-restarting a running daemon.
+- Per-instance subprocess HOME is in scope; wizard adds an
+  optional Step 7 for per-instance git identity.
+
+**Item plan:**
+
+- [x] **INST-1** — Resolver order, top to bottom:
+      1. `--instance NAME` CLI flag
+      2. `JAEGER_INSTANCE_DIR` env var (explicit path)
+      3. `JAEGER_INSTANCE_NAME` env var → `~/.jaeger/instances/<name>/`
+      4. `~/.jaeger/active_instance` file → `~/.jaeger/instances/<name>/`
+      5. `~/.jaeger/instances/default/`
+      6. Run wizard.
+
+      Drop the `BUNDLED_INSTANCE_ROOT` branch — `src/jaeger_os/instance/`
+      no longer exists post-INST-10. ``USER_ROOT`` becomes
+      `~/.jaeger/instances/`.
+- [x] **INST-2** — Verb consolidation. New verbs (with the old
+      flags kept as deprecated aliases for one release):
+      ```
+      jaeger setup [--name N] [--force]
+      jaeger instance list / use / inspect / delete / clear
+      jaeger migrate
+      ```
+- [x] **INST-3** — `DistributionConfig` Pydantic model +
+      `distribution.yaml` per instance. Fields:
+      `created_with_framework`, `install_method` (Literal
+      `pip|pipx|dev-checkout|imported`), `install_source`,
+      `created_at`, `last_updated_with_framework`. Wizard
+      writes it; `jaeger update` rewrites
+      `last_updated_with_framework`; restore writes
+      `install_method=imported` + `restored_from: <archive>`.
+- [x] **INST-4** — Per-instance subprocess HOME jail.
+      `InstanceLayout` gains `home_dir = root / "home"`. New
+      helper `subprocess_env_for_instance(layout)` returns
+      `os.environ.copy()` with `HOME` swapped — ONLY when
+      `home_dir/.gitconfig` (or any populated marker) exists,
+      otherwise falls back to user's real `HOME` so existing
+      instances are undisturbed. Audit + reroute every
+      `subprocess.run` / `subprocess.Popen` site:
+      `core/tools/{terminal,files,code,packages,
+      remote_terminal}.py`, `core/skills/skill_loader.py`,
+      `plugins/messaging_gateway.py`. Wizard Step 7 (optional):
+      per-instance git name + email + optional SSH key path.
+- [x] **INST-5** — `jaeger backup [--name N] [--output PATH]
+      [--include-credentials]`. Default output
+      `~/.jaeger/backups/<name>-<ISO8601>.zip`. Default
+      excludes: `credentials/*`, `run/*`,
+      `memory/*.embeddings.npz`, `logs/audit.log.[0-9]*`,
+      `logs/tool_results/*`, `home/.cache/`,
+      `home/.npm/_cacache/`. Zip carries `MANIFEST.json` with
+      framework version + included-files list so restore can
+      validate.
+- [x] **INST-6** — `jaeger restore <archive> [--name NEW]
+      [--force]`. Refuse on name conflict unless `--force` (in
+      which case back the existing one up first, wizard
+      pattern). Validate the archive's manifest: refuse if
+      `created_with_framework` is newer than current
+      `CORE_VERSION`; auto-prompt to migrate if older. Write
+      `restored_from` to `distribution.yaml` post-restore.
+- [x] **INST-7** — `jaeger update [--check] [--no-migrate]`.
+      Detect install method (pipx > pip > editable > unknown);
+      run the appropriate upgrade. After install, scan every
+      `~/.jaeger/<name>/` for `manifest.json` with a
+      `core_version` != current `CORE_VERSION`; for each, an
+      **interactive** "back up + migrate? [Y/n]" prompt.
+      `--check` exits without installing. `--no-migrate` runs
+      the framework upgrade but skips migration scan. Prints
+      "Restart `jaeger` to apply" rather than auto-restarting
+      a running daemon.
+- [x] **INST-8** — `src/jaeger_os/migrations/v1_0_0_to_v1_1_0.py`
+      — the **real** migration that moves `~/.jaeger/<name>/`
+      (0.1.0 flat layout) to `~/.jaeger/instances/<name>/`
+      (0.2.0 nested layout per INST-10). Walks
+      `~/.jaeger/`, identifies each directory containing an
+      `identity.yaml` (skip `instances/`, `backups/`,
+      `active_instance`, `jaeger.env`), and moves it under
+      `instances/`. After move, updates the moved instance's
+      `manifest.json:core_version` to `"1.1.0"`.
+      `schemas.py:CORE_VERSION` bumps `"1.0.0"` → `"1.1.0"`.
+
+      Failure modes: refuse if `~/.jaeger/instances/<name>/`
+      already exists (caller picks; either rename or merge).
+      Pre-migration backup written to
+      `~/.jaeger/backups/pre-1.1.0-<ts>.zip` automatically.
+
+      First-run on 0.2.0 → user sees:
+      ```
+      [migrate] found 0.1.0 layout — moving 2 instance(s) into
+                ~/.jaeger/instances/
+      [migrate] backing up to ~/.jaeger/backups/pre-1.1.0-….zip
+      [migrate] default → ~/.jaeger/instances/default/
+      [migrate] work    → ~/.jaeger/instances/work/
+      [migrate] manifest bumped to 1.1.0
+      ```
+- [x] **INST-9** — README + `--doctor` install hints. README
+      install section leads with `pipx install jaeger-os`,
+      mentions `pip install jaeger-os` under "for contributors".
+      `jaeger --doctor` detects when the running install is
+      pip-on-system-Python (not pipx, not editable) and
+      suggests pipx for cleaner isolation; advisory, never
+      blocking.
+- [x] **INST-10** — Structural rename. Drop
+      `src/jaeger_os/instance/` from the source tree entirely;
+      nest user instances under `~/.jaeger/instances/<name>/`
+      so the word "instance" appears only in the user-state
+      path + CLI verbs (never in the framework source).
+      Subtasks:
+      - Remove `src/jaeger_os/instance/` (was the bundled
+        skeleton; HYGIENE-1 already reduced it to 4 .gitkeep
+        files + README; INST-10 finishes the job).
+      - Move the layout diagram from
+        `src/jaeger_os/instance/README.md` to
+        `docs/instance_layout.md` (or merge into
+        `docs/lifecycle_design.md`).
+      - Update `core/instance/instance.py`: drop
+        `BUNDLED_INSTANCE_ROOT`; `USER_ROOT` becomes
+        `~/.jaeger/instances/`; resolver simplifies per INST-1.
+      - Update `MANIFEST.in` (drop `instance/**` includes /
+        excludes since the dir is gone).
+      - Update `pyproject.toml` `package-data` /
+        `exclude-package-data` (drop `instance/*` entries).
+      - Update `scripts/check_wheel.py`'s
+        `ALLOWED_INSTANCE_FILES` (now empty for
+        `jaeger_os/instance/`).
+      - Update every test that hardcodes
+        `instance/default/` paths.
+      - Update `scripts/dev_env.sh` if it references the bundled
+        location (it shouldn't — already points at
+        `sandbox/jros-dev/`).
+      - The 0.1.0 → 1.1.0 move happens in INST-8 (which
+        becomes the *real* migration instead of a no-op).
+
+**Cost estimate held:** ~2 days of work; shipped on 2026-05-25
+in one session. **Test count delta:** +52 new tests
+(test_legacy_migration: 10, test_subprocess_env: 13,
+test_backup_restore: 17, test_update_verb: 12) on top of
+test_instance_resolver's 20.
+
+**Final tally for Group 8:** 1175 default-tier tests pass
+(was 1133 pre-INST-1); no regressions across integration,
+subprocess, or smoke tiers.
+
+**Implementation notes:**
+
+- Per-roadmap, INST-8's legacy-layout move runs **before** the
+  resolver fires (one-shot bootstrap in
+  ``core/instance/legacy_migrations.py``). The per-instance
+  ``migrations/v1_0_0_to_v1_1_0.py`` script the runner picks up is
+  small — it ensures the migrated instance's ``config.yaml``
+  carries the new ``interaction`` field explicitly. The
+  manifest-version bump happens automatically when the runner
+  walks the migration plan.
+- INST-4 wires the per-instance HOME jail at TWO call sites
+  (``core/tools/_common.py`` audit-log git commit, and the wizard's
+  initial git init). Other subprocess call sites (run_python
+  sandbox, browser, web fetch) have their own purpose-built env
+  and intentionally stay on the user's real HOME. The helper
+  (``subprocess_env_for_instance``) is exported so future call
+  sites can opt in case-by-case.
+- INST-7's auto-restart was rejected per the design decisions —
+  the verb prints "Restart `jaeger` to apply" rather than killing
+  the user's running daemon mid-flow.
+
+**Open questions resolved in implementation:**
+1. `jaeger update` on an editable install — print "run `git pull`
+   yourself" or actually run it? Proposal: print, don't act
+   (matches the conservative posture).
+2. Restore from an archive whose `created_with_framework` is the
+   same as current but `manifest.core_version` is older —
+   migrate after restore? Proposal: yes, in the same flow.
+3. The `.gitconfig` we write in INST-4 — read from user's real
+   `~/.gitconfig` as defaults? Or always start blank? Proposal:
+   start blank; user opts in to filling it.
 
 ### Group 6 — Release hygiene (urgent — 0.1.0 ship bug)
 

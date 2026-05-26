@@ -43,54 +43,103 @@ from jaeger_os.core.instance.schemas import (
 # ---------------------------------------------------------------------------
 # Path resolution
 # ---------------------------------------------------------------------------
-#   1. JAEGER_INSTANCE_DIR env var       — explicit override (always wins)
-#   2. /var/lib/jaeger/<name>/           — system service mode (uid 0)
-#   3. ~/.jaeger/<name>/                 — pip-installed mode (running from
-#                                          a site-packages tree). The bundled
-#                                          ``src/jaeger_os/instance/`` dir is
-#                                          a skeleton only; writing into it
-#                                          would corrupt the install.
-#   4. jaeger_os/instance/<name>/        — DEV / single-user — visible in the
-#                                          source tree. The framework dir is
-#                                          read-only TO THE AGENT (v2 contract
-#                                          enforces writes only to
-#                                          <instance>/skills/), so co-locating
-#                                          is safe for dev checkouts.
+# Order (top wins). See docs/instance_layout.md → "Resolver order".
 #
-# 0.1.0 had (3) and (4) swapped — the bundled dir won as long as it was
-# writable, which made every ``pip install`` user accidentally load our
-# packaging-machine state. HYGIENE-4 in docs/ROADMAP_0.2.0.md is the
-# swap.
+#   1. --instance NAME CLI flag (handled by caller; passed to this fn)
+#   2. JAEGER_INSTANCE_DIR env var — explicit path (use for sandbox dev
+#      via scripts/dev_env.sh; for tests; for one-off destinations).
+#   3. JAEGER_INSTANCE_NAME env var → ~/.jaeger/instances/<name>/
+#   4. ~/.jaeger/active_instance file → ~/.jaeger/instances/<that>/
+#   5. ~/.jaeger/instances/default/
+#
+# (1) is handled by the caller (CLI argparse) and arrives here as the
+# ``name`` argument when present. (2)-(5) are honoured below.
+#
+# Earlier releases also had:
+#   - /var/lib/jaeger/<name>/ when uid==0 (system service mode)
+#   - jaeger_os/instance/<name>/ bundled into the source tree
+#
+# System-service mode is still here; the bundled location is GONE
+# (INST-10 in docs/ROADMAP_0.2.0.md) — the wheel ships no
+# ``jaeger_os/instance/`` directory and the resolver no longer
+# falls through to one. Dev checkouts opt into a sandbox via
+# JAEGER_INSTANCE_DIR (see scripts/dev_env.sh).
 SYSTEM_ROOT = Path("/var/lib/jaeger")
 USER_ROOT = Path("~/.jaeger").expanduser()
+INSTANCES_DIR_NAME = "instances"
+ACTIVE_INSTANCE_FILE = "active_instance"
 # jaeger_os/core/instance/instance.py → .parent.parent.parent = jaeger_os/
 PACKAGE_ROOT = Path(__file__).resolve().parent.parent.parent
-# ``BUNDLED_INSTANCE_ROOT`` is kept as a derived module attribute for
-# back-compat, but ``resolve_instance_dir`` re-reads ``PACKAGE_ROOT``
-# on each call so tests can monkeypatch the package location without
-# having to reload the module.
-BUNDLED_INSTANCE_ROOT = PACKAGE_ROOT / "instance"
+
+
+def user_instances_root() -> Path:
+    """Where user-mode instances live: ``~/.jaeger/instances/``."""
+    return Path("~/.jaeger").expanduser() / INSTANCES_DIR_NAME
+
+
+def active_instance_path() -> Path:
+    """Where the sticky-default file lives: ``~/.jaeger/active_instance``."""
+    return Path("~/.jaeger").expanduser() / ACTIVE_INSTANCE_FILE
+
+
+def read_active_instance() -> str | None:
+    """Read the sticky-default instance name from
+    ``~/.jaeger/active_instance``, or ``None`` if the file is missing
+    or empty. Whitespace-only contents count as missing."""
+    path = active_instance_path()
+    if not path.exists():
+        return None
+    try:
+        text = path.read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    return text or None
+
+
+def write_active_instance(name: str | None) -> None:
+    """Set the sticky-default instance. ``None`` removes the file.
+
+    Called by ``jaeger instance use <name>``. The wizard does NOT
+    write this — it's the user's deliberate "from now on, this one
+    is the default" gesture.
+    """
+    path = active_instance_path()
+    if name is None or not name.strip():
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            pass
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(name.strip() + "\n", encoding="utf-8")
 
 
 def default_instance_name() -> str:
-    return os.environ.get("JAEGER_INSTANCE_NAME", "default")
+    """Pick the default instance name. Order:
+
+      1. ``JAEGER_INSTANCE_NAME`` env var (explicit per-shell pin)
+      2. ``~/.jaeger/active_instance`` file (sticky default written
+         by ``jaeger instance use``)
+      3. Literal ``"default"``.
+    """
+    env = os.environ.get("JAEGER_INSTANCE_NAME", "").strip()
+    if env:
+        return env
+    sticky = read_active_instance()
+    if sticky:
+        return sticky
+    return "default"
 
 
 def is_pip_installed() -> bool:
-    """True when the package lives under ``site-packages`` / ``dist-packages``.
+    """True when the package lives under ``site-packages`` /
+    ``dist-packages``. Catches pip, pipx, system-wide installs, and
+    venvs. Editable installs (``pip install -e .``) and dev checkouts
+    are reported False because their resolved path doesn't have a
+    site-packages ancestor.
 
-    Detected by walking ``PACKAGE_ROOT``'s parents for a known install
-    component — catches pip, pipx, system-wide installs, and venvs.
-    ``pip install -e .`` (editable) installs are treated as DEV because
-    the editable install points at the source checkout, which doesn't
-    have a ``site-packages`` ancestor.
-
-    Re-derived on every call so tests can monkeypatch ``PACKAGE_ROOT``
-    without reloading the module (``importlib.reload`` would rebuild
-    ``PACKAGE_ROOT`` from ``__file__``, undoing the patch).
-
-    Exposed for tests and ``--doctor`` reporting; the resolver uses the
-    same signal to pick ``~/.jaeger/`` vs the bundled dir.
+    Exposed for tests, the wizard, ``--doctor`` reporting, and
+    ``jaeger update``'s install-method detection.
     """
     return any(
         p.name in ("site-packages", "dist-packages")
@@ -98,36 +147,55 @@ def is_pip_installed() -> bool:
     )
 
 
-def resolve_instance_dir(name: str | None = None) -> Path:
-    """Pick the on-disk path for this instance, honoring env overrides.
+def detect_install_method() -> str:
+    """Return one of: ``"pipx"``, ``"pip"``, ``"dev-checkout"``,
+    ``"unknown"``. Used by the wizard (INST-3) to stamp the new
+    instance's ``distribution.yaml`` and by ``jaeger update``
+    (INST-7) to pick the right upgrade command.
 
-    See module-level path-resolution comment for the priority order.
+    Detection cascade:
+      - Not pip-installed → ``"dev-checkout"`` (running from a source
+        tree; editable installs land here).
+      - ``pipx`` in ``PACKAGE_ROOT``'s ancestors → ``"pipx"``
+        (pipx installs each app under
+        ``~/.local/pipx/venvs/<app>/...``).
+      - Otherwise pip-installed → ``"pip"``.
     """
+    if not is_pip_installed():
+        return "dev-checkout"
+    for p in PACKAGE_ROOT.parents:
+        if p.name == "pipx" or "pipx" in p.parts:
+            return "pipx"
+    return "pip"
+
+
+def resolve_instance_dir(name: str | None = None) -> Path:
+    """Pick the on-disk path for this instance. See module-level
+    docstring for the priority order.
+
+    When ``name`` is passed (i.e. the CLI ``--instance`` flag was
+    set), it overrides every env-var / sticky-file lookup. When
+    ``name`` is ``None``, ``default_instance_name()`` consults
+    env var → sticky file → literal ``"default"``.
+    """
+    # (2) Explicit path override always wins. Bypasses the nesting —
+    # used by the dev sandbox (``sandbox/jros-dev/``) and by tests.
     override = os.environ.get("JAEGER_INSTANCE_DIR", "").strip()
     if override:
         return Path(override).expanduser().resolve()
 
     inst = name or default_instance_name()
 
-    # System service: use /var/lib/jaeger when running as root.
+    # System service: use /var/lib/jaeger/<name>/ when running as root.
+    # No ``instances/`` nesting here — system-service paths are FHS-shaped.
     if os.geteuid() == 0 and SYSTEM_ROOT.parent.exists():
         return (SYSTEM_ROOT / inst).resolve()
 
-    # Pip-installed: NEVER write into site-packages. Use ~/.jaeger/
-    # so the user's state lives in their home dir, not inside the
-    # framework install.
-    if is_pip_installed():
-        return (Path("~/.jaeger").expanduser() / inst).resolve()
-
-    # Dev checkout: bundled instance dir inside the source tree, visible
-    # one click from the rest of the code. Falls back to ~/.jaeger/ if
-    # the package dir isn't writable (rare — Read-Only Filesystem etc).
-    bundled = PACKAGE_ROOT / "instance"
-    try:
-        bundled.mkdir(parents=True, exist_ok=True)
-        return (bundled / inst).resolve()
-    except (OSError, PermissionError):
-        return (Path("~/.jaeger").expanduser() / inst).resolve()
+    # User-mode (both pip-installed and dev-checkout-without-sandbox):
+    # ``~/.jaeger/instances/<name>/``. The nesting under ``instances/``
+    # is the 0.2.0 shape (INST-10) — meta files (active_instance,
+    # jaeger.env, backups/) sit at ``~/.jaeger/`` alongside.
+    return (user_instances_root() / inst).resolve()
 
 
 # ---------------------------------------------------------------------------
@@ -174,12 +242,19 @@ class InstanceLayout:
     def audit_log_path(self) -> Path:       return self.logs_dir / "audit.log"
     @property
     def latency_log_path(self) -> Path:     return self.logs_dir / "latency.jsonl"
+    @property
+    def distribution_path(self) -> Path:    return self.root / "distribution.yaml"
+    @property
+    def home_dir(self) -> Path:             return self.root / "home"
+    @property
+    def workspace_dir(self) -> Path:        return self.root / "workspace"
 
     def exists(self) -> bool:
         return self.identity_path.exists() and self.config_path.exists() and self.manifest_path.exists()
 
     def ensure_dirs(self) -> None:
-        for d in (self.credentials_dir, self.skills_dir, self.memory_dir, self.logs_dir):
+        for d in (self.credentials_dir, self.skills_dir, self.memory_dir,
+                  self.logs_dir, self.workspace_dir):
             d.mkdir(parents=True, exist_ok=True)
         # 0700 on credentials/ so an OS-level snoop sees an empty dir at best.
         try:

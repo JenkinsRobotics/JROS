@@ -182,28 +182,42 @@ class WhisperSTTContinuous:
 
     # ── Wake-word matching ─────────────────────────────────────────────
     def _extract_command(self, text: str) -> str | None:
-        """Return the command remainder after stripping a wake phrase, or
-        the whole text if the wake phrase is the entire utterance. None
-        if no wake match."""
+        """Return the command remainder after stripping a wake phrase
+        from the START of the transcript. None if no wake match.
+
+        Wake phrase MUST be at the FIRST 2 tokens — VOICE-3 in
+        docs/ROADMAP_0.2.0.md. Previously the matcher looked anywhere
+        in the utterance, so a sentence that incidentally mentioned
+        "hey jaeger" (e.g. quoting documentation) wrongly triggered.
+        """
         norm = _normalize(text)
         if not norm:
             return None
-        for phrase in sorted(self.wake_phrases, key=len, reverse=True):
-            phrase_norm = _normalize(phrase)
-            idx = norm.find(phrase_norm)
-            if idx != -1:
-                tail = norm[idx + len(phrase_norm):].strip()
-                return tail or text.strip()
         tokens = norm.split()
+
+        # Exact head-match first — sorted by length so a longer phrase
+        # (if any joins later) wins over its prefix.
+        for phrase in sorted(self.wake_phrases, key=len, reverse=True):
+            phrase_tokens = _normalize(phrase).split()
+            n = len(phrase_tokens)
+            if len(tokens) < n:
+                continue
+            head = " ".join(tokens[:n])
+            if head == " ".join(phrase_tokens):
+                tail = " ".join(tokens[n:]).strip()
+                return tail or text.strip()
+
+        # Fuzzy fallback — head window only, no longer anywhere-in-text.
         for phrase in self.wake_phrases:
             phrase_tokens = _normalize(phrase).split()
             n = len(phrase_tokens)
-            for i in range(0, max(0, len(tokens) - n + 1)):
-                window = " ".join(tokens[i:i + n])
-                if SequenceMatcher(None, window, " ".join(phrase_tokens)).ratio() \
-                        >= self.wake_match_threshold:
-                    tail = " ".join(tokens[i + n:]).strip()
-                    return tail or text.strip()
+            if len(tokens) < n:
+                continue
+            head = " ".join(tokens[:n])
+            if SequenceMatcher(None, head, " ".join(phrase_tokens)).ratio() \
+                    >= self.wake_match_threshold:
+                tail = " ".join(tokens[n:]).strip()
+                return tail or text.strip()
         return None
 
     # ── Main loop ──────────────────────────────────────────────────────
@@ -301,19 +315,34 @@ class WhisperSTTContinuous:
         self._commit(text)
 
     def _commit(self, text: str) -> None:
-        print(f"[heard]  {text!r}", flush=True)
+        # ``require_wake_word`` off → every committed phrase is a turn.
+        # The legacy ``[heard]`` line stays so existing logs / tests
+        # don't change shape.
         if not self.require_wake_word:
+            print(f"[heard]  {text!r}", flush=True)
             self._committed_q.put(text)
             return
+        # In the follow-up window the previous turn already gated the
+        # mic; this phrase rides through without a wake word.
         if self._state == "FOLLOWUP" and time.time() <= self._followup_deadline:
-            print(f"[follow-up] {text!r}", flush=True)
+            print(f"[follow-up]  {text!r}", flush=True)
             self._state = "WAKE"
             self._committed_q.put(text)
             return
         command = self._extract_command(text)
         if command:
+            # Wake-word matched at the head — emit ``[heard]`` for the
+            # trigger so logs show which utterance opened the turn.
+            print(f"[heard]  {text!r}", flush=True)
             self._state = "WAKE"
             self._committed_q.put(command)
+            return
+        # VOICE-4: pre-wake transcripts must surface visibly so the
+        # user sees the mic IS listening and what it heard, AND knows
+        # it wasn't sent to the agent. Without this the always-on mic
+        # feels broken on every utterance that didn't open with a
+        # wake phrase.
+        print(f"[mic heard {text!r} — not sent]", flush=True)
 
     # ── Public phrase pump ─────────────────────────────────────────────
     def next_phrase(self, timeout: float | None = 1.0) -> str | None:

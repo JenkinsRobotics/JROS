@@ -40,9 +40,15 @@ from jaeger_os.daemon.server import Server
 # Subcommands that route to this module instead of the main TUI path.
 # ``rich-tui`` is a daemon-attached client — distinct from the 0.1.0
 # ``jaeger tui`` which boots in-process and stays untouched.
+#
+# INST-2 (0.2.0) adds the instance-lifecycle verbs alongside daemon
+# lifecycle: ``setup``, ``instance``, ``migrate`` (and the
+# upcoming ``backup``, ``restore``, ``update``).
 SUBCOMMANDS: frozenset[str] = frozenset({
     "start", "stop", "status", "restart", "tray", "bench",
     "attach", "rich-tui",
+    "setup", "instance", "migrate",
+    "backup", "restore", "update",
 })
 
 
@@ -85,6 +91,27 @@ def dispatch(argv: Sequence[str]) -> int:
     if argv[0] == "rich-tui":
         from jaeger_os.interfaces.rich_tui.__main__ import main as _rich_main
         return _rich_main(list(argv[1:]))
+    # INST-2 verbs — instance lifecycle. Each has its own argparse
+    # in ``daemon.instance_verbs`` so flags don't fight the
+    # lifecycle parser.
+    if argv[0] == "setup":
+        from jaeger_os.daemon.instance_verbs import _cmd_setup_argv
+        return _cmd_setup_argv(list(argv[1:]))
+    if argv[0] == "instance":
+        from jaeger_os.daemon.instance_verbs import _cmd_instance_argv
+        return _cmd_instance_argv(list(argv[1:]))
+    if argv[0] == "migrate":
+        from jaeger_os.daemon.instance_verbs import _cmd_migrate_argv
+        return _cmd_migrate_argv(list(argv[1:]))
+    if argv[0] == "backup":
+        from jaeger_os.daemon.backup_restore import _cmd_backup_argv
+        return _cmd_backup_argv(list(argv[1:]))
+    if argv[0] == "restore":
+        from jaeger_os.daemon.backup_restore import _cmd_restore_argv
+        return _cmd_restore_argv(list(argv[1:]))
+    if argv[0] == "update":
+        from jaeger_os.daemon.update_verb import _cmd_update_argv
+        return _cmd_update_argv(list(argv[1:]))
     parser = argparse.ArgumentParser(
         prog="jaeger", add_help=False,
         description="Jaeger daemon lifecycle commands.",

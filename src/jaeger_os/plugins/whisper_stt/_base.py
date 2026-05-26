@@ -42,20 +42,45 @@ def _find_wake_in_text(
     wake_phrases: tuple[str, ...],
     wake_match_threshold: float,
 ) -> tuple[bool, str]:
-    """Return (matched, remainder_after_wake). Looks for an exact substring
-    first, then falls back to fuzzy windowed matching."""
+    """Return (matched, remainder_after_wake). Wake phrase MUST be at
+    the FIRST 2 tokens of the transcript — VOICE-3 in
+    docs/ROADMAP_0.2.0.md.
+
+    Previously the matcher looked anywhere in the utterance, which
+    meant "Yes I think hey jaeger is cool" wrongly triggered. The
+    new gate is "wake phrase is the opening of the sentence" —
+    matches a real call to the agent without matching incidental
+    mentions. Falls back to a fuzzy match on the same 2-token
+    window for Whisper mishearings.
+    """
     norm = _normalize(text)
-    for phrase in wake_phrases:
-        idx = norm.find(phrase)
-        if idx != -1:
-            return True, norm[idx + len(phrase):].strip()
     tokens = norm.split()
+    if not tokens:
+        return False, ""
+
+    # All known wake phrases are 2 tokens ("hey jaeger", "ok jaeger",
+    # …). If a longer phrase ever joins the set, the window grows
+    # with it.
     for phrase in wake_phrases:
-        n = len(phrase.split())
-        for i in range(0, max(0, len(tokens) - n + 1)):
-            window = " ".join(tokens[i:i + n])
-            if SequenceMatcher(None, window, phrase).ratio() >= wake_match_threshold:
-                return True, " ".join(tokens[i + n:]).strip()
+        phrase_tokens = phrase.split()
+        n = len(phrase_tokens)
+        if len(tokens) < n:
+            continue
+        head = " ".join(tokens[:n])
+        if head == phrase:
+            return True, " ".join(tokens[n:]).strip()
+
+    # Fuzzy fallback — only on the head window, not anywhere in the
+    # sentence. Threshold from the caller (default 0.78).
+    for phrase in wake_phrases:
+        phrase_tokens = phrase.split()
+        n = len(phrase_tokens)
+        if len(tokens) < n:
+            continue
+        head = " ".join(tokens[:n])
+        if SequenceMatcher(None, head, phrase).ratio() >= wake_match_threshold:
+            return True, " ".join(tokens[n:]).strip()
+
     return False, ""
 
 

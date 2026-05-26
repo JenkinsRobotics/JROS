@@ -315,18 +315,27 @@ class WhisperSTTTwoPass:
             except queue.Empty:
                 return None
 
-            print(f"[heard]  {fast_text!r}", flush=True)
             command: str | None = None
 
             if not self.require_wake_word:
+                print(f"[heard]  {fast_text!r}", flush=True)
                 command = self._accurate_transcribe(audio).strip() or fast_text
             elif self._state == "FOLLOWUP":
+                print(f"[heard]  {fast_text!r}", flush=True)
                 command = self._accurate_transcribe(audio).strip() or fast_text
                 print(f"[follow-up] {command!r}", flush=True)
             else:
                 matched, remainder = self._find_wake(fast_text)
                 if not matched:
+                    # VOICE-4: pre-wake transcripts surface visibly so
+                    # the user sees what the mic heard AND knows it
+                    # wasn't sent. Was a silent ``continue`` — felt
+                    # broken on every utterance without a wake phrase.
+                    print(f"[mic heard {fast_text!r} — not sent]",
+                          flush=True)
                     continue
+                # Wake matched — the trigger utterance lands in the log.
+                print(f"[heard]  {fast_text!r}", flush=True)
                 accurate_text = self._accurate_transcribe(audio)
                 a_matched, a_remainder = self._find_wake(accurate_text)
                 if a_matched and (a_remainder or not remainder):

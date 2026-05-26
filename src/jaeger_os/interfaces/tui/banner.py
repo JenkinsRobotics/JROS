@@ -23,4 +23,8 @@ JAEGER_ASCII = r"""
 """.strip("\n")
 
 
-TAGLINE = "✦  real-world local agentic agent framework  ·  pydantic-ai core  ✦"
+# POLISH-1: dropped "pydantic-ai core" — the agent loop has been
+# framework-free since Phase 9 (see core/loop/jaeger_agent.py). The
+# tagline is the user-facing label, not the architecture, so it now
+# names the loop generation instead of the framework.
+TAGLINE = "✦  real-world local agentic agent framework  ·  framework-free Phase-9 loop  ✦"

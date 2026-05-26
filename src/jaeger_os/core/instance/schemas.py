@@ -22,11 +22,20 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
-# Bumped whenever the on-disk shape of identity.yaml / config.yaml changes
-# in a way that needs a migration. Stored in manifest.json on instance
-# creation; mismatch with the installed core triggers refuse-to-start at
-# runtime (full migration system is M2 work).
-CORE_VERSION = "1.0.0"
+# Bumped whenever the on-disk shape of identity.yaml / config.yaml
+# changes in a way that needs a migration. Stored in manifest.json
+# on instance creation; mismatch with the installed core triggers
+# the per-instance migration runner (see
+# ``core/instance/migrations.py``).
+#
+# 0.2.0 bumped this 1.0.0 → 1.1.0 alongside INST-10 (layout move
+# from ``~/.jaeger/<name>/`` to ``~/.jaeger/instances/<name>/``) and
+# WIZ-3 (new ``interaction`` config field). The layout move itself
+# is a pre-resolver bootstrap in
+# ``core/instance/legacy_migrations.py``; the per-instance
+# ``v1_0_0_to_v1_1_0.py`` finishes the job by explicitly writing
+# the ``interaction`` field on already-existing configs.
+CORE_VERSION = "1.1.0"
 
 
 # ---------------------------------------------------------------------------
@@ -143,16 +152,23 @@ class DeepThinkConfig(BaseModel):
 class VoiceConfig(BaseModel):
     """Always-on voice settings.
 
-    A Jaeger is embodied — like a person, it always listens. The TUI
-    keeps the mic live for the whole session, so the user can talk or
-    type at any moment. Every field is tunable live from the TUI with
-    ``/voice`` and persisted back to config.yaml.
+    A Jaeger is embodied — like a person, it can always listen — but
+    the always-on mic without ``speexdsp`` for acoustic echo
+    cancellation picks up background podcast/youtube audio nearby and
+    feeds it to the agent. VOICE-1 in docs/ROADMAP_0.2.0.md flips
+    ``enabled`` to OFF by default so a fresh install doesn't surprise
+    a user with an open mic. Voice still works — flip ``enabled`` on
+    in config.yaml or via ``/voice on`` after first run, after
+    confirming the speexdsp story for your setup.
+
+    Every field is tunable live from the TUI with ``/voice`` and
+    persisted back to config.yaml.
     """
 
     model_config = ConfigDict(extra="forbid")
     enabled: bool = Field(
-        True,
-        description="Mic live from TUI boot. Off = text-only TUI.",
+        False,
+        description="Mic live from TUI boot. Off (default) = text-only TUI.",
     )
     wake_word: bool = Field(
         True,
@@ -283,6 +299,76 @@ class SecurityConfig(BaseModel):
     allow_lazy_installs: bool = False
 
 
+class DistributionConfig(BaseModel):
+    """Provenance for ONE instance — install source + framework
+    version. Written by the wizard at first run; rewritten by
+    ``jaeger update`` (``last_updated_with_framework``) and by
+    ``jaeger restore`` (``install_method='imported'`` +
+    ``restored_from``).
+
+    Purely informational. Used by ``jaeger instance inspect``,
+    bug-report dumps, and (in 0.3.0+) by the migration runner so
+    it can refuse downgrades against an instance created by a newer
+    framework.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+    created_with_framework: str = Field(
+        ..., min_length=1, max_length=64,
+        description="Framework version that created this instance.",
+    )
+    last_updated_with_framework: str = Field(
+        ..., min_length=1, max_length=64,
+        description="Most recent framework version that booted this instance.",
+    )
+    install_method: Literal["pip", "pipx", "dev-checkout",
+                            "imported", "unknown"] = "unknown"
+    install_source: str | None = Field(
+        None, max_length=512,
+        description="PyPI / git URL / restore archive path / etc.",
+    )
+    created_at: str = Field(
+        default_factory=lambda: datetime.now(timezone.utc).isoformat(timespec="seconds"),
+    )
+    restored_from: str | None = Field(
+        None, max_length=512,
+        description="Set by ``jaeger restore`` to the archive path.",
+    )
+
+
+class WorkspaceConfig(BaseModel):
+    """Where the agent's general scratch + output files live
+    (INST-11). Defaults to ``<instance>/workspace/`` — keeps
+    everything self-contained for backup / restore / move.
+
+    Setting ``location`` to an absolute path moves the workspace
+    elsewhere — useful when the user wants easy Finder /
+    Spotlight access to generated reports / outputs without
+    digging into ``~/.jaeger/``. Examples:
+
+      workspace:
+        location: ~/Documents/Jaeger Outputs
+
+      workspace:
+        location: /Volumes/External/jaeger-work
+
+    When ``location`` is unset the path is computed from the
+    instance root, so ``jaeger backup`` includes the workspace
+    automatically. An external ``location`` is NOT included in
+    backup (it lives outside the instance dir); the user is
+    expected to back it up alongside their other documents.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+    location: str | None = Field(
+        None, max_length=512,
+        description=(
+            "Override the default ``<instance>/workspace/`` location. "
+            "Absolute path or ``~``-prefixed; null = default."
+        ),
+    )
+
+
 class InteractionConfig(BaseModel):
     """How the user prefers to talk to this Jaeger by default.
 
@@ -323,6 +409,7 @@ class Config(BaseModel):
     permissions: PermissionsConfig = Field(default_factory=PermissionsConfig)
     security: SecurityConfig = Field(default_factory=SecurityConfig)
     interaction: InteractionConfig = Field(default_factory=InteractionConfig)
+    workspace: WorkspaceConfig = Field(default_factory=WorkspaceConfig)
 
     @field_validator("instance_name")
     @classmethod

@@ -29,6 +29,7 @@ from jaeger_os.core.instance.schemas import (
     CORE_VERSION,
     Config,
     DisplayConfig,
+    DistributionConfig,
     Identity,
     InteractionConfig,
     Manifest,
@@ -41,7 +42,7 @@ from jaeger_os.core.instance.schemas import (
     dump_yaml,
 )
 
-_TOTAL_STEPS = 6
+_TOTAL_STEPS = 7
 
 # Mirrors ``Identity.role``'s ``max_length=256`` in schemas.py. If
 # the schema changes, this string lives next to the prompt so the
@@ -157,8 +158,8 @@ def run_wizard(*, force: bool = False, instance_name: str | None = None) -> Inst
 
     # ── Step 1 · Identity ───────────────────────────────────────────
     _step(1, "Identity")
-    print("  Who is this Jaeger?")
-    agent_name = _ask("Name", "Jarvis")
+    print(f"  Who is this Jaeger?  (instance dir: {name})")
+    agent_name = _ask("Agent display name", "Jarvis")
     # WIZ-2: surface the role length cap AND split a too-long role
     # gracefully — first sentence goes into identity.role, the full
     # text into soul.md. Previously a long answer crashed the wizard
@@ -233,11 +234,27 @@ def run_wizard(*, force: bool = False, instance_name: str | None = None) -> Inst
         ],
         default=0,
     )
+    voice_enable_choice = False
     if interaction_mode == "voice":
         print()
-        print("     ⚠  voice is experimental in 0.2.0 — the always-on mic")
-        print("        picks up background audio without speexdsp AEC.")
-        print("        You can flip back to 'tui' any time in config.yaml.")
+        print("     ⚠  voice is experimental in 0.2.0.")
+        # VOICE-2: probe for speexdsp (acoustic echo cancellation).
+        # Without it the always-on mic feeds back podcast/youtube audio
+        # playing nearby into the agent. We offer one-tap install if
+        # missing; otherwise warn clearly and let the user decide.
+        if _has_speexdsp():
+            print("        speexdsp detected — echo cancellation will work.")
+        else:
+            print("        speexdsp NOT installed — the always-on mic will")
+            print("        feed background audio (podcasts, YouTube, …) into")
+            print("        the agent. Install it for echo cancellation:")
+            print("            pip install speexdsp")
+            if _ask_yn("        Try the install now?", False):
+                _install_speexdsp()
+        voice_enable_choice = _ask_yn(
+            "  Enable always-on voice now (you can flip in config.yaml later)?",
+            False,
+        )
     elif interaction_mode == "gui":
         print()
         print("     ⚠  the PyQt6 GUI is landing in 0.2.0 (Group 3); for now")
@@ -250,8 +267,32 @@ def run_wizard(*, force: bool = False, instance_name: str | None = None) -> Inst
     warm_stt = _ask_yn("Warm Speech-to-Text (Whisper)?", True)
     warm_vision = _ask_yn("Warm Vision (Moondream2 — heavier, multi-GB)?", False)
 
-    # ── Step 6 · Review ─────────────────────────────────────────────
-    _step(6, "Review")
+    # ── Step 6 · Per-instance git identity (INST-4, optional) ──────
+    # When the user opts in, subprocesses spawned by the agent see
+    # HOME=<instance>/home/ — so git commits, ssh keys, npm caches
+    # are per-instance. Without opt-in the agent inherits the
+    # user's real HOME (backward compatible).
+    _step(6, "Subprocess HOME")
+    print("  Should this instance use its own git/ssh identity for")
+    print("  subprocesses it spawns? Useful when you run two instances")
+    print("  (e.g. work + personal) that should commit with different")
+    print("  email addresses / SSH keys. Pick NO if you're not sure —")
+    print("  the agent will inherit your normal HOME.")
+    use_instance_home = _ask_yn(
+        "Use a per-instance subprocess HOME?", False,
+    )
+    git_name: str | None = None
+    git_email: str | None = None
+    ssh_key_source: str | None = None
+    if use_instance_home:
+        git_name = _ask("  Git user.name (blank = skip)", "") or None
+        git_email = _ask("  Git user.email (blank = skip)", "") or None
+        ssh_key_source = _ask(
+            "  Path to an SSH private key to copy in (blank = skip)", "",
+        ) or None
+
+    # ── Step 7 · Review ─────────────────────────────────────────────
+    _step(7, "Review")
     print(f"     Identity     {agent_name} — {role}")
     print(f"     Voice        {voice_id}")
     print(f"     Model        {model_path}")
@@ -259,6 +300,7 @@ def run_wizard(*, force: bool = False, instance_name: str | None = None) -> Inst
     print(f"     Interaction  default mode = {interaction_mode}")
     print(f"     Warm-up      TTS={'on' if warm_tts else 'off'}  "
           f"STT={'on' if warm_stt else 'off'}  Vision={'on' if warm_vision else 'off'}")
+    print(f"     Subproc HOME {'per-instance jail' if use_instance_home else 'inherit from user'}")
     if not _ask_yn("\n  Looks good — create the Jaeger?", True):
         print("  Setup cancelled. Re-run to start over.")
         sys.exit(0)
@@ -268,6 +310,7 @@ def run_wizard(*, force: bool = False, instance_name: str | None = None) -> Inst
     # message (tool schemas alone ate ~14K). 32K is comfortable on
     # Apple Silicon and matches what the model trained on. See
     # docs/ROADMAP_0.2.0.md → Group 2.
+    from jaeger_os.core.instance.schemas import VoiceConfig
     config = Config(
         instance_name=name,
         model=ModelConfig(model_path=model_path, ctx=32768, gpu_layers=-1),
@@ -277,6 +320,10 @@ def run_wizard(*, force: bool = False, instance_name: str | None = None) -> Inst
         warmup=WarmupConfig(tts=warm_tts, stt=warm_stt, vision=warm_vision),
         permissions=PermissionsConfig(mode=perm_mode),
         interaction=InteractionConfig(default_mode=interaction_mode),
+        # VOICE-1/2: default OFF unless the user explicitly opted in
+        # during the interaction step. Re-flippable in config.yaml or
+        # via ``/voice on`` in the TUI.
+        voice=VoiceConfig(enabled=voice_enable_choice),
     )
     manifest = Manifest(instance_name=name, core_version=CORE_VERSION)
 
@@ -285,6 +332,19 @@ def run_wizard(*, force: bool = False, instance_name: str | None = None) -> Inst
     dump_yaml(layout.identity_path, identity)
     dump_yaml(layout.config_path, config)
     dump_json(layout.manifest_path, manifest)
+    # INST-3 (0.2.0): record install provenance per instance.
+    # ``jaeger update`` rewrites ``last_updated_with_framework``;
+    # ``jaeger restore`` rewrites ``install_method`` + adds
+    # ``restored_from``. Idempotent — overwriting is fine.
+    from jaeger_os import __version__ as _jver
+    from jaeger_os.core.instance.instance import detect_install_method
+    install_method = detect_install_method()
+    dump_yaml(layout.distribution_path, DistributionConfig(
+        created_with_framework=_jver,
+        last_updated_with_framework=_jver,
+        install_method=install_method,
+        install_source=_install_source_for(install_method),
+    ))
     # WIZ-2: persist a long-form role to soul.md so the truncated
     # identity.role doesn't lose the user's full intent. Only written
     # when truncation actually happened — short roles leave soul.md
@@ -292,6 +352,16 @@ def run_wizard(*, force: bool = False, instance_name: str | None = None) -> Inst
     # if it ever needs to).
     if role_overflow:
         _write_soul_from_role(layout.root, agent_name, role_overflow)
+    # INST-4: populate the per-instance HOME jail if the user opted
+    # in. Idempotent; safe to re-run.
+    if use_instance_home:
+        from jaeger_os.core.instance.subprocess_env import populate_instance_home
+        populate_instance_home(
+            layout,
+            git_name=git_name,
+            git_email=git_email,
+            ssh_key_source=ssh_key_source,
+        )
     _git_init(layout.root)
 
     # WIZ-4: drop a sourceable env file at ``~/.jaeger/jaeger.env`` so
@@ -344,6 +414,67 @@ def _write_soul_from_role(root: Path, name: str, full_role: str) -> None:
     except OSError as exc:
         print(f"     ⚠  couldn't write soul.md ({exc}); the truncated "
               "role is in identity.yaml as-is.", flush=True)
+
+
+# ── speexdsp probe + install (VOICE-2) ───────────────────────────────
+
+
+def _has_speexdsp() -> bool:
+    """Best-effort detection: importable means the AEC backend will
+    load when the voice loop spins up. ``find_spec`` avoids actually
+    importing speexdsp (which can be slow and side-effecty)."""
+    try:
+        import importlib.util
+        return importlib.util.find_spec("speexdsp") is not None
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _install_speexdsp() -> bool:
+    """One-shot ``pip install speexdsp`` driven from the wizard.
+
+    Returns True on a clean install. The wizard prints either way —
+    the user already opted in via the y/n prompt — and we don't fail
+    the wizard if the install errors (mic still works without AEC,
+    just with background-audio feedthrough).
+    """
+    import subprocess
+    print("     installing speexdsp via pip…", flush=True)
+    try:
+        result = subprocess.run(
+            [sys.executable, "-m", "pip", "install", "--quiet", "speexdsp"],
+            timeout=120,
+        )
+    except (subprocess.SubprocessError, OSError) as exc:
+        print(f"     ⚠  install failed ({exc}); the mic will work without AEC.")
+        return False
+    if result.returncode != 0:
+        print(f"     ⚠  pip returned {result.returncode}; "
+              "install speexdsp manually if you need AEC.")
+        return False
+    print("     speexdsp installed.")
+    return True
+
+
+# ── distribution provenance (INST-3) ─────────────────────────────────
+
+
+def _install_source_for(install_method: str) -> str | None:
+    """Best-effort install source for the distribution manifest.
+
+    Pip and pipx don't expose the original index URL cleanly at
+    runtime; we record a sensible label per method instead. The
+    field is informational — it's what shows up in ``jaeger
+    instance inspect`` and bug-report dumps, not a programmatic
+    contract.
+    """
+    if install_method == "pipx":
+        return "pipx"
+    if install_method == "pip":
+        return "PyPI (pip)"
+    if install_method == "dev-checkout":
+        return f"dev checkout @ {Path(__file__).resolve().parent.parent.parent.parent}"
+    return None
 
 
 # ── env file (WIZ-4) ─────────────────────────────────────────────────

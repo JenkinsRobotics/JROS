@@ -34,18 +34,11 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parent.parent
 
 
-# What we DO allow under ``jaeger_os/instance/``. Anything else fails
-# the audit. Patterns are matched against the slash-joined path inside
-# the wheel (``jaeger_os/instance/...``).
-ALLOWED_INSTANCE_FILES = {
-    "jaeger_os/instance/.gitignore",
-    "jaeger_os/instance/README.md",
-    "jaeger_os/instance/default/.gitignore",
-    "jaeger_os/instance/default/memory/.gitkeep",
-    "jaeger_os/instance/default/logs/.gitkeep",
-    "jaeger_os/instance/default/skills/.gitkeep",
-    "jaeger_os/instance/default/credentials/.gitkeep",
-}
+# INST-10 (0.2.0): ``jaeger_os/instance/`` no longer exists. Anything
+# the wheel ships under that prefix is a regression — user state
+# belongs at ``~/.jaeger/instances/<name>/``, created by the wizard
+# at first run. The allow-list is intentionally empty.
+ALLOWED_INSTANCE_FILES: set[str] = set()
 
 
 def _find_default_wheel() -> Path:

@@ -2941,6 +2941,11 @@ def boot_for_tui(
         touch_manifest_started(layout, manifest)
 
         config: Config = load_yaml(layout.config_path, Config)
+        # INST-11: honour the user's optional workspace override
+        # (config.yaml: workspace.location). Re-bind with the path so
+        # ``file_write("workspace/...")`` lands wherever the user wants.
+        if getattr(config.workspace, "location", None):
+            jaeger_tools.bind(layout, workspace_override=config.workspace.location)
         _pipeline["layout"] = layout
         _pipeline["config"] = config
         _pipeline["show_latency"] = config.display.show_latency
@@ -3213,6 +3218,15 @@ def main() -> int:
     # peel off BEFORE argparse so they don't collide with the positional
     # ``prompt`` argument the legacy CLI takes. Standalone ``jaeger``
     # (no subcommand) falls through to the existing TUI path unchanged.
+    # INST-8 (0.2.0): move any 0.1.0-style ``~/.jaeger/<name>/`` dirs
+    # into the new ``~/.jaeger/instances/<name>/`` nesting BEFORE
+    # anything tries to resolve an instance path. Idempotent — no-op
+    # when nothing is legacy. Runs unconditionally so every entry
+    # path (daemon subcommand, TUI, voice, one-shot CLI) sees the
+    # post-migration layout.
+    from jaeger_os.core.instance.legacy_migrations import migrate_legacy_layout
+    migrate_legacy_layout()
+
     from jaeger_os.daemon.cli import dispatch as _daemon_dispatch, is_daemon_subcommand as _is_daemon
     if _is_daemon(sys.argv[1:]):
         return _daemon_dispatch(sys.argv[1:])
@@ -3352,6 +3366,19 @@ def main() -> int:
         # Bind tools/memory + record start time on the manifest
         jaeger_tools.bind(layout)
         touch_manifest_started(layout, manifest)
+
+        # INST-11: re-bind with workspace override if the user set
+        # ``workspace.location`` in config.yaml. Read config eagerly
+        # so the agent's writes route correctly from the first turn.
+        try:
+            _cfg_for_workspace = load_yaml(layout.config_path, Config)
+            if getattr(_cfg_for_workspace.workspace, "location", None):
+                jaeger_tools.bind(
+                    layout,
+                    workspace_override=_cfg_for_workspace.workspace.location,
+                )
+        except Exception:  # noqa: BLE001 — config load happens again below
+            pass
 
         # Credential management — these subcommands skip model load.
         if args.set_credential:

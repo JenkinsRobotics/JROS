@@ -3308,6 +3308,14 @@ def main() -> int:
 
     if args.setup or not layout.exists():
         layout = run_wizard(force=args.setup, instance_name=instance_name)
+        # WIZ-1: the wizard finished — peel ``--setup`` (and any
+        # ``--setup=foo`` variant) off ``sys.argv`` BEFORE we chain
+        # into ``tui_main`` below. The TUI's argparse doesn't know
+        # ``--setup`` and used to argparse-error right after a
+        # successful setup, which made the wizard feel broken even
+        # though the instance was perfectly created.
+        sys.argv = [a for a in sys.argv
+                    if a != "--setup" and not a.startswith("--setup=")]
 
     # Manifest gate. On version mismatch try the migration runner; only
     # refuse-to-start if migrations don't bring us to parity.

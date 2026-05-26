@@ -283,6 +283,31 @@ class SecurityConfig(BaseModel):
     allow_lazy_installs: bool = False
 
 
+class InteractionConfig(BaseModel):
+    """How the user prefers to talk to this Jaeger by default.
+
+    Chosen during first-boot setup and persisted here so launchers
+    (the menu-bar tray's "Open" action, future ``jaeger`` no-arg
+    behaviour) can pick the right surface without re-asking every
+    time. Three modes today:
+
+      • ``tui``   — open ``jaeger tui`` (0.1.0 in-process Rich REPL).
+                    Default when nothing is set.
+      • ``gui``   — open the floating PyQt6 chat window
+                    (``jaeger gui`` — landing in Group 3).
+      • ``voice`` — always-on mic + spoken responses
+                    (experimental in 0.2.0; needs ``speexdsp`` for
+                    AEC or it picks up background podcast audio).
+
+    Future modes (``rich-tui``, ``attach``, …) can extend the
+    Literal as they ship. ``extra="forbid"`` keeps a typo from
+    silently writing a config that nobody reads.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+    default_mode: Literal["tui", "gui", "voice"] = "tui"
+
+
 class Config(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -297,6 +322,7 @@ class Config(BaseModel):
     warmup: WarmupConfig = Field(default_factory=WarmupConfig)
     permissions: PermissionsConfig = Field(default_factory=PermissionsConfig)
     security: SecurityConfig = Field(default_factory=SecurityConfig)
+    interaction: InteractionConfig = Field(default_factory=InteractionConfig)
 
     @field_validator("instance_name")
     @classmethod

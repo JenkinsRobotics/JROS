@@ -30,6 +30,7 @@ from jaeger_os.core.instance.schemas import (
     Config,
     DisplayConfig,
     Identity,
+    InteractionConfig,
     Manifest,
     ModelConfig,
     PermissionsConfig,
@@ -40,7 +41,12 @@ from jaeger_os.core.instance.schemas import (
     dump_yaml,
 )
 
-_TOTAL_STEPS = 5
+_TOTAL_STEPS = 6
+
+# Mirrors ``Identity.role``'s ``max_length=256`` in schemas.py. If
+# the schema changes, this string lives next to the prompt so the
+# user-facing hint follows along.
+_ROLE_MAX_LEN = 256
 
 # Kokoro voices offered at setup — (voice_id, human label).
 _VOICES = [
@@ -101,6 +107,32 @@ def _step(n: int, title: str) -> None:
     print(f"  ── Step {n}/{_TOTAL_STEPS} · {title} " + "─" * (34 - len(title)))
 
 
+def _truncate_role(role_raw: str) -> tuple[str, str | None]:
+    """Split a too-long role into ``(role, overflow_text)``.
+
+    Returns the role string (≤ ``_ROLE_MAX_LEN`` chars; first sentence
+    if the input was long) and the full original text when truncation
+    happened — caller writes that to ``soul.md`` so nothing the user
+    typed is lost.
+
+    Returns ``(role_raw, None)`` when no truncation was needed.
+    """
+    role_raw = (role_raw or "").strip()
+    if len(role_raw) <= _ROLE_MAX_LEN:
+        return role_raw, None
+
+    # Prefer cutting at the first sentence boundary inside the cap.
+    # Falls back to a hard cut at the cap + ellipsis.
+    cap = _ROLE_MAX_LEN
+    window = role_raw[:cap]
+    cut = max(window.rfind(". "), window.rfind("! "), window.rfind("? "))
+    if cut > 32:  # don't cut absurdly short
+        role = role_raw[: cut + 1].strip()
+    else:
+        role = (role_raw[: cap - 1].rstrip() + "…")[:cap]
+    return role, role_raw
+
+
 # ── the wizard ───────────────────────────────────────────────────────
 
 
@@ -127,7 +159,18 @@ def run_wizard(*, force: bool = False, instance_name: str | None = None) -> Inst
     _step(1, "Identity")
     print("  Who is this Jaeger?")
     agent_name = _ask("Name", "Jarvis")
-    role = _ask("Role — what does it do?", "general-purpose agentic assistant")
+    # WIZ-2: surface the role length cap AND split a too-long role
+    # gracefully — first sentence goes into identity.role, the full
+    # text into soul.md. Previously a long answer crashed the wizard
+    # with a pydantic ValidationError.
+    role_raw = _ask(
+        f"Role — what does it do?  [≤{_ROLE_MAX_LEN} chars]",
+        "general-purpose agentic assistant",
+    )
+    role, role_overflow = _truncate_role(role_raw)
+    if role_overflow:
+        print(f"     (role > {_ROLE_MAX_LEN} chars — saved full text to "
+              f"soul.md; identity.role uses the first sentence.)")
     personality = _ask(
         "Personality (one line)",
         "Helpful, capable, concise — honest about uncertainty.",
@@ -172,33 +215,68 @@ def run_wizard(*, force: bool = False, instance_name: str | None = None) -> Inst
         default=0,
     )
 
-    # ── Step 4 · Warm-up ────────────────────────────────────────────
-    _step(4, "Warm-up")
+    # ── Step 4 · Interaction (WIZ-3) ────────────────────────────────
+    # How does the user want to talk to {name} by default? The choice
+    # lands in config.yaml so launchers (the tray's "Open" action,
+    # `jaeger` no-arg behaviour later) pick the right surface
+    # without re-asking. Voice is experimental in 0.2.0 — the
+    # ``speexdsp`` AEC dep isn't packaged yet; without it the
+    # always-on mic picks up nearby podcast audio.
+    _step(4, "Interaction")
+    print(f"  How do you want to talk to {agent_name} by default?")
+    interaction_mode = _ask_choice(
+        "Pick a mode",
+        [
+            ("tui", "Type — open a TUI when I run `jaeger`  (recommended)"),
+            ("gui", "Floating window — PyQt6 chat bubble"),
+            ("voice", "Voice — always-on mic + spoken responses  (experimental)"),
+        ],
+        default=0,
+    )
+    if interaction_mode == "voice":
+        print()
+        print("     ⚠  voice is experimental in 0.2.0 — the always-on mic")
+        print("        picks up background audio without speexdsp AEC.")
+        print("        You can flip back to 'tui' any time in config.yaml.")
+    elif interaction_mode == "gui":
+        print()
+        print("     ⚠  the PyQt6 GUI is landing in 0.2.0 (Group 3); for now")
+        print("        `jaeger` will fall back to the TUI when invoked.")
+
+    # ── Step 5 · Warm-up ────────────────────────────────────────────
+    _step(5, "Warm-up")
     print("  Pre-load components at boot so they're instant on first use.")
     warm_tts = _ask_yn("Warm Text-to-Speech (Kokoro)?", True)
     warm_stt = _ask_yn("Warm Speech-to-Text (Whisper)?", True)
     warm_vision = _ask_yn("Warm Vision (Moondream2 — heavier, multi-GB)?", False)
 
-    # ── Step 5 · Review ─────────────────────────────────────────────
-    _step(5, "Review")
+    # ── Step 6 · Review ─────────────────────────────────────────────
+    _step(6, "Review")
     print(f"     Identity     {agent_name} — {role}")
     print(f"     Voice        {voice_id}")
     print(f"     Model        {model_path}")
     print(f"     Permissions  {'ask before each action' if perm_mode == 'confirm' else 'auto-allow'}")
+    print(f"     Interaction  default mode = {interaction_mode}")
     print(f"     Warm-up      TTS={'on' if warm_tts else 'off'}  "
           f"STT={'on' if warm_stt else 'off'}  Vision={'on' if warm_vision else 'off'}")
     if not _ask_yn("\n  Looks good — create the Jaeger?", True):
         print("  Setup cancelled. Re-run to start over.")
         sys.exit(0)
 
+    # WIZ-5: ctx default raised 16384 → 32768. The 0.1.0 default plus
+    # the full tool surface guaranteed a ContextOverflow on the first
+    # message (tool schemas alone ate ~14K). 32K is comfortable on
+    # Apple Silicon and matches what the model trained on. See
+    # docs/ROADMAP_0.2.0.md → Group 2.
     config = Config(
         instance_name=name,
-        model=ModelConfig(model_path=model_path, ctx=16384, gpu_layers=-1),
+        model=ModelConfig(model_path=model_path, ctx=32768, gpu_layers=-1),
         display=DisplayConfig(),
         skills=SkillsConfig(),
         retention=RetentionConfig(),
         warmup=WarmupConfig(tts=warm_tts, stt=warm_stt, vision=warm_vision),
         permissions=PermissionsConfig(mode=perm_mode),
+        interaction=InteractionConfig(default_mode=interaction_mode),
     )
     manifest = Manifest(instance_name=name, core_version=CORE_VERSION)
 
@@ -207,14 +285,111 @@ def run_wizard(*, force: bool = False, instance_name: str | None = None) -> Inst
     dump_yaml(layout.identity_path, identity)
     dump_yaml(layout.config_path, config)
     dump_json(layout.manifest_path, manifest)
+    # WIZ-2: persist a long-form role to soul.md so the truncated
+    # identity.role doesn't lose the user's full intent. Only written
+    # when truncation actually happened — short roles leave soul.md
+    # absent (the agent's ``update_soul`` tool will create it later
+    # if it ever needs to).
+    if role_overflow:
+        _write_soul_from_role(layout.root, agent_name, role_overflow)
     _git_init(layout.root)
+
+    # WIZ-4: drop a sourceable env file at ``~/.jaeger/jaeger.env`` so
+    # the user can opt into a stable ``JAEGER_INSTANCE_DIR`` without
+    # memorising the path. Silent on multi-instance setups where the
+    # user clearly already knows what they're doing (env var was set
+    # going in).
+    _write_env_file(layout.root, name)
 
     _banner(f"{agent_name} is ready")
     print()
     print(f"  Instance: {layout.root}")
+    _print_env_hint(name)
     print("  Booting now…")
     print()
     return layout
+
+
+# ── soul.md overflow writer (WIZ-2) ──────────────────────────────────
+
+
+_SOUL_OVERFLOW_HEADER = (
+    "<!-- soul.md — who this instance is: character, values, voice.\n"
+    "     Auto-generated by the wizard because the role text was\n"
+    "     longer than identity.role's 256-char cap. Edit freely;\n"
+    "     loaded into the system prompt at startup. -->\n\n"
+)
+
+
+def _write_soul_from_role(root: Path, name: str, full_role: str) -> None:
+    """Drop the user's full role text into ``soul.md`` so the
+    truncated ``identity.role`` doesn't lose context.
+
+    Header mirrors the convention used by ``identity_tools.update_soul``
+    (see ``core/tools/identity_tools.py:_SOUL_HEADER``) so the agent's
+    own self-edits don't fight with the wizard's output. Best-effort —
+    a write failure prints a note and keeps going; the truncated role
+    in ``identity.yaml`` is still a perfectly usable instance.
+    """
+    soul_path = root / "soul.md"
+    body = (
+        _SOUL_OVERFLOW_HEADER
+        + f"# {name}\n\n"
+        + "## Role (full text from setup)\n\n"
+        + full_role.strip()
+        + "\n"
+    )
+    try:
+        soul_path.write_text(body, encoding="utf-8")
+    except OSError as exc:
+        print(f"     ⚠  couldn't write soul.md ({exc}); the truncated "
+              "role is in identity.yaml as-is.", flush=True)
+
+
+# ── env file (WIZ-4) ─────────────────────────────────────────────────
+
+
+_ENV_FILE_HEADER = (
+    "# Auto-generated by the Jaeger wizard. Source this in your shell\n"
+    "# (or your shell's rc file) to point every `jaeger` invocation at\n"
+    "# the instance the wizard just created — no more silent fallback\n"
+    "# to the bundled placeholder. Safe to re-source; safe to delete.\n"
+    "#\n"
+    "#   source ~/.jaeger/jaeger.env\n"
+    "#\n"
+)
+
+
+def _write_env_file(instance_root: Path, instance_name: str) -> None:
+    """Persist ``export JAEGER_INSTANCE_DIR=…`` (+ INSTANCE_NAME) at
+    ``~/.jaeger/jaeger.env`` so the user has a single, predictable
+    file to ``source``. Best-effort — failures print a note and let
+    the wizard finish (the instance is already on disk).
+    """
+    env_dir = Path("~/.jaeger").expanduser()
+    env_path = env_dir / "jaeger.env"
+    try:
+        env_dir.mkdir(parents=True, exist_ok=True)
+        body = (
+            _ENV_FILE_HEADER
+            + f'export JAEGER_INSTANCE_DIR="{instance_root}"\n'
+            + f'export JAEGER_INSTANCE_NAME="{instance_name}"\n'
+        )
+        env_path.write_text(body, encoding="utf-8")
+        env_path.chmod(0o600)
+    except OSError as exc:
+        print(f"     ⚠  couldn't write {env_path} ({exc}); "
+              f"set JAEGER_INSTANCE_DIR={instance_root} manually.",
+              flush=True)
+
+
+def _print_env_hint(instance_name: str) -> None:
+    """One-liner the user can copy verbatim into their shell rc."""
+    env_path = Path("~/.jaeger/jaeger.env").expanduser()
+    print(f"  Env file: {env_path}")
+    # Print the source line in a way that's obvious to copy.
+    print("  Add this to your shell rc (zsh/bash) to make it stick:")
+    print(f'    source "{env_path}"')
 
 
 # ── git ──────────────────────────────────────────────────────────────

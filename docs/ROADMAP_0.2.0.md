@@ -143,33 +143,41 @@ jaeger stop                # clean shutdown
 
 ### Group 2 — Wizard + first-run UX
 
-User-facing polish. The bugs that made the first-run dance painful.
+User-facing polish. **Done 2026-05-25.** The wizard is now 6 steps
+(identity / model / permissions / interaction / warm-up / review)
+and no longer crashes on long role strings or chains into an
+argparse-error.
 
-- [ ] **WIZ-1** — Wizard auto-boot strips `--setup` from
-      `sys.argv` before chain-calling the TUI/daemon (the
-      argparse error we hit at end of setup).
-- [ ] **WIZ-2** — `Identity.role` 256-char limit surfaced in
-      the prompt as `[≤256 chars]`. Or accept long roles and
-      split into `identity.role` + `soul.md` automatically.
-- [ ] **WIZ-3** — **NEW QUESTION**: default interaction mode.
-      ```
-      How do you want to talk to {name} by default?
-        › 1. Type — open a TUI when I run `jaeger`     (recommended)
-          2. Floating window — PyQt6 chat bubble
-          3. Voice — always-on mic + spoken responses
-                     (requires speexdsp for AEC)
-      ```
-      Writes to `config.yaml:interaction.default_mode`. For 0.2.0,
-      option 3 is gated behind "voice is experimental" warning.
-- [ ] **WIZ-4** — Wizard's final line prints the env-var the user
-      needs to set OR (better) writes a `~/.jaeger/jaeger.env`
-      file the shell can `source`. Stop the silent
-      `JAEGER_INSTANCE_DIR` surprise.
-- [ ] **WIZ-5** — Default `model.ctx` raised to **32768** (was
-      16384). The model trained at 262K; 32K is comfortable on
-      Apple Silicon and avoids the every-first-message overflow.
+- [x] **WIZ-1** — `main.py` strips ``--setup`` (and
+      ``--setup=…``) from ``sys.argv`` right after the wizard
+      returns. The chain into ``tui_main`` used to argparse-error
+      because the TUI's parser doesn't know ``--setup``, so a
+      perfectly-finished setup looked broken.
+- [x] **WIZ-2** — Role prompt shows ``[≤256 chars]`` AND a
+      long answer is split gracefully: ``identity.role`` gets the
+      first sentence (or a hard-cut + ellipsis if there's no
+      sentence boundary), and the full original text lands in
+      ``soul.md`` so nothing the user typed is lost. The pydantic
+      ValidationError crash from 0.1.0 can't happen anymore.
+- [x] **WIZ-3** — New Step 4 "Interaction" question writes
+      ``config.yaml:interaction.default_mode``. Schema:
+      ``InteractionConfig.default_mode: Literal["tui", "gui",
+      "voice"]`` (default ``"tui"``). Voice + GUI both print an
+      "experimental / landing in 0.2.0 Group 3" warning so the
+      user knows what they're picking.
+- [x] **WIZ-4** — Wizard writes ``~/.jaeger/jaeger.env``
+      (``export JAEGER_INSTANCE_DIR=…`` + ``…_NAME=…``, mode
+      0600). Final wizard output prints the file path and the
+      ``source ~/.jaeger/jaeger.env`` one-liner so the user can
+      paste it into their shell rc.
+- [x] **WIZ-5** — Default ``model.ctx`` 16384 → 32768. The 0.1.0
+      default plus the full tool surface guaranteed a
+      ContextOverflow on the first message (tool schemas alone
+      ate ~14K). Existing on-disk configs are unchanged; this is
+      the new-instance default only.
 
-Cost: half-day. All small.
+**Result:** 15 new wizard tests; 1103 default-tier tests pass
+(was 1088 post-Group 1).
 
 ### Group 3 — PyQt6 floating GUI (port from Lilith)
 

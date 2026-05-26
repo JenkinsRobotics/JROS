@@ -312,58 +312,85 @@ class Lifecycle:
 def real_forker(
     *,
     paths: LifecyclePaths,
-    serve: Callable[[], None],
+    instance_name: str | None = None,
 ) -> Callable[[Callable[[int], None]], int]:
-    """Build a forker closure that does the real Unix dance.
+    """Build a spawner that launches the daemon as a NEW Python
+    interpreter (``subprocess.Popen``) rather than forking.
 
-    Use this from ``jaeger start``::
+    Why subprocess instead of ``os.fork()``
+    ---------------------------------------
+    macOS's Objective-C runtime aborts a forked child the first time
+    it touches a class the parent initialized. Python's stdlib
+    (``ssl``, ``locale``, the ``keyring`` package on first transitive
+    import, …) drags Obj-C in during ``jaeger`` startup, so by the
+    time we'd ``os.fork()`` from this code, the parent has already
+    poisoned the well — llama-cpp-python's Metal backend then dies
+    silently inside ``ggml_metal_device_init`` in the forked child.
+    Setting ``OBJC_DISABLE_INITIALIZE_FORK_SAFETY=YES`` *in the child*
+    after fork is too late; Apple's guard latches on first use, not
+    on first init.
 
-        forker = real_forker(paths=paths, serve=lambda: run_server(...))
-        result = lifecycle.start(forker=forker)
+    Subprocess sidesteps the whole problem: the daemon is a fresh
+    Python interpreter that starts with the env var already in place
+    (we pass it via ``env=...``), Obj-C never registers the fork
+    guard, and Metal initializes cleanly. This is the same pattern
+    every major macOS daemon uses (Postgres, Redis, Hermes Agent,
+    Werkzeug, Celery, Gunicorn) — the function keeps the
+    ``real_forker`` name for compatibility with the existing
+    ``Lifecycle.start(forker=…)`` contract, but it's a spawner.
 
-    The child:
-      * detaches from the parent's session via :func:`os.setsid`
-      * redirects stdin/stdout/stderr to the log file so output from the
-        agent loop doesn't leak back to the operator's terminal
-      * calls ``serve()`` which never returns under normal operation
+    The child entry point — ``jaeger_os.daemon._child_entry`` — does
+    the ``setsid`` + ``dup2`` to the log file + ``serve()`` dance
+    that used to live inside ``real_forker``'s child branch.
     """
+    import subprocess
+    import sys
 
     def forker(pid_callback: Callable[[int], None]) -> int:
-        pid = os.fork()
-        if pid == 0:
-            # ── child branch ──────────────────────────────────────
-            try:
-                os.setsid()
-                # Redirect stdio to the log file. ``os.dup2`` is the
-                # right tool because it survives subprocess spawns —
-                # the agent's tool calls inherit these descriptors.
-                paths.run_dir.mkdir(parents=True, exist_ok=True)
-                fd_null = os.open(os.devnull, os.O_RDONLY)
-                fd_log = os.open(
-                    str(paths.log_file),
-                    os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600,
-                )
-                os.dup2(fd_null, 0)   # stdin → /dev/null
-                os.dup2(fd_log, 1)    # stdout → log
-                os.dup2(fd_log, 2)    # stderr → log
-                os.close(fd_null)
-                os.close(fd_log)
+        paths.run_dir.mkdir(parents=True, exist_ok=True)
 
-                # Run the server. ``serve`` doesn't return; we ``_exit``
-                # if it does (e.g. via SIGTERM handler).
-                serve()
-                os._exit(0)
-            except SystemExit:
-                raise
-            except BaseException:                # pragma: no cover
-                # Any crash in the daemon child must not propagate back
-                # to the parent — write a final line to the log and die.
-                import traceback as _tb
-                _tb.print_exc()
-                os._exit(1)
-        # ── parent branch ────────────────────────────────────────
-        pid_callback(pid)
-        return pid
+        env = dict(os.environ)
+        # Pre-set BEFORE the new interpreter starts so Python's
+        # stdlib loads with Obj-C fork-safety disabled from the
+        # very first Obj-C touch.
+        env.setdefault("OBJC_DISABLE_INITIALIZE_FORK_SAFETY", "YES")
+
+        cmd = [
+            sys.executable,
+            "-m", "jaeger_os.daemon._child_entry",
+            "--run-dir", str(paths.run_dir),
+        ]
+        if instance_name:
+            cmd.extend(["--instance", instance_name])
+
+        # ``start_new_session=True`` is the subprocess-equivalent of
+        # ``os.setsid()`` — the daemon becomes its own process group
+        # leader so a Ctrl-C in the operator's shell doesn't cascade
+        # into it. The child also calls setsid again on its own as
+        # belt-and-suspenders (different parent shells deliver SIGHUP
+        # to background processes differently).
+        # Route stdout/stderr to the log file so import errors or
+        # pre-``serve`` crashes don't vanish into the void. The child
+        # itself reopens these fds after ``setsid`` (see
+        # ``_child_entry._redirect_stdio_to_log``) — that's idempotent.
+        log_path = paths.log_file
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        log_fh = open(log_path, "ab", buffering=0)
+
+        try:
+            proc = subprocess.Popen(
+                cmd,
+                env=env,
+                stdin=subprocess.DEVNULL,
+                stdout=log_fh,
+                stderr=log_fh,
+                close_fds=True,
+                start_new_session=True,
+            )
+        finally:
+            log_fh.close()
+        pid_callback(proc.pid)
+        return proc.pid
 
     return forker
 

@@ -1,10 +1,12 @@
 # instance/ — where the agent's per-instance state lives
 
-This is the **dev / single-user default** location for instance state.
-When you run `python main.py jaeger_os` for the first time, the setup
-wizard creates `instance/<instance_name>/` here (default: `instance/default/`).
+This dir holds the **skeleton** the wheel ships — empty
+`default/{memory,logs,skills,credentials}/` placeholders. When the
+setup wizard runs for the first time it fills in `identity.yaml`,
+`config.yaml`, `manifest.json`, and `soul.md`.
 
-After the first run you'll see:
+After first run (on a dev checkout, when `JAEGER_INSTANCE_DIR` is
+unset) you'll see:
 
 ```
 instance/
@@ -12,7 +14,10 @@ instance/
     ├── identity.yaml         ← agent name + role + personality (wizard-owned)
     ├── config.yaml           ← model path + display prefs (wizard-owned)
     ├── manifest.json         ← core_version pin
+    ├── soul.md               ← free-form character/voice doc (wizard-owned)
+    ├── permissions.json      ← "always allow" grants (runtime-written)
     ├── .lock                 ← exclusive lockfile (active while running)
+    ├── run/                  ← daemon scratch — PID, socket, log
     ├── credentials/          ← 0600 API keys / tokens (off-limits to agent)
     ├── skills/               ← the AGENT's writable scratchpad
     │   └── <name>_v<N>/      ← skills the agent authors at runtime
@@ -20,19 +25,47 @@ instance/
     └── logs/                 ← audit.log, latency.jsonl
 ```
 
-## Why is this inside the framework folder?
+Everything except the four `.gitkeep`s is gitignored — see
+`.gitignore` in this directory.
 
-Visibility. Putting the dev instance here (vs. `~/.jaeger/`) means everything
-the agent reads or writes is one click away in the source tree. Symmetric
-with `python_pydantic_ai/workspace/`.
+## Why is the skeleton here?
 
-This is the **dev default** — the resolver order is:
+Visibility. Even though the bundled `default/` no longer accumulates
+runtime state (HYGIENE-1..5 in `docs/ROADMAP_0.2.0.md`), keeping the
+directory shape in the source tree makes the layout obvious when
+scanning the codebase and gives the wizard a stable target.
 
-1. `JAEGER_INSTANCE_DIR=...` env var (always wins; use for tests / multi-instance)
-2. `/var/lib/jaeger/<name>/` when running as root (system service mode)
-3. **`jaeger_os/instance/<name>/`** ← here (dev / single-user default)
-4. `~/.jaeger/<name>/` fallback when the bundled dir isn't writable
-   (e.g. pip-installed inside a system-wide site-packages tree)
+## Resolver order
+
+Pick the on-disk path for an instance with `resolve_instance_dir()`
+(in `core/instance/instance.py`). The priority is:
+
+1. `JAEGER_INSTANCE_DIR=...` env var (always wins; use for tests,
+   for multi-instance, and for dev work that targets
+   `sandbox/jros-dev/` — see `scripts/dev_env.sh`).
+2. `/var/lib/jaeger/<name>/` when running as root (system service mode).
+3. `~/.jaeger/<name>/` when running from a pip install (i.e.
+   `site-packages` / `dist-packages` is an ancestor of the package
+   dir). The bundled `instance/default/` is a read-only skeleton in
+   that case; never written to.
+4. `jaeger_os/instance/<name>/` ← here. Used only for dev checkouts
+   (including `pip install -e .` editable installs).
+
+## Dev workflow
+
+For in-repo work, point `JAEGER_INSTANCE_DIR` at the gitignored
+sandbox so writes don't land in this tree:
+
+```sh
+source scripts/dev_env.sh     # exports JAEGER_INSTANCE_DIR=$REPO/sandbox/jros-dev
+jaeger start
+```
+
+Or as a one-shot:
+
+```sh
+scripts/dev_env.sh jaeger bench run
+```
 
 ## What's the contract with the agent?
 

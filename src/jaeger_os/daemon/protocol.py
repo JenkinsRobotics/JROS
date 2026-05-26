@@ -118,7 +118,12 @@ def encode(msg: Message) -> bytes:
         raise TypeError(f"not a Message: {type(msg).__name__}")
     # ``ensure_ascii=False`` keeps emoji + unicode readable on the wire;
     # ``separators`` trims spaces so a frame stays compact.
-    return (json.dumps(obj, ensure_ascii=False, separators=(",", ":"))
+    # ``default=str`` is a defensive fallback for handler return values
+    # that contain types ``json`` doesn't know natively (``PosixPath``
+    # is the recurring offender). The right fix is to stringify at the
+    # handler — this just keeps a typo from killing the connection.
+    return (json.dumps(obj, ensure_ascii=False, separators=(",", ":"),
+                       default=str)
             + "\n").encode("utf-8")
 
 

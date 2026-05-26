@@ -18,6 +18,8 @@
 */permissions.json
 
 # All credential files and the embedded git history for each instance.
+# (The agent keeps its OWN per-instance git history under
+# <instance>/.git/ for skills-it-authored auditing — runtime state.)
 */credentials/*
 */.git/
 
@@ -25,6 +27,11 @@
 */memory/*
 */logs/*
 */skills/*
+
+# Daemon runtime scratch — PID, socket, log. Recreated on every
+# ``jaeger start``; cleaned by ``jaeger stop``. The dir itself isn't
+# part of the skeleton.
+*/run/
 
 # Per-instance virtual env (agent-installed dependencies). Recreated
 # on demand by core/venv.py — never committed.

@@ -38,8 +38,11 @@ from jaeger_os.daemon.server import Server
 
 
 # Subcommands that route to this module instead of the main TUI path.
+# ``rich-tui`` is a daemon-attached client — distinct from the 0.1.0
+# ``jaeger tui`` which boots in-process and stays untouched.
 SUBCOMMANDS: frozenset[str] = frozenset({
     "start", "stop", "status", "restart", "tray", "bench",
+    "attach", "rich-tui",
 })
 
 
@@ -68,6 +71,20 @@ def dispatch(argv: Sequence[str]) -> int:
     # flag we add to it later shouldn't have to be re-declared here.
     if argv[0] == "tray":
         return _cmd_tray_argv(list(argv[1:]))
+    # ``attach`` is a streaming client — peel it off here so its
+    # ``--instance`` / ``--session`` flags don't have to be re-declared
+    # in the lifecycle parser below.
+    if argv[0] == "attach":
+        from jaeger_os.daemon.attach import _cmd_attach_argv
+        return _cmd_attach_argv(list(argv[1:]))
+    # ``rich-tui`` — daemon-attached Rich UI. Its own argparse lives
+    # in ``interfaces.rich_tui.__main__`` so this dispatcher doesn't
+    # have to know about its flags. The existing ``jaeger tui`` (the
+    # 0.1.0 in-process surface) is NOT in SUBCOMMANDS — it falls
+    # through to ``main.py``'s legacy path, unchanged.
+    if argv[0] == "rich-tui":
+        from jaeger_os.interfaces.rich_tui.__main__ import main as _rich_main
+        return _rich_main(list(argv[1:]))
     parser = argparse.ArgumentParser(
         prog="jaeger", add_help=False,
         description="Jaeger daemon lifecycle commands.",
@@ -249,15 +266,22 @@ def _cmd_start(lifecycle: Lifecycle, *,
                want_tray: bool = False) -> int:
     """``jaeger start`` — fork the daemon into the background.
 
-    The Phase-1 daemon just runs the server with its three builtin ops.
-    Phase 2 swaps in a serve() that calls boot_for_daemon first.
+    The daemon's child branch loads the model + builds the agent
+    (``boot_for_daemon``) before the socket starts accepting. From
+    that point ``chat.send`` / ``chat.history`` / ``status.snapshot``
+    are live and any client (TUI / attach / GUI) can drive the agent
+    that just booted.
 
     When ``want_tray`` is True we also fire-and-forget a menu-bar
     tray process so the user gets a visible 🤖 indicator. The tray
     is dumb — it just polls ``Lifecycle.status()`` and shells out to
     ``jaeger`` for click handlers; a crash there can't take the
-    daemon down."""
-    forker = real_forker(paths=lifecycle.paths, serve=_phase1_serve_factory(lifecycle.paths))
+    daemon down.
+    """
+    # ``real_forker`` is a subprocess-based spawner now (see the
+    # function's docstring for why). It takes the instance name
+    # directly so the spawned child knows which one to boot.
+    forker = real_forker(paths=lifecycle.paths, instance_name=instance)
     result = lifecycle.start(forker=forker)
     if not result.ok:
         print(result.message, file=sys.stderr)
@@ -329,33 +353,126 @@ def _spawn_tray(instance: str | None) -> None:
         print(f"[jaeger] tray failed to launch: {exc}", file=sys.stderr)
 
 
-def _phase1_serve_factory(paths: LifecyclePaths):
+def _agent_serve_factory(paths: LifecyclePaths, *, instance_name: str | None = None):
     """Build the ``serve`` callable the forker hands to the child.
 
-    Wrapped in a factory so the closure captures ``paths`` without us
-    having to keep references to mutable state. The serve callable
-    blocks forever — ``serve_forever`` inside the Server's accept
-    thread, with the main thread waiting on a SIGTERM-driven event.
+    Wrapped in a factory so the closure captures ``paths`` +
+    ``instance_name`` without us having to keep references to mutable
+    state. The serve callable blocks forever — ``serve_forever`` inside
+    the Server's accept thread, with the main thread waiting on a
+    SIGTERM-driven event.
+
+    Child branch sequence:
+      1. Bind the NDJSON socket immediately (with stub chat ops that
+         answer "still booting"). This lets ``jaeger start`` return
+         within its 5s readiness window even for slow model loads.
+      2. Boot the agent on a background thread — ``boot_for_daemon``
+         takes the instance lock, binds tools, loads the model,
+         builds the agent.
+      3. Once boot finishes, swap the stubs for the production
+         chat / history / snapshot handlers.
+      4. Block on SIGTERM/SIGINT; on shutdown stop the server and
+         release the instance lock + extension subsystems.
+
+    If boot raises (model file missing, instance corrupt, etc.), the
+    failure is logged AND surfaced via ``status.snapshot``'s
+    ``boot_error`` field so clients can read what happened. The daemon
+    keeps the socket up so ``jaeger stop`` works cleanly.
     """
     def serve() -> None:
+        import faulthandler
+        import signal as _signal
+        import sys as _sys
         import threading
+        import time as _time
+        import traceback
+
+        # Native-level crash dumps go to the log instead of dying
+        # silently. Catches the llama-cpp/Metal ``ggml_abort`` paths
+        # and friends that bypass Python's exception machinery.
+        faulthandler.enable(file=_sys.stderr, all_threads=True)
+
+        # Imports inside the closure so the import cost is paid by the
+        # child branch only.
+        from jaeger_os.daemon.chat_ops import (
+            register_booting_stubs,
+            register_chat_ops,
+        )
+
+        progress: dict[str, Any] = {
+            "started_at": _time.time(),
+            "ready": False,
+            "error": None,
+        }
+
         server = Server(socket_path=paths.socket_path)
+        register_booting_stubs(server, progress)
+        # ``Server.start()`` spawns its own accept thread for the socket
+        # — it does NOT block the caller — so we can do the model load
+        # right here on the main thread. That matters on macOS: llama-
+        # cpp-python's Metal backend can only safely initialize from
+        # the main thread of the process. Booting on a worker thread
+        # (what we tried first) dies inside ``ggml_metal_device_init``
+        # with no Python traceback. ``register_booting_stubs`` keeps
+        # the socket usable for ``status.snapshot`` / ``ping`` during
+        # the boot window so clients see "still booting", not a refused
+        # connection.
         server.start()
-        # Block the main thread on a shutdown event; SIGTERM flips it.
+        print(f"[jaeger-daemon] listening on {paths.socket_path}; "
+              "loading agent on main thread…", flush=True)
+
+        boot: Any = None
+        try:
+            from jaeger_os.main import boot_for_daemon
+            print(f"[jaeger-daemon] booting agent for instance "
+                  f"{instance_name or 'default'}…", flush=True)
+            boot = boot_for_daemon(
+                instance_name=instance_name,
+                with_memory=True,
+                warmup=True,
+            )
+            register_chat_ops(server, boot)
+            progress["ready"] = True
+            print(f"[jaeger-daemon] agent ready (instance "
+                  f"{boot.layout.root}).", flush=True)
+        except Exception as exc:  # noqa: BLE001
+            progress["error"] = f"{type(exc).__name__}: {exc}"
+            traceback.print_exc()
+            print(f"[jaeger-daemon] BOOT FAILED: {exc}", flush=True)
+            # Don't return — keep the socket alive so a client can
+            # call ``status.snapshot`` and read ``boot_error``, and so
+            # ``jaeger stop`` works cleanly to clean up. The stubs
+            # still answer "agent is still booting" for chat.send.
+            # Don't return — keep the socket alive so a client can
+            # call ``status.snapshot`` and read ``boot_error``, and so
+            # ``jaeger stop`` works cleanly to clean up. The stubs
+            # still answer "agent is still booting" for chat.send.
+
         shutdown = threading.Event()
 
         def _on_signal(signum, _frame):  # noqa: ANN001 — signal handler shape
+            print(f"[jaeger-daemon] signal {signum} — shutting down…",
+                  flush=True)
             shutdown.set()
 
-        import signal as _signal
         _signal.signal(_signal.SIGTERM, _on_signal)
         _signal.signal(_signal.SIGINT, _on_signal)
 
         try:
             shutdown.wait()
         finally:
-            server.stop()
+            try:
+                server.stop()
+            finally:
+                if boot is not None:
+                    try:
+                        boot.cleanup()
+                    except Exception:  # noqa: BLE001
+                        pass
+            print("[jaeger-daemon] stopped.", flush=True)
     return serve
+
+
 
 
 def _cmd_stop(lifecycle: Lifecycle) -> int:

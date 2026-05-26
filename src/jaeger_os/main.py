@@ -2087,6 +2087,23 @@ def _run_turn_via_jaeger_agent(
                         )
                     except (TypeError, ValueError):
                         pass
+            # Daemon-mode: forward to any chat.subscribe subscribers
+            # so a remote TUI / attach client shows live tool activity.
+            # In-process boot (no daemon) leaves the bus unset and
+            # this is a no-op.
+            bus = _pipeline.get("daemon_event_bus")
+            if bus is not None:
+                try:
+                    payload: dict[str, Any] = {"name": name, "phase": phase}
+                    if isinstance(data, dict):
+                        # Only ship JSON-able scalars; the full data
+                        # dict can hold non-serializable references.
+                        for k in ("elapsed_s", "args_preview", "result_preview"):
+                            if k in data:
+                                payload[k] = data[k]
+                    bus.publish("tool.progress", **payload)
+                except Exception:  # noqa: BLE001 — never let pub break the agent
+                    pass
 
         _status_cb = AgentCallbacks(
             tool_progress=_tool_progress,
@@ -2986,6 +3003,34 @@ def boot_for_tui(
             pass
 
     return TUIBootResult(client=client, layout=layout, cleanup=cleanup)
+
+
+def boot_for_daemon(
+    *,
+    instance_name: str | None = None,
+    with_memory: bool = True,
+    warmup: bool = True,
+) -> TUIBootResult:
+    """Boot the jaeger pipeline for the daemon's child process.
+
+    The daemon's boot is **the same** as the TUI's — instance resolve →
+    manifest gate → lock → bind tools → load model → build agent →
+    prewarm. The only difference is the caller: the daemon owns the
+    instance lock for its whole lifetime; clients (TUI / attach / GUI)
+    just open the socket. This function exists as a named entry point
+    so the lifecycle factory in ``daemon/cli.py`` doesn't have to
+    import ``boot_for_tui`` (and so we can swap the daemon's boot
+    without touching the TUI's path if they diverge later).
+
+    Returns the same :class:`TUIBootResult`; the daemon doesn't need
+    a separate result type — it just keeps ``client`` + ``layout``
+    alive and calls ``cleanup()`` on shutdown.
+    """
+    return boot_for_tui(
+        instance_name=instance_name,
+        with_memory=with_memory,
+        warmup=warmup,
+    )
 
 
 def switch_model(new_model: str, *, warmup: bool = True) -> Any:

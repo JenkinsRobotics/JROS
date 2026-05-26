@@ -45,26 +45,57 @@ from jaeger_os.core.instance.schemas import (
 # ---------------------------------------------------------------------------
 #   1. JAEGER_INSTANCE_DIR env var       — explicit override (always wins)
 #   2. /var/lib/jaeger/<name>/           — system service mode (uid 0)
-#   3. jaeger_os/instance/<name>/    — DEFAULT (dev / single-user) — visible
-#                                          in the source tree, symmetric with
-#                                          pydantic_ai/workspace/. The framework
-#                                          dir is read-only TO THE AGENT (v2
-#                                          contract enforces writes only to
+#   3. ~/.jaeger/<name>/                 — pip-installed mode (running from
+#                                          a site-packages tree). The bundled
+#                                          ``src/jaeger_os/instance/`` dir is
+#                                          a skeleton only; writing into it
+#                                          would corrupt the install.
+#   4. jaeger_os/instance/<name>/        — DEV / single-user — visible in the
+#                                          source tree. The framework dir is
+#                                          read-only TO THE AGENT (v2 contract
+#                                          enforces writes only to
 #                                          <instance>/skills/), so co-locating
-#                                          is safe.
-#   4. ~/.jaeger/<name>/                 — legacy fallback when the bundled
-#                                          instance dir isn't writable (e.g.
-#                                          pip-installed inside a system
-#                                          site-packages tree).
+#                                          is safe for dev checkouts.
+#
+# 0.1.0 had (3) and (4) swapped — the bundled dir won as long as it was
+# writable, which made every ``pip install`` user accidentally load our
+# packaging-machine state. HYGIENE-4 in docs/ROADMAP_0.2.0.md is the
+# swap.
 SYSTEM_ROOT = Path("/var/lib/jaeger")
 USER_ROOT = Path("~/.jaeger").expanduser()
 # jaeger_os/core/instance/instance.py → .parent.parent.parent = jaeger_os/
 PACKAGE_ROOT = Path(__file__).resolve().parent.parent.parent
+# ``BUNDLED_INSTANCE_ROOT`` is kept as a derived module attribute for
+# back-compat, but ``resolve_instance_dir`` re-reads ``PACKAGE_ROOT``
+# on each call so tests can monkeypatch the package location without
+# having to reload the module.
 BUNDLED_INSTANCE_ROOT = PACKAGE_ROOT / "instance"
 
 
 def default_instance_name() -> str:
     return os.environ.get("JAEGER_INSTANCE_NAME", "default")
+
+
+def is_pip_installed() -> bool:
+    """True when the package lives under ``site-packages`` / ``dist-packages``.
+
+    Detected by walking ``PACKAGE_ROOT``'s parents for a known install
+    component — catches pip, pipx, system-wide installs, and venvs.
+    ``pip install -e .`` (editable) installs are treated as DEV because
+    the editable install points at the source checkout, which doesn't
+    have a ``site-packages`` ancestor.
+
+    Re-derived on every call so tests can monkeypatch ``PACKAGE_ROOT``
+    without reloading the module (``importlib.reload`` would rebuild
+    ``PACKAGE_ROOT`` from ``__file__``, undoing the patch).
+
+    Exposed for tests and ``--doctor`` reporting; the resolver uses the
+    same signal to pick ``~/.jaeger/`` vs the bundled dir.
+    """
+    return any(
+        p.name in ("site-packages", "dist-packages")
+        for p in PACKAGE_ROOT.parents
+    )
 
 
 def resolve_instance_dir(name: str | None = None) -> Path:
@@ -82,14 +113,21 @@ def resolve_instance_dir(name: str | None = None) -> Path:
     if os.geteuid() == 0 and SYSTEM_ROOT.parent.exists():
         return (SYSTEM_ROOT / inst).resolve()
 
-    # Default: bundled instance dir inside the package, visible in the source
-    # tree. Falls back to ~/.jaeger/ if the package dir isn't writable
-    # (uncommon — happens for system-wide pip installs).
+    # Pip-installed: NEVER write into site-packages. Use ~/.jaeger/
+    # so the user's state lives in their home dir, not inside the
+    # framework install.
+    if is_pip_installed():
+        return (Path("~/.jaeger").expanduser() / inst).resolve()
+
+    # Dev checkout: bundled instance dir inside the source tree, visible
+    # one click from the rest of the code. Falls back to ~/.jaeger/ if
+    # the package dir isn't writable (rare — Read-Only Filesystem etc).
+    bundled = PACKAGE_ROOT / "instance"
     try:
-        BUNDLED_INSTANCE_ROOT.mkdir(parents=True, exist_ok=True)
-        return (BUNDLED_INSTANCE_ROOT / inst).resolve()
+        bundled.mkdir(parents=True, exist_ok=True)
+        return (bundled / inst).resolve()
     except (OSError, PermissionError):
-        return (USER_ROOT / inst).resolve()
+        return (Path("~/.jaeger").expanduser() / inst).resolve()
 
 
 # ---------------------------------------------------------------------------

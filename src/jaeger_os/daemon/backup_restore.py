@@ -342,6 +342,42 @@ def _ver_gt(a: str, b: str) -> bool:
 # ── CLI plumbing ───────────────────────────────────────────────────
 
 
+def _pick_backup_interactively() -> Path | None:
+    """List zips under ``~/.jaeger/backups/`` (newest first) and let
+    the user pick one. Returns ``None`` if the dir is empty or stdin
+    isn't a TTY."""
+    backups_dir = Path("~/.jaeger/backups").expanduser()
+    if not backups_dir.exists():
+        print(f"[jaeger restore] no backup dir at {backups_dir}.",
+              file=sys.stderr)
+        return None
+    zips = sorted(backups_dir.glob("*.zip"),
+                  key=lambda p: p.stat().st_mtime, reverse=True)
+    if not zips:
+        print(f"[jaeger restore] no .zip files in {backups_dir}.",
+              file=sys.stderr)
+        return None
+    if not sys.stdin.isatty():
+        print("[jaeger restore] specify the archive explicitly "
+              "(stdin is not a tty).", file=sys.stderr)
+        return None
+    print(f"Backups in {backups_dir}:")
+    for i, p in enumerate(zips[:20]):  # cap so we don't drown the user
+        size_kb = p.stat().st_size // 1024
+        print(f"     {i + 1}. {p.name}   ({size_kb:,} KB)")
+    if len(zips) > 20:
+        print(f"     … and {len(zips) - 20} more — pass the path explicitly.")
+    while True:
+        raw = input(f"  Pick 1-{min(len(zips), 20)}: ").strip()
+        if not raw:
+            return None
+        if raw.isdigit():
+            idx = int(raw)
+            if 1 <= idx <= min(len(zips), 20):
+                return zips[idx - 1]
+        print(f"     (pick 1-{min(len(zips), 20)} or ^C to abort)")
+
+
 def _cmd_backup_argv(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(prog="jaeger backup", add_help=False)
     parser.add_argument("--name", default=None,
@@ -400,14 +436,21 @@ def _cmd_restore_argv(argv: list[str]) -> int:
                         help="back up + replace if an instance with this name exists")
     parser.add_argument("-h", "--help", action="store_true")
     args = parser.parse_args(argv)
-    if args.help or args.archive is None:
+    if args.help:
         print(
-            "usage: jaeger restore <archive.zip> [--name NEW] [--force]\n",
+            "usage: jaeger restore [<archive.zip>] [--name NEW] [--force]\n"
+            "  Bareword: prompts to pick from ~/.jaeger/backups/.\n",
             file=sys.stderr,
         )
-        return 0 if args.help else 2
+        return 0
 
-    archive = Path(args.archive).expanduser()
+    if args.archive is None:
+        picked = _pick_backup_interactively()
+        if picked is None:
+            return 1
+        archive = picked
+    else:
+        archive = Path(args.archive).expanduser()
     try:
         target = restore_instance(archive, name_override=args.name,
                                   force=args.force)

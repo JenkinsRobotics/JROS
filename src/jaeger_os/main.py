@@ -2671,7 +2671,7 @@ def _cli_list_instances() -> int:
     root = _instance_root()
     print(f"Instances under {root}:")
     if not instances:
-        print("  (none yet — run --setup or --create-instance to create one)")
+        print("  (none yet — run `jaeger setup` to create one)")
         return 0
     current = default_instance_name()
     for name, path, has_manifest in instances:
@@ -2832,8 +2832,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("prompt", nargs="*", help="Optional one-shot command.")
     p.add_argument("--instance", type=str, default=None,
                    help="Instance name (default: JAEGER_INSTANCE_NAME or 'default').")
-    p.add_argument("--setup", action="store_true",
-                   help="Run (or re-run) the setup wizard, then exit.")
+    # ``--setup`` removed in 0.2.0 — use ``jaeger setup`` (INST-2).
     p.add_argument("--self-test", action="store_true",
                    help="Run the sandbox/memory/skill smoke tests without loading the LLM.")
     p.add_argument("--doctor", action="store_true",
@@ -2852,18 +2851,17 @@ def parse_args() -> argparse.Namespace:
                    help="List stored credential names (values never printed) and exit.")
     p.add_argument("--delete-credential", metavar="NAME",
                    help="Delete a stored credential by name and exit.")
-    p.add_argument("--migrate", action="store_true",
-                   help="Run any pending core migrations against this instance and exit.")
-    p.add_argument("--list-instances", action="store_true",
-                   help="List every instance under the root and exit.")
-    p.add_argument("--create-instance", metavar="NAME",
-                   help="Non-interactively create a new instance with default identity + config, then exit.")
-    p.add_argument("--delete-instance", metavar="NAME",
-                   help="Delete an instance directory and exit. Prompts for confirmation unless --force.")
-    p.add_argument("--clear-instance", metavar="NAME",
-                   help="Clear memory + logs for an instance (preserves identity / config / credentials / skills). Prompts unless --force.")
+    # ``--migrate``, ``--list-instances``, ``--create-instance``,
+    # ``--delete-instance``, ``--clear-instance`` removed in 0.2.0
+    # — use ``jaeger migrate`` and ``jaeger instance {list,delete,clear}``
+    # (INST-2). The wizard creates new instances directly via
+    # ``jaeger setup --name NAME``; the explicit ``--create-instance``
+    # noninteractive shortcut is no longer the recommended path.
+    # ``--force`` stays — still used by deprecated paths inside
+    # main.py that haven't been routed to the verb subsystem yet
+    # (kept narrow during the cutover).
     p.add_argument("--force", action="store_true",
-                   help="Skip confirmation prompts on destructive commands (delete-instance / clear-instance / create-instance overwrite).")
+                   help="Skip confirmation prompts on destructive operations.")
     p.add_argument("--with-memory", action="store_true",
                    help=("Carry conversation history across turns (load last 5 "
                          "episodic turns + accumulate within session). Auto-on "
@@ -3301,16 +3299,13 @@ def main() -> int:
     root = resolve_instance_dir(instance_name)
     layout = InstanceLayout(root=root)
 
-    # Instance management commands — run BEFORE the wizard / manifest check,
-    # since they're admin ops that don't require an active instance.
-    if args.list_instances:
-        return _cli_list_instances()
-    if args.create_instance:
-        return _cli_create_instance(args.create_instance, force=args.force)
-    if args.delete_instance:
-        return _cli_delete_instance(args.delete_instance, force=args.force)
-    if args.clear_instance:
-        return _cli_clear_instance(args.clear_instance, force=args.force)
+    # Instance-management commands now live under ``jaeger setup`` /
+    # ``jaeger instance {list,use,inspect,delete,clear}`` / ``jaeger
+    # migrate`` — see ``daemon/instance_verbs.py`` (INST-2). The old
+    # ``--list-instances`` / ``--create-instance`` / ``--delete-
+    # instance`` / ``--clear-instance`` / ``--migrate`` flags were
+    # removed in 0.2.0; legacy callers get an argparse error and
+    # should switch to the new verb form.
 
     # Self-test runs without identity/config/manifest — it only exercises
     # the framework code paths (sandbox, memory, skill loader, credentials,
@@ -3320,16 +3315,11 @@ def main() -> int:
         layout.ensure_dirs()
         return self_test(layout)
 
-    if args.setup or not layout.exists():
-        layout = run_wizard(force=args.setup, instance_name=instance_name)
-        # WIZ-1: the wizard finished — peel ``--setup`` (and any
-        # ``--setup=foo`` variant) off ``sys.argv`` BEFORE we chain
-        # into ``tui_main`` below. The TUI's argparse doesn't know
-        # ``--setup`` and used to argparse-error right after a
-        # successful setup, which made the wizard feel broken even
-        # though the instance was perfectly created.
-        sys.argv = [a for a in sys.argv
-                    if a != "--setup" and not a.startswith("--setup=")]
+    # First-run / missing-instance: auto-fire the wizard. Explicit
+    # ``jaeger setup`` runs through the daemon-cli dispatcher and
+    # never reaches this branch.
+    if not layout.exists():
+        layout = run_wizard(force=False, instance_name=instance_name)
 
     # Manifest gate. On version mismatch try the migration runner; only
     # refuse-to-start if migrations don't bring us to parity.
@@ -3387,8 +3377,7 @@ def main() -> int:
             return _cli_list_credentials(layout)
         if args.delete_credential:
             return _cli_delete_credential(layout, args.delete_credential)
-        if args.migrate:
-            return _cli_migrate(layout)
+        # ``--migrate`` removed in 0.2.0 — use ``jaeger migrate``.
 
         # NB: --self-test runs earlier in main() (before wizard / manifest / lock)
         # so it works against a brand-new install with no identity yet.

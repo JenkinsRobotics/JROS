@@ -8,9 +8,9 @@ Verbs added in 0.2.0:
 
   jaeger setup [--name N] [--force]
       Run the wizard (interactive). Creates a NEW instance or rebuilds
-      an existing one (with the wizard's standard backup-aside). Old
-      ``--setup`` / ``--create-instance`` flags still work; this is the
-      verb-shaped entry point.
+      an existing one (with the wizard's standard backup-aside). The
+      old ``--setup`` / ``--create-instance`` flags were removed in
+      0.2.0 — this verb is the only entry point.
 
   jaeger instance list
       Print every instance under ``~/.jaeger/instances/`` with its
@@ -221,15 +221,80 @@ def _explain_active(env: str | None, sticky: str | None) -> str:
     return "literal 'default'"
 
 
-def _instance_use(argv: list[str]) -> int:
-    if not argv or argv[0] in ("-h", "--help"):
-        print("usage: jaeger instance use <name>", file=sys.stderr)
-        return 0 if argv else 2
+# ── interactive instance picker ───────────────────────────────────
 
-    name = argv[0].strip()
-    if not name:
-        print("[jaeger instance use] name is empty", file=sys.stderr)
-        return 2
+
+def _list_local_instances() -> list[str]:
+    """Return every directory name under ``~/.jaeger/instances/`` that
+    looks like a real instance (has identity.yaml). Used by the bareword
+    verbs to offer a picker."""
+    from jaeger_os.core.instance.instance import user_instances_root
+    root = user_instances_root()
+    if not root.exists():
+        return []
+    out = []
+    for p in sorted(root.iterdir()):
+        if not p.is_dir():
+            continue
+        if (p / "identity.yaml").exists():
+            out.append(p.name)
+    return out
+
+
+def _pick_instance_interactively(prompt: str = "Which instance?") -> str | None:
+    """Numbered picker — used when a verb is invoked bareword and we
+    need a name. Returns the chosen name, or ``None`` if the user
+    bailed / stdin is closed / no instances exist."""
+    names = _list_local_instances()
+    if not names:
+        print("[jaeger] no instances found under ~/.jaeger/instances/.",
+              file=sys.stderr)
+        print("         run `jaeger setup` to create one.", file=sys.stderr)
+        return None
+    if len(names) == 1:
+        # Single-choice — no prompt; just pick it.
+        return names[0]
+    if not sys.stdin.isatty():
+        print(f"[jaeger] {len(names)} instances; specify one explicitly "
+              "(stdin is not a tty).", file=sys.stderr)
+        return None
+
+    from jaeger_os.core.instance.instance import default_instance_name
+    active = default_instance_name()
+    print(prompt)
+    for i, n in enumerate(names):
+        marker = "›" if n == active else " "
+        print(f"     {marker} {i + 1}. {n}")
+    while True:
+        raw = input(f"  Pick 1-{len(names)} (Enter = {active}): ").strip()
+        if not raw:
+            return active if active in names else names[0]
+        if raw.isdigit():
+            idx = int(raw)
+            if 1 <= idx <= len(names):
+                return names[idx - 1]
+        if raw in names:
+            return raw
+        print(f"     (pick 1-{len(names)} or type a name; ^C to abort)")
+
+
+def _instance_use(argv: list[str]) -> int:
+    if argv and argv[0] in ("-h", "--help"):
+        print("usage: jaeger instance use [<name>]\n"
+              "  Bareword: prompts to pick from available instances.",
+              file=sys.stderr)
+        return 0
+
+    if not argv:
+        # Bareword: prompt to pick.
+        name = _pick_instance_interactively("Which instance should become the sticky default?")
+        if name is None:
+            return 1
+    else:
+        name = argv[0].strip()
+        if not name:
+            print("[jaeger instance use] name is empty", file=sys.stderr)
+            return 2
 
     from jaeger_os.core.instance.instance import (
         active_instance_path, user_instances_root, write_active_instance,
@@ -249,11 +314,17 @@ def _instance_use(argv: list[str]) -> int:
 
 
 def _instance_inspect(argv: list[str]) -> int:
-    if not argv or argv[0] in ("-h", "--help"):
-        print("usage: jaeger instance inspect <name>", file=sys.stderr)
-        return 0 if argv else 2
+    if argv and argv[0] in ("-h", "--help"):
+        print("usage: jaeger instance inspect [<name>]\n"
+              "  Bareword: inspects the active instance.",
+              file=sys.stderr)
+        return 0
 
-    name = argv[0]
+    if not argv:
+        from jaeger_os.core.instance.instance import default_instance_name
+        name = default_instance_name()
+    else:
+        name = argv[0]
     from jaeger_os.core.instance.instance import (
         InstanceLayout, resolve_instance_dir,
     )
@@ -325,14 +396,21 @@ def _instance_inspect(argv: list[str]) -> int:
 def _instance_delete(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(prog="jaeger instance delete",
                                      add_help=False)
-    parser.add_argument("name")
+    parser.add_argument("name", nargs="?", default=None)
     parser.add_argument("-f", "--force", action="store_true")
     parser.add_argument("-h", "--help", action="store_true")
     args = parser.parse_args(argv)
     if args.help:
-        print("usage: jaeger instance delete <name> [-f|--force]",
+        print("usage: jaeger instance delete [<name>] [-f|--force]\n"
+              "  Bareword: prompts to pick from available instances.",
               file=sys.stderr)
         return 0
+
+    if args.name is None:
+        picked = _pick_instance_interactively("Which instance to DELETE?")
+        if picked is None:
+            return 1
+        args.name = picked
 
     from jaeger_os.core.instance.instance import (
         InstanceLayout, default_instance_name, read_active_instance,
@@ -379,15 +457,22 @@ def _instance_delete(argv: list[str]) -> int:
 def _instance_clear(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(prog="jaeger instance clear",
                                      add_help=False)
-    parser.add_argument("name")
+    parser.add_argument("name", nargs="?", default=None)
     parser.add_argument("-f", "--force", action="store_true")
     parser.add_argument("-h", "--help", action="store_true")
     args = parser.parse_args(argv)
     if args.help:
-        print("usage: jaeger instance clear <name> [-f|--force]\n"
-              "  Wipes memory + logs; keeps identity / config / credentials / skills.",
+        print("usage: jaeger instance clear [<name>] [-f|--force]\n"
+              "  Wipes memory + logs; keeps identity / config / credentials / skills.\n"
+              "  Bareword: prompts to pick from available instances.",
               file=sys.stderr)
         return 0
+
+    if args.name is None:
+        picked = _pick_instance_interactively("Which instance to CLEAR (memory + logs)?")
+        if picked is None:
+            return 1
+        args.name = picked
 
     from jaeger_os.core.instance.instance import (
         InstanceLayout, resolve_instance_dir,

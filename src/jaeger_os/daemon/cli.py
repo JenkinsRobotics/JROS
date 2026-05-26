@@ -49,6 +49,7 @@ SUBCOMMANDS: frozenset[str] = frozenset({
     "attach", "rich-tui",
     "setup", "instance", "migrate",
     "backup", "restore", "update",
+    "skill",
 })
 
 
@@ -112,6 +113,9 @@ def dispatch(argv: Sequence[str]) -> int:
     if argv[0] == "update":
         from jaeger_os.daemon.update_verb import _cmd_update_argv
         return _cmd_update_argv(list(argv[1:]))
+    if argv[0] == "skill":
+        from jaeger_os.daemon.skill_verbs import _cmd_skill_argv
+        return _cmd_skill_argv(list(argv[1:]))
     parser = argparse.ArgumentParser(
         prog="jaeger", add_help=False,
         description="Jaeger daemon lifecycle commands.",

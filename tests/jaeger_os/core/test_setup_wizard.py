@@ -179,56 +179,8 @@ def test_wizard_writes_ctx_32k_for_new_instances(monkeypatch, tmp_path):
     assert "default_mode: tui" in cfg_text
 
 
-# ── WIZ-1: --setup peeled off sys.argv ──────────────────────────────
-
-
-def test_main_strips_setup_from_argv_after_wizard(monkeypatch):
-    """Simulate ``jaeger --setup`` + a successful wizard run; the
-    chain into ``tui_main`` should see no ``--setup`` in sys.argv."""
-    import sys as _sys
-
-    captured_argv: list[list[str]] = []
-
-    def fake_tui_main(argv=None):
-        # Mirrors the real tui_main signature: when argv is None,
-        # argparse reads sys.argv[1:]. Capture sys.argv so the test
-        # can assert.
-        captured_argv.append(list(_sys.argv))
-        return 0
-
-    # Stub run_wizard so we don't drive the real prompt loop.
-    class _FakeLayout:
-        def __init__(self, root):
-            self.root = root
-        def exists(self) -> bool:
-            return True
-    monkeypatch.setattr(
-        "jaeger_os.main.run_wizard",
-        lambda **kw: _FakeLayout(Path("/tmp/fake-instance")),
-    )
-    # Stub the chained TUI to capture sys.argv at call time.
-    monkeypatch.setattr(
-        "jaeger_os.interfaces.tui.__main__.main",
-        fake_tui_main, raising=True,
-    )
-    # Stub manifest checks so we don't need a real instance on disk.
-    monkeypatch.setattr("jaeger_os.main.check_manifest",
-                        lambda layout: None)
-    # Plant the offending argv.
-    monkeypatch.setattr(_sys, "argv", ["jaeger", "--setup"])
-
-    # Just call the post-wizard cleanup logic directly: this is the
-    # one-line we landed in main.py. Asserting on it inline is more
-    # reliable than driving the full main() through argparse for a
-    # focused test.
-    _sys.argv = [a for a in _sys.argv
-                 if a != "--setup" and not a.startswith("--setup=")]
-    assert _sys.argv == ["jaeger"]
-
-
-def test_setup_argv_strip_handles_equals_form():
-    """``--setup=force`` shape (if anyone ever passed it) also peels off."""
-    argv_in = ["jaeger", "--setup=foo", "--instance", "t", "--setup"]
-    argv_out = [a for a in argv_in
-                if a != "--setup" and not a.startswith("--setup=")]
-    assert argv_out == ["jaeger", "--instance", "t"]
+# ── WIZ-1 (legacy): the ``--setup`` flag was removed in 0.2.0 ───────
+# The wizard now runs via ``jaeger setup`` (a daemon-cli subcommand),
+# which doesn't chain into ``tui_main`` so there's no argparse
+# collision to defend against. The original WIZ-1 tests pinned the
+# strip-from-sys.argv defence; they're deleted with the flag.

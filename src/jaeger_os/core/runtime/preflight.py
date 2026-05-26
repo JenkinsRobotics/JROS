@@ -190,7 +190,7 @@ def _check_instance_config(layout: object) -> list[Check]:
         return [Check(
             "config.yaml", "instance", False,
             f"missing — expected at {config_path}",
-            "run `jaeger-os --setup` to create the instance scaffold",
+            "run `jaeger setup` to create the instance scaffold",
         )]
 
     # YAML parse — config.yaml is the agent's contract. If it doesn't

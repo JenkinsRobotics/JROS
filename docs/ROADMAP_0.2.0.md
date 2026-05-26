@@ -497,6 +497,61 @@ subprocess, or smoke tiers.
    `~/.gitconfig` as defaults? Or always start blank? Proposal:
    start blank; user opts in to filling it.
 
+### Group 9 — Data layer (SQLite migration)
+
+**Status:** plan locked in 2026-05-26; implementation pending.
+
+The user's training-data ambitions (LLM + neural network work
+soon) push the memory store beyond what JSON/JSONL handles
+cleanly. Episodic at training scale (100K+ rows) is the breaking
+point: append latency, semantic search over embeddings, and joins
+across episodic + tool_calls + sessions all favour SQL.
+
+Scope decision (2026-05-26): **full SQLite, not hybrid**. The
+hybrid plan was a faster win but locks us out of clean training-
+data export queries that span multiple stores.
+
+**Item plan:**
+
+- [ ] **DB-1** — Schema + `core/memory/sqlite_store.py`. Tables:
+      ``facts``, ``episodic``, ``episodic_embeddings`` (BLOB column +
+      ``sqlite-vec`` extension when available), ``schedules``,
+      ``sessions``, ``tool_calls``, ``schema_version``. WAL mode by
+      default; falls back to DELETE journal on NFS/SMB filesystems.
+- [ ] **DB-2** — Facts table + rewire ``remember`` / ``recall`` /
+      ``forget`` / ``list_facts`` in ``core/memory/memory.py``.
+      Keep the public API identical so tool docstrings + the agent
+      don't notice.
+- [ ] **DB-3** — Episodic table + rewire ``append_episodic`` and
+      every consumer (TUI history loader, ``/board`` summary, etc.).
+- [ ] **DB-4** — Embeddings table + ``sqlite-vec`` extension load
+      (graceful skip when extension isn't available; falls back to
+      Python-side cosine over the BLOBs). Rewire ``search_memory``.
+- [ ] **DB-5** — Schedules table + rewire ``CronRunner`` storage.
+- [ ] **DB-6** — Tool-call log (new). Every dispatched tool gets
+      one row: ``turn_id``, ``tool_name``, ``args_json``,
+      ``result_json``, ``elapsed_s``, ``ts``. Training-data signal.
+- [ ] **DB-7** — Audit log table (move from ``logs/audit.log``
+      JSONL). Decision: whether to also store binary tool-result
+      spills (``logs/tool_results/``) as BLOBs or keep them on disk
+      with a reference row.
+- [ ] **DB-8** — Migration `v1_1_0_to_v1_2_0.py`. Walks each
+      instance's existing JSON/JSONL files and inserts into the
+      new SQLite tables. Rename old files to ``.legacy`` instead of
+      deleting so the user can verify before manual cleanup.
+- [ ] **DB-9** — Tests across all of the above: per-table CRUD,
+      WAL behaviour, migration round-trip, ``sqlite-vec`` graceful
+      missing-extension fallback, concurrent reader + writer.
+- [ ] **DB-10** — ``jaeger memory export <path>`` verb. Dump for
+      training pipelines (CSV/parquet/JSON shapes). Picks tables
+      to export with flags; redacts credentials via the existing
+      ``redact_obj``.
+
+**Cost:** ~3 days focused, possibly more if `sqlite-vec`
+packaging is awkward on the user's platform.
+
+**CORE_VERSION:** bumps 1.1.0 → 1.2.0 with this group.
+
 ### Group 6 — Release hygiene (urgent — 0.1.0 ship bug)
 
 The `src/jaeger_os/instance/default/` directory in the JROS repo

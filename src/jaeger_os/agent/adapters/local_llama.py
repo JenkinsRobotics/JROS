@@ -20,6 +20,7 @@ when sharing one across adapters / instances).
 
 from __future__ import annotations
 
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -243,19 +244,24 @@ class LocalLlamaAdapter(OpenAIAdapter):
         regardless of what the caller passes.
 
         Why: the in-process llama-cpp call cannot be safely cancelled.
-        :func:`interruptible_call` abandons its worker thread on
-        timeout but the abandoned worker keeps running inside Python,
-        holding the ``Llama`` instance. A subsequent call then sees a
-        half-decoded KV cache and returns ``llama_decode -3``.
+        :func:`interruptible_call` abandons its worker thread on timeout
+        or interrupt, but the abandoned worker keeps running inside
+        Python, holding the ``Llama`` instance. A subsequent call then
+        sees a half-decoded KV cache and returns ``llama_decode -3``.
 
         The parent's HTTP path safely abandons sockets — that's why
         the timeout exists at all. In-process has nothing to abandon,
         so we always run to completion. Heartbeats still fire so the
         TUI can show "still working (N s)…" during long cold prefills.
         """
+        # Deliberately ignore the caller's interrupt_event for the
+        # in-process path. The agent still records the interrupt and
+        # discards the result at the loop boundary when the decode
+        # eventually returns, but we do not abandon llama-cpp mid-call.
+        uncancellable_event = threading.Event()
         return super().call(
             formatted,
-            interrupt_event,
+            uncancellable_event,
             stale_timeout=None,            # the key change
             on_heartbeat=on_heartbeat,
             **kwargs,

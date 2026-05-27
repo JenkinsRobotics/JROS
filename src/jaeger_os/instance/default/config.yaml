@@ -1,0 +1,56 @@
+instance_name: default
+model:
+  backend: llama_cpp_python
+  model_path: /Users/jonathanjenkins/.lmstudio/models/lmstudio-community/gemma-4-E4B-it-GGUF/gemma-4-E4B-it-Q4_K_M.gguf
+  ctx: 32768
+  gpu_layers: -1
+  n_batch: 512
+  n_ubatch: 512
+  flash_attn: true
+  threads: null
+  extra_gguf_dirs: []
+display:
+  show_latency: false
+  show_tool_activity: true
+  show_help_on_start: true
+  busy_input_mode: interrupt
+skills:
+  enabled_base_skills: []
+  disabled_playbooks: []
+  hot_reload: false
+  run_smoke_tests: true
+  include_self_improvement_contract: false
+retention:
+  logs_keep_days: 30
+  logs_max_total_mb: 1024
+  memory_max_mb: 1024
+deep_think:
+  coder_model: qwen3-coder-30b-a3b-q4_k_m
+  auto_idle_minutes: 30
+voice:
+  enabled: false
+  wake_word: true
+  follow_up: true
+  barge_in: true
+  follow_up_seconds: 15.0
+external_model:
+  enabled: false
+  provider: ollama-cloud
+  base_url: https://ollama.com/v1
+  model: quen3.5:397b
+  api_key_credential: ollama_cloud_api_key
+  api_key_env: ''
+  max_tokens: 1024
+  timeout_s: 60.0
+warmup:
+  tts: false
+  stt: false
+  vision: false
+permissions:
+  mode: confirm
+security:
+  allow_lazy_installs: false
+interaction:
+  default_mode: tui
+workspace:
+  location: null

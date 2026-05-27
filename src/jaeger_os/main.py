@@ -430,6 +430,11 @@ _pipeline: dict[str, Any] = {
         "detail": "",              # short human label (tool name, queue size, …)
         "since_ts": 0.0,           # time.time() when this state started
     },
+    # Phase-9 JaegerAgent currently executing a foreground turn. The
+    # TUI's process-wide cancel event is not the same object as the
+    # agent-loop interrupt event, so request_turn_cancel fans out to
+    # this handle too.
+    "active_jaeger_agent": None,
 }
 
 
@@ -1871,6 +1876,12 @@ def request_turn_cancel() -> None:
     ev = _pipeline.get("cancel_event")
     if ev is not None:
         ev.set()
+    agent = _pipeline.get("active_jaeger_agent")
+    if agent is not None and hasattr(agent, "interrupt"):
+        try:
+            agent.interrupt()
+        except Exception:  # noqa: BLE001 — cancel must be best-effort
+            pass
 
 
 # Per-(client, system_prompt, mcp_specs) cache so a single set of skill
@@ -2105,9 +2116,52 @@ def _run_turn_via_jaeger_agent(
                 except Exception:  # noqa: BLE001 — never let pub break the agent
                     pass
 
+        # DB-6: persist a tool_calls audit row per dispatch. Best-effort
+        # — record_tool_call swallows DB failures so a SQL hiccup never
+        # crashes a turn. Session key is captured by closure from the
+        # outer ``key`` binding.
+        def _tool_done(
+            name: str,
+            args: dict[str, Any],
+            result: Any,
+            ok: bool,
+            error: str | None,
+            elapsed_s: float,
+        ) -> None:
+            try:
+                mem.record_tool_call(
+                    session_key=key,
+                    tool_name=name,
+                    args=args,
+                    result=result,
+                    ok=ok,
+                    error=error,
+                    elapsed_s=elapsed_s,
+                )
+            except Exception:  # noqa: BLE001 — observer must never break the turn
+                pass
+
+        def _heartbeat(elapsed_s: float) -> None:
+            # Keep the status line honest while the first model call is
+            # still pre-filling/decoding and no tool has fired yet.
+            # Preserve since_ts so the visible elapsed timer reflects
+            # the whole model wait, not the most recent heartbeat.
+            snap = get_agent_status()
+            since_ts = (
+                float(snap.get("since_ts") or 0.0)
+                if snap.get("state") == "thinking"
+                else 0.0
+            )
+            set_agent_status(
+                "thinking",
+                detail=f"waiting on model {elapsed_s:.1f}s",
+                since_ts=since_ts or time.time(),
+            )
+
         _status_cb = AgentCallbacks(
             tool_progress=_tool_progress,
-            heartbeat=lambda elapsed_s: None,  # ``since_ts`` carries elapsed
+            tool_done=_tool_done,
+            heartbeat=_heartbeat,
         )
         # Pipe the configured ctx window into the agent's pre-flight
         # ContextGuard so an oversized prompt is trimmed (or refused)
@@ -2140,6 +2194,7 @@ def _run_turn_via_jaeger_agent(
     # cross-turn leakage doesn't inflate this turn's report.
     _pipeline["turn_tool_time"] = 0.0
     try:
+        _pipeline["active_jaeger_agent"] = jaeger_agent
         if lock is not None:
             with lock:
                 result = drive_one_turn(jaeger_agent, user_text)
@@ -2156,6 +2211,9 @@ def _run_turn_via_jaeger_agent(
         return {"text": "", "error": str(exc), "tool_activity": [],
                 "first_decision": None, "skipped_final": False,
                 "spoke_via_tool": False, "elapsed_s": elapsed, "report": report}
+    finally:
+        if _pipeline.get("active_jaeger_agent") is jaeger_agent:
+            _pipeline["active_jaeger_agent"] = None
 
     answer = (result["answer"] or "").strip()
     tool_activity = result["tool_activity"]

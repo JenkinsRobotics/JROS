@@ -1,0 +1,46 @@
+{
+  "total": 5,
+  "passed": 5,
+  "pass_rate": 1.0,
+  "routing_passed": 5,
+  "routing_total": 5,
+  "answer_passed": 4,
+  "answer_total": 4,
+  "errors": 0,
+  "elapsed_s": 25.85,
+  "suites": {
+    "smoke": {
+      "total": 5,
+      "passed": 5,
+      "pass_rate": 1.0,
+      "threshold": 0.8,
+      "meets_threshold": true,
+      "blurb": "5-case sanity check; routing only"
+    },
+    "routing": {
+      "total": 5,
+      "passed": 5,
+      "pass_rate": 1.0,
+      "threshold": 0.85,
+      "meets_threshold": true,
+      "blurb": "single-turn, single-tool dispatch"
+    },
+    "full": {
+      "total": 5,
+      "passed": 5,
+      "pass_rate": 1.0,
+      "threshold": 0.7,
+      "meets_threshold": true,
+      "blurb": "every case in the corpus"
+    }
+  },
+  "by_tag": {
+    "routing": {
+      "total": 5,
+      "passed": 5
+    }
+  },
+  "failures": [],
+  "wall_s": 25.85,
+  "load_s": 4.42
+}

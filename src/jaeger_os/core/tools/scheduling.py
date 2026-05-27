@@ -30,10 +30,25 @@ def schedule_prompt(cron_expr: str, prompt: str, name: str | None = None) -> dic
     confirmation up front. (Each fired run is itself a fresh turn that
     re-passes through the tier ladder for its own tool calls.)
 
+    BEFORE calling this with a relative or absolute time ("in 5 minutes",
+    "at 10:20", "tomorrow at 7am"), call ``get_time`` first so the cron
+    expression you build is anchored to the real current wall time.
+    Guessing the time from chat context drifts.
+
+    Disambiguate one-shot vs recurring:
+      * "in N minutes" / "at HH:MM" / "at 10:20" — ONE-SHOT intent.
+        Build ``M H D Mon *`` (specific minute, hour, day-of-month,
+        month). The user will need to cancel afterwards; the
+        framework has no native one-shot primitive yet.
+      * "every N minutes" — RECURRING. Use ``*/N * * * *``. NB
+        ``*/5 * * * *`` fires on the clock's 5-minute marks
+        (00, 05, 10, …), NOT five minutes from now.
+
     `cron_expr` is standard 5-field cron — e.g. "0 7 * * *" (7am daily),
-    "*/10 * * * *" (every 10 minutes). The scheduled prompt fires in the
-    same agent loop a fresh user turn would; tool results, memory updates,
-    and TTS all behave the same.
+    "*/10 * * * *" (every 10 minutes), "25 22 26 5 *" (one-shot at
+    22:25 on May 26th). The scheduled prompt fires in the same agent
+    loop a fresh user turn would; tool results, memory updates, and
+    TTS all behave the same.
     """
     try:
         row = mem.add_schedule(cron_expr=cron_expr, prompt=prompt, name=name)

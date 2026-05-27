@@ -9,6 +9,7 @@ import pytest
 from jaeger_os.main import (
     _pipeline,
     get_agent_status,
+    request_turn_cancel,
     set_agent_status,
     status_label,
 )
@@ -18,7 +19,13 @@ from jaeger_os.main import (
 def _reset_status():
     """Every test starts with a known idle state."""
     set_agent_status("ready", "")
+    old_cancel = _pipeline.get("cancel_event")
+    old_agent = _pipeline.get("active_jaeger_agent")
+    _pipeline["cancel_event"] = None
+    _pipeline["active_jaeger_agent"] = None
     yield
+    _pipeline["cancel_event"] = old_cancel
+    _pipeline["active_jaeger_agent"] = old_agent
     set_agent_status("ready", "")
 
 
@@ -117,3 +124,17 @@ def test_since_ts_advances_on_state_change():
     set_agent_status("thinking")
     second_ts = get_agent_status()["since_ts"]
     assert second_ts > first_ts
+
+
+def test_request_turn_cancel_interrupts_active_jaeger_agent():
+    """The TUI cancel event must reach the Phase-9 agent's own
+    interrupt event, not only the process-wide tool interrupt flag."""
+    calls: list[int] = []
+
+    class _Agent:
+        def interrupt(self) -> None:
+            calls.append(1)
+
+    _pipeline["active_jaeger_agent"] = _Agent()
+    request_turn_cancel()
+    assert calls == [1]

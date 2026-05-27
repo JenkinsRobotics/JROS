@@ -324,6 +324,30 @@ def test_in_process_call_forces_stale_timeout_to_none():
     assert captured["stale_timeout"] is None
 
 
+def test_in_process_call_ignores_caller_interrupt_event():
+    """Local llama-cpp must not abandon the decode thread when the
+    agent interrupt event is already set; the loop discards the result
+    after return instead."""
+    import threading
+    from unittest.mock import patch
+
+    fake = _FakeLlama(_mk_response("ok"))
+    a = LocalLlamaAdapter(llama=fake)
+    caller_event = threading.Event()
+    caller_event.set()
+    seen: dict[str, Any] = {}
+
+    def _spy(fn, ev, **kw):
+        seen["same_event"] = ev is caller_event
+        seen["event_set"] = ev.is_set()
+        return fn()
+
+    with patch("jaeger_os.agent.adapters.openai.interruptible_call", _spy):
+        a.call({"model": "x", "messages": []}, caller_event)
+
+    assert seen == {"same_event": False, "event_set": False}
+
+
 def test_call_does_not_mutate_input_messages():
     """The facade walks messages defensively — the caller's list is
     NOT mutated, so re-using the same `formatted` dict across retries

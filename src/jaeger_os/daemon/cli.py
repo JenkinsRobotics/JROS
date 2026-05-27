@@ -49,7 +49,7 @@ SUBCOMMANDS: frozenset[str] = frozenset({
     "attach", "rich-tui",
     "setup", "instance", "migrate",
     "backup", "restore", "update",
-    "skill",
+    "skill", "memory", "kill",
 })
 
 
@@ -116,6 +116,12 @@ def dispatch(argv: Sequence[str]) -> int:
     if argv[0] == "skill":
         from jaeger_os.daemon.skill_verbs import _cmd_skill_argv
         return _cmd_skill_argv(list(argv[1:]))
+    if argv[0] == "memory":
+        from jaeger_os.daemon.memory_verbs import _cmd_memory_argv
+        return _cmd_memory_argv(list(argv[1:]))
+    if argv[0] == "kill":
+        from jaeger_os.daemon.kill_verb import _cmd_kill_argv
+        return _cmd_kill_argv(list(argv[1:]))
     parser = argparse.ArgumentParser(
         prog="jaeger", add_help=False,
         description="Jaeger daemon lifecycle commands.",
@@ -560,11 +566,14 @@ def _live_status(lifecycle: Lifecycle) -> dict | None:
 
 def _print_usage() -> None:
     print(
-        "Usage: jaeger {start|stop|status|restart|tray|bench} "
+        "Usage: jaeger {start|stop|status|restart|kill|tray|bench} "
         "[--instance NAME]\n"
         "\n"
         "  start    Bring the daemon up in the background.\n"
         "  stop     Send SIGTERM to the running daemon and clean up.\n"
+        "  kill     Force-stop every jaeger process + sweep stale\n"
+        "           lock files. Use when the TUI is hung on a Metal\n"
+        "           stall and Ctrl-C won't break out. Idempotent.\n"
         "  status   Show whether the daemon is running.\n"
         "  restart  Stop the running daemon and start a fresh one.\n"
         "  tray     Run the macOS menu-bar tray (foreground).\n"

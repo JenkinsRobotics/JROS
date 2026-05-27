@@ -129,3 +129,144 @@ def test_default_checks_have_unique_names():
     any downstream renderer that keys off ``name``."""
     names = [c.name for c in DEFAULT_CHECKS]
     assert len(names) == len(set(names))
+
+
+# ── regression pins (2026-05-26) ─────────────────────────────────
+# These three probes silently false-negative'd in 0.1.0 — the
+# expectations had drifted from the implementation but the probe
+# was rarely run so nobody noticed. Pin the right shapes here so a
+# future drift bites us at test time, not when a user runs
+# ``system_health`` and gets 5/8 on a healthy runtime.
+
+
+def test_check_memory_uses_explicit_submodule_imports():
+    """``from jaeger_os.core.tools import memory`` resolves to the
+    umbrella *function* (re-exported in __init__), not the submodule —
+    so the probe must import remember/recall/forget by name to avoid
+    the shadowing. Pin the actual import lines (not docstring text)
+    so a refactor that goes back to the ambiguous form gets caught."""
+    import inspect
+    from jaeger_os.core.diagnostics import probe
+    src = inspect.getsource(probe._check_memory)
+    # Only look at executable code, not the docstring.
+    code_lines = [
+        ln for ln in src.splitlines()
+        if "import" in ln and ln.lstrip().startswith(("from ", "import "))
+    ]
+    code_text = "\n".join(code_lines)
+    # The fix: explicit submodule path.
+    assert "from jaeger_os.core.tools.memory import" in code_text
+    # The trap: package-level import that shadows the submodule with
+    # the re-exported umbrella function.
+    assert "from jaeger_os.core.tools import memory" not in code_text
+
+
+def test_check_memory_round_trip_succeeds_on_bound_layout(tmp_path):
+    """Wire memory + tool layout at a fresh tmp dir, then run the
+    real probe. Catches: (a) the import-shadowing regression, (b) any
+    future change to the remember/recall return shape that makes the
+    probe's ``.get('value')`` extraction fail."""
+    from types import SimpleNamespace
+    from jaeger_os.core.memory import memory as memmod
+    from jaeger_os.core.memory import sqlite_store
+    from jaeger_os.core.tools import _common
+    from jaeger_os.core.diagnostics.probe import _check_memory
+
+    sqlite_store.close()
+    layout = SimpleNamespace(
+        memory_dir=tmp_path / "memory",
+        logs_dir=tmp_path / "logs",
+        audit_log_path=tmp_path / "logs" / "audit.log",
+        skills_dir=tmp_path / "skills",
+    )
+    (tmp_path / "logs").mkdir()
+    (tmp_path / "skills").mkdir()
+    memmod.bind(layout)
+    _common._layout = layout
+    try:
+        ok, detail = _check_memory()
+        assert ok, f"memory probe failed on a clean instance: {detail}"
+        assert "round trip" in detail
+    finally:
+        sqlite_store.close()
+
+
+def test_check_drift_parser_uses_real_gemma_dialect():
+    """The canonical sample must be a dialect ``extract_tool_calls``
+    actually recognises. The bracketed form ``[get_time(...)]`` is
+    NOT a recognised dialect (Gemma never emits that); the real
+    form is ``<|tool_call>call:name(args)<tool_call|>``. Pin the
+    fixed sample so a regression doesn't go back to the bogus form."""
+    import inspect
+    from jaeger_os.core.diagnostics import probe
+    src = inspect.getsource(probe._check_drift_parser)
+    assert "<|tool_call>" in src
+    # The earlier bogus sample.
+    assert "'[get_time(timezone=\"UTC\")]'" not in src
+
+
+def test_check_drift_parser_returns_pass_on_canonical_sample():
+    """Run the actual probe — should report ok with one parsed
+    call named ``get_time``."""
+    from jaeger_os.core.diagnostics.probe import _check_drift_parser
+    ok, detail = _check_drift_parser()
+    assert ok, f"drift parser probe failed: {detail}"
+    assert "parsed 1" in detail
+
+
+def test_check_tool_registry_returns_not_checked_when_no_agent():
+    """Pre-boot — no JaegerAgent in ``_jaeger_agents_by_session``,
+    no legacy ``_pipeline['agent']``. Must report ok with a
+    "not checked" detail rather than scanning ``dir(core.tools)``
+    (which would always false-negative because the Python function
+    names there don't match CORE's agent-facing names)."""
+    from jaeger_os.core.diagnostics.probe import _check_tool_registry
+    from jaeger_os import main as jmain
+    saved_agents = dict(jmain._jaeger_agents_by_session)
+    saved_pipeline_agent = jmain._pipeline.get("agent")
+    jmain._jaeger_agents_by_session.clear()
+    jmain._pipeline["agent"] = None
+    try:
+        ok, detail = _check_tool_registry()
+        assert ok
+        assert "not checked" in detail
+    finally:
+        jmain._jaeger_agents_by_session.update(saved_agents)
+        if saved_pipeline_agent is not None:
+            jmain._pipeline["agent"] = saved_pipeline_agent
+
+
+def test_check_tool_registry_reads_jaeger_agent_dispatch_map():
+    """Phase-9 ``JaegerAgent`` exposes ``_dispatch_by_name`` (not the
+    legacy ``_function_toolset``). A stub agent with the right shape
+    must be detected; missing CORE names surface as a failure."""
+    from jaeger_os.core.diagnostics.probe import _check_tool_registry
+    from jaeger_os.core.skills.toolsets import CORE
+    from jaeger_os import main as jmain
+
+    # Stub: a CORE-complete dispatch map should pass.
+    class _StubAgent:
+        _dispatch_by_name = {n: object() for n in CORE}
+
+    saved = dict(jmain._jaeger_agents_by_session)
+    jmain._jaeger_agents_by_session["_probe_test"] = _StubAgent()
+    try:
+        ok, detail = _check_tool_registry()
+        assert ok, f"unexpected failure: {detail}"
+        assert "jaeger_agent" in detail
+    finally:
+        jmain._jaeger_agents_by_session.clear()
+        jmain._jaeger_agents_by_session.update(saved)
+
+    # And missing names → failure with a useful list.
+    class _PartialAgent:
+        _dispatch_by_name = {"get_time": object(), "calculate": object()}
+
+    jmain._jaeger_agents_by_session["_probe_test"] = _PartialAgent()
+    try:
+        ok, detail = _check_tool_registry()
+        assert not ok
+        assert "missing" in detail.lower()
+    finally:
+        jmain._jaeger_agents_by_session.clear()
+        jmain._jaeger_agents_by_session.update(saved)

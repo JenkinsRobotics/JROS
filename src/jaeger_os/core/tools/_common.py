@@ -87,17 +87,34 @@ def get_effective_workspace_dir() -> Path:
 def _audit(event: str, payload: dict[str, Any]) -> None:
     layout = _require_layout()
     layout.logs_dir.mkdir(parents=True, exist_ok=True)
-    entry = {
-        "ts": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-        "event": event,
-        **payload,
-    }
+    ts = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    entry = {"ts": ts, "event": event, **payload}
     # Redact secrets before they land in the tamper-evident audit log —
     # a run_shell command or tool arg can carry an API key (audit A3).
     from jaeger_os.core.safety.redact import redact_obj
     entry = redact_obj(entry)
+    # Canonical append-only JSONL — forensic record, never skipped.
     with layout.audit_log_path.open("a", encoding="utf-8") as fh:
         fh.write(json.dumps(entry, ensure_ascii=True, default=str) + "\n")
+    # DB-7: mirror into SQL so ``--doctor`` + ``jaeger memory export``
+    # can query without scanning JSONL. Best-effort; the JSONL above
+    # is the source of truth.
+    try:
+        from jaeger_os.core.memory import memory as _mem
+        # Pull session_key out of the payload if present so it lands in
+        # its own column for cheap WHERE filtering.
+        sk = entry.get("session_key") if isinstance(entry, dict) else None
+        # Build the SQL payload from the redacted entry minus the
+        # already-extracted columns.
+        sql_payload = {
+            k: v for k, v in entry.items()
+            if k not in ("ts", "event", "session_key")
+        }
+        _mem.record_audit_event(
+            event=event, payload=sql_payload, session_key=sk, ts=ts,
+        )
+    except Exception:  # noqa: BLE001 — JSONL is canonical; SQL is advisory
+        pass
 
 
 # ---------------------------------------------------------------------------

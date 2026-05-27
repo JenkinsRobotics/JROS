@@ -194,8 +194,10 @@ def test_manifest_bump_via_migration_runner(monkeypatch, tmp_path):
 
     applied = run_pending_migrations(layout)
     assert "v1_0_0_to_v1_1_0" in applied
+    # Group 9 added a follow-up migration; the runner chains both.
+    assert "v1_1_0_to_v1_2_0" in applied
 
-    # Manifest now records 1.1.0.
+    # Manifest now records 1.2.0 (the current CORE_VERSION).
     import json
     manifest = json.loads(layout.manifest_path.read_text(encoding="utf-8"))
-    assert manifest["core_version"] == "1.1.0"
+    assert manifest["core_version"] == "1.2.0"

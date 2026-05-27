@@ -323,6 +323,22 @@ def test_interrupt_mid_loop_halts_after_current_call():
     assert agent.last_halt_reason == "interrupted"
 
 
+def test_interrupt_after_model_call_discards_response():
+    """Uncancellable local backends may only observe the interrupt after
+    the model call returns; the loop must not append/render the stale
+    assistant response."""
+    class _InterruptAfterCall(_ScriptedAdapter):
+        def call(self, formatted, interrupt_event, **kwargs):  # noqa: ARG002
+            interrupt_event.set()
+            return {"role": "assistant", "content": "stale response"}
+
+    agent = JaegerAgent(adapter=_InterruptAfterCall([]))
+    result = agent.run_turn("cancel me")
+    assert agent.last_halt_reason == "interrupted"
+    assert "stale response" not in result
+    assert all(m.get("content") != "stale response" for m in agent.messages)
+
+
 # ── callbacks fired ────────────────────────────────────────────────
 
 

@@ -35,7 +35,11 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 # ``core/instance/legacy_migrations.py``; the per-instance
 # ``v1_0_0_to_v1_1_0.py`` finishes the job by explicitly writing
 # the ``interaction`` field on already-existing configs.
-CORE_VERSION = "1.1.0"
+#
+# 0.2.0 then bumped this 1.1.0 → 1.2.0 alongside Group 9 (SQLite
+# memory backend, DB-1..DB-7). ``v1_1_0_to_v1_2_0.py`` triggers the
+# lazy importers and renames legacy JSON/JSONL files to ``.legacy``.
+CORE_VERSION = "1.2.0"
 
 
 # ---------------------------------------------------------------------------

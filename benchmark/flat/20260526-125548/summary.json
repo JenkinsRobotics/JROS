@@ -1,0 +1,153 @@
+{
+  "total": 51,
+  "passed": 47,
+  "pass_rate": 0.922,
+  "routing_passed": 47,
+  "routing_total": 49,
+  "answer_passed": 32,
+  "answer_total": 34,
+  "errors": 0,
+  "elapsed_s": 296.38,
+  "suites": {
+    "smoke": {
+      "total": 5,
+      "passed": 5,
+      "pass_rate": 1.0,
+      "threshold": 0.8,
+      "meets_threshold": true,
+      "blurb": "5-case sanity check; routing only"
+    },
+    "routing": {
+      "total": 25,
+      "passed": 24,
+      "pass_rate": 0.96,
+      "threshold": 0.85,
+      "meets_threshold": true,
+      "blurb": "single-turn, single-tool dispatch"
+    },
+    "multistep": {
+      "total": 8,
+      "passed": 7,
+      "pass_rate": 0.875,
+      "threshold": 0.65,
+      "meets_threshold": true,
+      "blurb": "single-turn, multiple-tool chaining"
+    },
+    "multiturn": {
+      "total": 9,
+      "passed": 8,
+      "pass_rate": 0.889,
+      "threshold": 0.7,
+      "meets_threshold": true,
+      "blurb": "multi-turn conversations with carried history"
+    },
+    "recovery": {
+      "total": 9,
+      "passed": 8,
+      "pass_rate": 0.889,
+      "threshold": 0.6,
+      "meets_threshold": true,
+      "blurb": "failure surface + anti-hallucination"
+    },
+    "full": {
+      "total": 51,
+      "passed": 47,
+      "pass_rate": 0.922,
+      "threshold": 0.7,
+      "meets_threshold": true,
+      "blurb": "every case in the corpus"
+    }
+  },
+  "by_tag": {
+    "routing": {
+      "total": 25,
+      "passed": 24
+    },
+    "files": {
+      "total": 11,
+      "passed": 10
+    },
+    "audio": {
+      "total": 2,
+      "passed": 1
+    },
+    "web": {
+      "total": 8,
+      "passed": 8
+    },
+    "memory": {
+      "total": 9,
+      "passed": 9
+    },
+    "code": {
+      "total": 4,
+      "passed": 4
+    },
+    "schedule": {
+      "total": 4,
+      "passed": 3
+    },
+    "multistep": {
+      "total": 8,
+      "passed": 7
+    },
+    "multiturn": {
+      "total": 9,
+      "passed": 8
+    },
+    "recovery": {
+      "total": 9,
+      "passed": 8
+    }
+  },
+  "failures": [
+    {
+      "id": "help_overview",
+      "prompt": "show me what tools you have available",
+      "tools_called": [],
+      "answer": "I can show you what tools I have available in a few ways, depending on what you're looking for.\n\nIf you want a general overview of *all* the tool categories I have access to, I can call `help_me()`.\n\n",
+      "routing_ok": false,
+      "answer_ok": true,
+      "no_hallucination": true,
+      "error": null
+    },
+    {
+      "id": "ms_calc_and_speak",
+      "prompt": "Calculate 2 to the power of 16 and speak the answer out loud.",
+      "tools_called": [
+        "calculate"
+      ],
+      "answer": "65536",
+      "routing_ok": false,
+      "answer_ok": true,
+      "no_hallucination": true,
+      "error": null
+    },
+    {
+      "id": "mt_file_round_2",
+      "prompt": "Read level3_test.txt and tell me what it says.",
+      "tools_called": [
+        "read_file"
+      ],
+      "answer": "I'm sorry, I seem to have run into a snag. When I tried to read the file, the system reported that it was not found, even though I just wrote it.\n\nLet me try reading it again, just to be sure.",
+      "routing_ok": true,
+      "answer_ok": false,
+      "no_hallucination": true,
+      "error": null
+    },
+    {
+      "id": "rec_schedule_cancel_missing",
+      "prompt": "Cancel the scheduled prompt named never_existed_demo_xyz.",
+      "tools_called": [
+        "cancel_schedule"
+      ],
+      "answer": "I tried to cancel the scheduled prompt named never_existed_demo_xyz, but it seems I ran into a permission issue.\n\nI've confirmed the name, but I can't proceed with the cancellation right now. If you'd",
+      "routing_ok": true,
+      "answer_ok": false,
+      "no_hallucination": true,
+      "error": null
+    }
+  ],
+  "wall_s": 311.4,
+  "load_s": 8.53
+}

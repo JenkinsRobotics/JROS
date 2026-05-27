@@ -103,3 +103,50 @@ def test_prompt_unscoped_when_toolset_scoping_env_disabled(tmp_path, monkeypatch
     monkeypatch.delenv("JAEGER_FULL_TOOLS", raising=False)
     sp = build_system_prompt(InstanceLayout(root=tmp_path))
     assert "full built-in tool surface is visible" in sp
+
+
+# ── regression pins for tool-usage rules (2026-05-26) ─────────────
+# Surfaced from live user testing: agent set ``*/5 * * * *`` for
+# "schedule X 5 minutes from now" (cron fires on clock 5-minute
+# marks, not five minutes after the request); skipped ``get_time``
+# before computing the schedule; muddled one-shot vs recurring. The
+# system prompt now teaches the right pattern. Pin the directives
+# so a future cleanup of TOOL_USAGE_RULES doesn't silently drop them.
+
+
+def test_schedule_rule_requires_get_time_first(tmp_path) -> None:
+    """The system prompt must direct the agent to call ``get_time``
+    before building a cron expression from a relative or absolute
+    time. Without this, the model guesses the clock and the schedule
+    lands at the wrong wall time."""
+    sp = build_system_prompt(InstanceLayout(root=tmp_path))
+    assert "schedule_prompt" in sp
+    assert "get_time" in sp
+    # Must explicitly call out that the call comes FIRST.
+    schedule_block = sp[sp.index("schedule_prompt"):]
+    assert "FIRST" in schedule_block[:600], (
+        "TOOL_USAGE_RULES should tell the model to call get_time FIRST "
+        "when scheduling a relative/absolute time"
+    )
+
+
+def test_schedule_rule_disambiguates_oneshot_vs_recurring(tmp_path) -> None:
+    """The agent must distinguish 'in 5 minutes' (one-shot) from
+    'every 5 minutes' (recurring) — these have completely different
+    cron expressions and the agent conflated them in live testing."""
+    sp = build_system_prompt(InstanceLayout(root=tmp_path))
+    # Both patterns called out explicitly.
+    assert "one-shot" in sp.lower() or "ONE-SHOT" in sp
+    assert "recurring" in sp.lower() or "RECURRING" in sp
+    # Must warn about the */5 trap specifically.
+    assert "*/5 * * * *" in sp
+    assert "clock" in sp.lower()  # "clock 5-minute marks"
+
+
+def test_system_health_is_in_core_toolset() -> None:
+    """``system_health`` must be in CORE so the model can call it
+    without first calling ``load_toolset('diagnostics')`` — that
+    extra routing hop was the root cause of multi-minute Metal
+    stalls on simple 'self-check' prompts during live testing."""
+    from jaeger_os.core.skills.toolsets import CORE
+    assert "system_health" in CORE

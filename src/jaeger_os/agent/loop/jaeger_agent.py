@@ -236,6 +236,10 @@ class JaegerAgent:
             # final assistant message after the retry chain settles.
             assistant_msg = self._one_model_step_with_length_retry()
 
+            if self._interrupt_event.is_set():
+                self.last_halt_reason = "interrupted"
+                return self._final_text_or_halt()
+
             # 4: append. The model can hold both text and tool_calls in
             # the same message (e.g. "I'll check that — call X"), so we
             # always append before deciding next steps.
@@ -655,6 +659,20 @@ class JaegerAgent:
         elapsed = time.perf_counter() - started
         self.callbacks.on_tool_progress(
             name, "done", {"elapsed_s": round(elapsed, 3)},
+        )
+
+        # Passive observer for the tool_calls audit table. Determine
+        # ok/error from the final content shape: dispatch-raised paths
+        # built a ``{"ok": False, "error": ...}`` dict above; a tool
+        # returning a successful payload won't carry ``"ok": False``.
+        _ok = True
+        _err: str | None = None
+        if isinstance(content, dict) and content.get("ok") is False:
+            _ok = False
+            _err = str(content.get("error") or "") or None
+        self.callbacks.on_tool_done(
+            name, dict(args) if isinstance(args, dict) else {},
+            content, _ok, _err, round(elapsed, 6),
         )
 
         # Failure-signature tracking — only meaningful when the tool

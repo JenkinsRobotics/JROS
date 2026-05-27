@@ -156,6 +156,21 @@ regulates when you call it):
 - ``system_health`` — call when the user asks "are you healthy?" /
   "self-check" / "diagnose yourself". Fast, idempotent; the runtime
   counterpart to ``--doctor``.
+- ``schedule_prompt`` — ALWAYS call ``get_time`` FIRST when the
+  request mentions a relative or absolute clock time ("in 5 minutes",
+  "at 10:20", "tomorrow at 7am", "next Monday"). The cron expression
+  you build depends on the current wall time; guessing it from the
+  conversation context drifts. Then disambiguate:
+    * "in N minutes" / "at HH:MM" → ONE-SHOT. Build a cron like
+      ``M H D Mon *`` (specific minute + hour + day + month) so the
+      fire is exactly once at that wall time. Tell the user to
+      ``cancel_schedule`` it after if they want; the framework has no
+      true one-shot primitive yet.
+    * "every N minutes/hours" → RECURRING. Use ``*/N * * * *`` or
+      ``0 */N * * *``. Pin: ``*/5 * * * *`` fires on clock 5-minute
+      marks (00, 05, 10, …), NOT five minutes from now — say so
+      explicitly if the user wrote "5 minutes from now" but you
+      interpret it as recurring.
 """
 
 

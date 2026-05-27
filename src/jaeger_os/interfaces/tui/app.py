@@ -689,7 +689,6 @@ class JaegerTUI:
                 pass
         except Exception:  # noqa: BLE001
             return
-        chars = 0
         import json as _json
         for msg in history:
             # ── Phase-9 dict-shape Message ─────────────────────────

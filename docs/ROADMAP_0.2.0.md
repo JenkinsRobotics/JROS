@@ -513,44 +513,100 @@ data export queries that span multiple stores.
 
 **Item plan:**
 
-- [ ] **DB-1** — Schema + `core/memory/sqlite_store.py`. Tables:
-      ``facts``, ``episodic``, ``episodic_embeddings`` (BLOB column +
-      ``sqlite-vec`` extension when available), ``schedules``,
-      ``sessions``, ``tool_calls``, ``schema_version``. WAL mode by
-      default; falls back to DELETE journal on NFS/SMB filesystems.
-- [ ] **DB-2** — Facts table + rewire ``remember`` / ``recall`` /
-      ``forget`` / ``list_facts`` in ``core/memory/memory.py``.
-      Keep the public API identical so tool docstrings + the agent
-      don't notice.
-- [ ] **DB-3** — Episodic table + rewire ``append_episodic`` and
-      every consumer (TUI history loader, ``/board`` summary, etc.).
-- [ ] **DB-4** — Embeddings table + ``sqlite-vec`` extension load
-      (graceful skip when extension isn't available; falls back to
-      Python-side cosine over the BLOBs). Rewire ``search_memory``.
-- [ ] **DB-5** — Schedules table + rewire ``CronRunner`` storage.
-- [ ] **DB-6** — Tool-call log (new). Every dispatched tool gets
-      one row: ``turn_id``, ``tool_name``, ``args_json``,
-      ``result_json``, ``elapsed_s``, ``ts``. Training-data signal.
-- [ ] **DB-7** — Audit log table (move from ``logs/audit.log``
-      JSONL). Decision: whether to also store binary tool-result
-      spills (``logs/tool_results/``) as BLOBs or keep them on disk
-      with a reference row.
-- [ ] **DB-8** — Migration `v1_1_0_to_v1_2_0.py`. Walks each
-      instance's existing JSON/JSONL files and inserts into the
-      new SQLite tables. Rename old files to ``.legacy`` instead of
-      deleting so the user can verify before manual cleanup.
-- [ ] **DB-9** — Tests across all of the above: per-table CRUD,
-      WAL behaviour, migration round-trip, ``sqlite-vec`` graceful
-      missing-extension fallback, concurrent reader + writer.
-- [ ] **DB-10** — ``jaeger memory export <path>`` verb. Dump for
-      training pipelines (CSV/parquet/JSON shapes). Picks tables
-      to export with flags; redacts credentials via the existing
-      ``redact_obj``.
+- [x] **DB-1** — `core/memory/sqlite_store.py` shipped 2026-05-26.
+      All 7 tables created on first open (`facts`, `episodic`,
+      `episodic_embeddings`, `schedules`, `sessions`, `tool_calls`,
+      `schema_version`). WAL + foreign-keys + 5s busy-timeout pragmas
+      pinned. `sqlite-vec` extension load attempted on bind with a
+      clean fall-through to Python-cosine when the extension is
+      missing (most platforms today). `writer()` context manager
+      serialises writes with a thread lock + BEGIN IMMEDIATE +
+      ROLLBACK-on-exception. Schema version 1; future-version DBs
+      refuse-to-open. **16 unit tests** in
+      `tests/jaeger_os/core/memory/test_sqlite_store.py`.
+- [x] **DB-2** — Facts table rewired 2026-05-26.
+      `remember` / `recall` / `forget` / `list_facts` /
+      `list_facts_by_category` all SQL-backed; public API
+      unchanged so the tool layer + agent prompts don't notice.
+      Each row carries `category`, `created_at`, `updated_at`;
+      INSERT-OR-REPLACE preserves `created_at` on overwrite.
+      Lazy-import on bind moves existing `facts.json` into SQL
+      (handles both shapes: old flat ``{k: v}`` and 0.1.x
+      ``{schema_version, facts, categories}``); skipped when SQL
+      already has rows. **18 new unit tests** in
+      `tests/jaeger_os/core/memory/test_facts_sql.py`; two
+      legacy-JSON tests in `test_memory_categories.py` rewritten
+      for the new contract.
+- [x] **DB-3** — Episodic table rewired 2026-05-26. ``append_episodic``
+      and ``load_recent_turns`` are SQL-backed; session_key
+      filtering preserved; tool_activity / latency / skipped_final
+      land in typed columns; unknown keys are bundled into
+      ``meta_json`` so schema evolution never drops a field. Lazy
+      import from ``episodic.jsonl`` runs on first bind. **16
+      tests** in `test_episodic_sql.py`.
+- [x] **DB-4** — Embeddings + ``sqlite-vec`` shipped 2026-05-26.
+      Each episodic row gets a vector row in ``episodic_embeddings``
+      (BLOB float32, dim + model recorded). ``search_memory`` runs
+      cosine over BLOBs (Python fallback) when ``sqlite-vec`` isn't
+      loaded. Encoder is lazy-loaded only when there's something to
+      search. **13 tests** in `test_search_memory_sql.py` (model
+      mocked to keep the default tier model-free).
+- [x] **DB-5** — Schedules rewired 2026-05-26. ``add_schedule`` /
+      ``list_schedules`` / ``cancel_schedule`` /
+      ``claim_due_schedules`` all SQL-backed; lazy-import handles
+      legacy ``schedules.jsonl`` shape including mid-replay
+      cancellations. **18 tests** in `test_schedules_sql.py`.
+- [x] **DB-6** — Tool-call log shipped 2026-05-26.
+      ``record_tool_call`` redacts via ``redact_obj``, JSON-encodes
+      with ``default=str`` fallback, links optional ``episodic_id``
+      (FK to episodic), and is best-effort (DB failure never
+      crashes a turn). Wired into the agent via a new
+      ``tool_done`` callback on ``AgentCallbacks``; ``main.py``'s
+      ``_run_turn_via_jaeger_agent`` provides the closure that
+      captures session_key. **24 tests** in `test_tool_calls_sql.py`.
+- [x] **DB-7** — Audit log shipped 2026-05-26 as a **dual-write**:
+      ``logs/audit.log`` JSONL stays canonical (forensic
+      append-only); SQL ``audit_log`` table mirrors every event for
+      queryability. ``_audit()`` writes both, redacted once. Lazy
+      import from existing JSONL on first bind. **19 tests** in
+      `test_audit_log_sql.py`. Decision on binary tool-result
+      spills: keep on disk under ``logs/tool_results/`` (no BLOB
+      storage) — paths land in audit/tool_calls rows as references.
+- [x] **DB-8** — Migration ``v1_1_0_to_v1_2_0.py`` shipped
+      2026-05-26. Triggers all four lazy importers via
+      ``mem.bind(layout)`` then renames every successfully-imported
+      legacy file to ``<name>.legacy`` (facts.json, episodic.jsonl,
+      schedules.jsonl, episodic.embeddings.npz). ``audit.log``
+      stays in place — canonical record. Idempotent; never
+      overwrites an existing ``.legacy`` backup. **10 tests** in
+      `tests/jaeger_os/migrations/test_v1_1_0_to_v1_2_0.py`.
+- [x] **DB-9** — Cross-cutting tests shipped 2026-05-26. **13
+      tests** in `test_sqlite_cross_cutting.py` covering: WAL +
+      foreign_keys + busy_timeout pragmas, concurrent reader during
+      writer, two writers serialised via the write lock,
+      ``sqlite-vec`` graceful fallback (verified by forcing
+      ``has_vec_extension`` False and running the Python-cosine
+      path), schema-version refuse-to-open, bind idempotence,
+      rebind to a different instance isolates data,
+      writer-rollback-on-exception.
+- [x] **DB-10** — ``jaeger memory export`` / ``stats`` verbs
+      shipped 2026-05-26. ``daemon/memory_verbs.py`` registered in
+      ``cli.dispatch``. Export writes per-table json/jsonl/csv
+      files + a manifest; JSON columns (args_json, result_json,
+      payload_json, meta_json, tool_activity) are decoded into
+      structured fields so the consumer doesn't have to parse
+      JSON-in-JSON. Second-pass ``redact_obj`` for belt-and-braces
+      on rows that pre-date the current redactor. ``stats`` shows
+      DB path + size + per-table row counts + vec-extension state.
+      **16 tests** in `tests/jaeger_os/daemon/test_memory_verbs.py`.
 
 **Cost:** ~3 days focused, possibly more if `sqlite-vec`
 packaging is awkward on the user's platform.
+**Actual:** completed 2026-05-26 in one session. **1491
+default-tier tests passing** (was 1282 at end of DB-5 → +209 over
+DB-6..DB-10).
 
-**CORE_VERSION:** bumps 1.1.0 → 1.2.0 with this group.
+**CORE_VERSION:** bumped 1.1.0 → 1.2.0 with this group.
 
 ### Group 6 — Release hygiene (urgent — 0.1.0 ship bug)
 

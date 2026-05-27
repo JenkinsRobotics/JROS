@@ -87,6 +87,12 @@ CORE: frozenset[str] = frozenset({
     # Meta — always visible so the model can grow its toolbox
     # mid-session without needing a category-wide load_toolset.
     "load_toolset", "describe_tool",
+    # Self-diagnosis — promoted to CORE 2026-05-26 after live testing
+    # showed Gemma-4 on Metal stalling for minutes when the user asked
+    # "self-check" and the model had to figure out it needed
+    # ``load_toolset("diagnostics")`` first. Cheap, idempotent, and
+    # users will reach for it more than ``delegate_task`` or ``kanban``.
+    "system_health",
 })
 
 

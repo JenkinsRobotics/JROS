@@ -179,8 +179,11 @@ def _start_subscriber(sock_path: Path, console: Console,
             console.print(f"  [red][subscriber] connect failed:[/red] {exc}")
             return
         sock_holder["sock"] = sock
-        sock.sendall(P.encode(P.Request(id=1, op="chat.subscribe")))
-        sock.settimeout(None)
+        try:
+            sock.sendall(P.encode(P.Request(id=1, op="chat.subscribe")))
+            sock.settimeout(None)
+        except OSError:
+            return
         framer = P.Framer()
         try:
             while not stop.is_set():

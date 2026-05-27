@@ -217,8 +217,15 @@ def test_summarise_per_tag_breakdown():
         _row("c", pass_=True, tags=["memory"]),
     ]
     s = summarise(rows)
-    assert s["by_tag"]["routing"] == {"total": 2, "passed": 1}
-    assert s["by_tag"]["memory"] == {"total": 2, "passed": 2}
+    # Counts (every row gets elapsed_s=0.1 from _row helper).
+    assert s["by_tag"]["routing"]["total"] == 2
+    assert s["by_tag"]["routing"]["passed"] == 1
+    assert s["by_tag"]["memory"]["total"] == 2
+    assert s["by_tag"]["memory"]["passed"] == 2
+    # Per-tag avg latency — exposes a regression that slows one
+    # category without changing pass rate.
+    assert s["by_tag"]["routing"]["avg_latency_s"] == pytest.approx(0.1, abs=1e-3)
+    assert s["by_tag"]["memory"]["avg_latency_s"] == pytest.approx(0.1, abs=1e-3)
 
 
 def test_summarise_empty_rows_does_not_crash():
@@ -229,6 +236,158 @@ def test_summarise_empty_rows_does_not_crash():
 
 
 # ── per-suite roll-up ──────────────────────────────────────────────
+
+
+def _row_with(id_: str, *, pass_: bool, elapsed_s: float, answer: str,
+              tools: list[str] | None = None,
+              tags: list[str] | None = None) -> BenchRow:
+    """Variant of ``_row`` with per-call latency/answer/tool customisation
+    so the metrics tests below can exercise distributions. Uses
+    ``is None`` for ``tools`` rather than ``or [...]`` so an explicit
+    empty list (a real zero-tool turn) survives."""
+    return BenchRow(
+        id=id_, prompt="p", tags=tags or ["routing"],
+        tools_called=(["calculate"] if tools is None else tools),
+        answer=answer,
+        elapsed_s=elapsed_s, routing_ok=True, ordered_ok=None,
+        answer_ok=True, no_hallucination=True, error=None,
+        case_pass=pass_,
+    )
+
+
+# ── metrics block (2026-05-27) ────────────────────────────────────
+# Operator-facing performance metrics — pin the shape so a future
+# refactor of summarise() doesn't silently drop tokens/sec, p95,
+# or the per-suite timing.
+
+
+def test_summarise_emits_metrics_block_with_required_fields():
+    """The metrics block must always be present and contain the keys
+    the rendering layer + agent will read."""
+    s = summarise([_row("a", pass_=True), _row("b", pass_=False)])
+    m = s["metrics"]
+    for key in (
+        "avg_latency_s", "p50_latency_s", "p95_latency_s",
+        "min_latency_s", "max_latency_s",
+        "total_tool_dispatches", "avg_tools_per_turn",
+        "answer_tokens_total", "answer_tokens_avg",
+        "answer_tokens_per_sec", "cases_with_errors",
+    ):
+        assert key in m, f"metrics block missing {key!r}"
+
+
+def test_summarise_metrics_computes_latency_percentiles():
+    """With known latencies, p50 / p95 / min / max land at the
+    expected nearest-rank positions."""
+    rows = [
+        _row_with(f"r{i}", pass_=True, elapsed_s=float(i), answer="x")
+        for i in range(1, 11)  # 1.0 .. 10.0 seconds
+    ]
+    s = summarise(rows)
+    m = s["metrics"]
+    assert m["min_latency_s"] == 1.0
+    assert m["max_latency_s"] == 10.0
+    assert m["avg_latency_s"] == pytest.approx(5.5, abs=1e-3)
+    # Nearest-rank on 10 elements: p50 ≈ index 5 (value 5 or 6).
+    assert m["p50_latency_s"] in (5.0, 6.0)
+    # p95 should land near the top — value 10.
+    assert m["p95_latency_s"] in (9.0, 10.0)
+
+
+def test_summarise_metrics_estimates_tokens_per_sec():
+    """Whitespace-split tokens / elapsed should give a sensible
+    throughput estimate. 30 words across 3 seconds = 10 tok/s."""
+    rows = [
+        _row_with("r1", pass_=True, elapsed_s=1.0,
+                  answer="one two three four five six seven eight nine ten"),
+        _row_with("r2", pass_=True, elapsed_s=1.0,
+                  answer="alpha bravo charlie delta echo foxtrot golf hotel india juliet"),
+        _row_with("r3", pass_=True, elapsed_s=1.0,
+                  answer="word " * 10),
+    ]
+    s = summarise(rows)
+    m = s["metrics"]
+    assert m["answer_tokens_total"] == 30
+    assert m["answer_tokens_avg"] == pytest.approx(10.0, abs=0.1)
+    assert m["answer_tokens_per_sec"] == pytest.approx(10.0, abs=0.1)
+
+
+def test_summarise_metrics_counts_tool_dispatches():
+    """Sum of ``tools_called`` lengths exposed as
+    ``total_tool_dispatches``, plus the per-turn average."""
+    rows = [
+        _row_with("r1", pass_=True, elapsed_s=0.1, answer="a",
+                  tools=["calculate"]),
+        _row_with("r2", pass_=True, elapsed_s=0.1, answer="b",
+                  tools=["calculate", "get_time", "memory"]),
+        _row_with("r3", pass_=True, elapsed_s=0.1, answer="c",
+                  tools=[]),
+    ]
+    s = summarise(rows)
+    m = s["metrics"]
+    assert m["total_tool_dispatches"] == 4
+    assert m["avg_tools_per_turn"] == pytest.approx(4 / 3, abs=1e-2)
+
+
+def test_summarise_prefers_real_tokens_when_available():
+    """When ANY row reports real ``completion_tokens`` (from the
+    adapter's ``usage`` field), the summary's throughput metric uses
+    the tokenizer count, not the whitespace-split estimate.
+
+    Pin this so the metrics block is honest about its source — the
+    report labels the column ``answer_tokens_source: tokenizer`` so
+    a downstream comparison knows what it's reading."""
+    rows = [
+        _row_with("r1", pass_=True, elapsed_s=1.0,
+                  answer="hello world",         # estimate = 2
+                  tools=["calculate"]),
+    ]
+    rows[0].completion_tokens = 50               # real = 50
+    rows[0].prompt_tokens = 200
+    s = summarise(rows)
+    m = s["metrics"]
+    assert m["answer_tokens_source"] == "tokenizer"
+    assert m["answer_tokens_total"] == 50
+    assert m["prompt_tokens_total"] == 200
+    assert m["answer_tokens_per_sec"] == pytest.approx(50.0, abs=0.1)
+
+
+def test_summarise_falls_back_to_estimate_when_no_real_tokens():
+    """When no row reports real tokens, the summary uses the
+    whitespace estimate and labels the source accordingly."""
+    rows = [
+        _row_with("r1", pass_=True, elapsed_s=1.0, answer="one two three"),
+    ]
+    # NB: completion_tokens defaults to 0 → fall-back path.
+    s = summarise(rows)
+    m = s["metrics"]
+    assert m["answer_tokens_source"] == "whitespace_estimate"
+    assert m["answer_tokens_total"] == 3
+
+
+def test_summarise_metrics_handles_empty_rows():
+    """Empty corpus — metrics block still present, all zeros, no
+    division-by-zero crash."""
+    s = summarise([])
+    m = s["metrics"]
+    assert m["avg_latency_s"] == 0.0
+    assert m["answer_tokens_per_sec"] == 0.0
+    assert m["total_tool_dispatches"] == 0
+
+
+def test_summarise_per_suite_includes_latency_breakdown():
+    """Per-suite timing exposes a regression that slows multistep
+    without changing its pass rate. Pin the new fields."""
+    rows = [
+        _row_with("r1", pass_=True, elapsed_s=1.0, answer="x", tags=["routing"]),
+        _row_with("r2", pass_=True, elapsed_s=3.0, answer="x", tags=["routing"]),
+        _row_with("m1", pass_=True, elapsed_s=20.0, answer="x", tags=["multistep"]),
+    ]
+    s = summarise(rows)
+    assert "avg_latency_s" in s["suites"]["routing"]
+    assert "p95_latency_s" in s["suites"]["routing"]
+    assert s["suites"]["routing"]["avg_latency_s"] == pytest.approx(2.0, abs=1e-3)
+    assert s["suites"]["multistep"]["avg_latency_s"] == pytest.approx(20.0, abs=1e-3)
 
 
 def test_summarise_emits_a_suite_block_per_named_suite():

@@ -292,12 +292,19 @@ def test_call_handles_malformed_json_arguments_string_gracefully():
     assert sent == {}
 
 
-def test_in_process_call_forces_stale_timeout_to_none():
-    """Regression: an in-process llama-cpp call CANNOT be cancelled
-    safely — abandoning the worker thread corrupts the KV cache and
-    the next call returns ``llama_decode -3``. Confirmed in production
-    TUI on 2026-05-24. The adapter must override whatever the agent
-    loop passed and force ``stale_timeout=None``."""
+def test_in_process_call_passes_through_stale_timeout():
+    """Stall watchdog wiring (2026-05-27): the in-process adapter now
+    forwards the caller's ``stale_timeout`` to ``interruptible_call``
+    instead of forcing it to None.
+
+    Earlier the adapter overrode the timeout to None because abandoning
+    a llama-cpp worker mid-decode corrupts the KV cache. The new
+    posture: we cannot SAFELY cancel the worker thread, but we can
+    raise ``StaleCallTimeout`` from the main thread so the agent loop
+    surfaces a recoverable error to the user. The leaked worker is
+    documented as a known caveat; the alternative (hang forever, no
+    recovery) is worse — confirmed by 11+ minute Metal stalls on
+    "do a self check" before this fix."""
     import threading
     from unittest.mock import patch
 
@@ -314,14 +321,48 @@ def test_in_process_call_forces_stale_timeout_to_none():
         return real_interruptible(fn, ev, **kw)
 
     with patch("jaeger_os.agent.adapters.openai.interruptible_call", _spy):
-        # The agent loop now defaults to stale_timeout=30.0; the adapter
-        # must override that to None for the in-process path.
         a.call(
             {"model": "x", "messages": []},
             threading.Event(),
-            stale_timeout=30.0,
+            stale_timeout=120.0,
         )
-    assert captured["stale_timeout"] is None
+    assert captured["stale_timeout"] == 120.0, (
+        "caller's stale_timeout must flow through to interruptible_call "
+        "so the stall watchdog actually fires"
+    )
+
+
+def test_in_process_call_raises_stale_timeout_when_model_hangs():
+    """End-to-end-ish: a llama-cpp call that never returns must
+    surface ``StaleCallTimeout`` to the caller after the watchdog
+    fires. This is the whole point of the 2026-05-27 watchdog fix —
+    a hung Metal prefill used to lock the loop for 10+ minutes; now
+    it bails in seconds with a clean exception."""
+    import threading
+    import time
+    from jaeger_os.agent.loop.interrupt import StaleCallTimeout
+
+    class _HangingLlama:
+        def create_chat_completion(self, **_kwargs):
+            # Sleep longer than the test's stale_timeout. The adapter
+            # cannot kill us, but the main thread should raise.
+            time.sleep(5.0)
+            return _mk_response("never reached")
+
+    a = LocalLlamaAdapter(llama=_HangingLlama())
+    started = time.perf_counter()
+    with pytest.raises(StaleCallTimeout):
+        a.call(
+            {"model": "x", "messages": []},
+            threading.Event(),
+            stale_timeout=0.3,   # 300 ms — quick test
+        )
+    elapsed = time.perf_counter() - started
+    # Should bail near the timeout, not after the 5s hang.
+    assert elapsed < 2.0, (
+        f"watchdog should fire near stale_timeout (0.3s); "
+        f"actual {elapsed:.2f}s suggests it's still waiting for the call"
+    )
 
 
 def test_in_process_call_ignores_caller_interrupt_event():

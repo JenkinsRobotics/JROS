@@ -196,6 +196,7 @@ def _render_markdown(summary: dict[str, Any]) -> str:
     """One-page summary suitable for ``logs/bench/<ts>/summary.md``."""
     total = summary.get("total", 0) or 1
     pass_pct = 100 * summary.get("passed", 0) / total
+    metrics = summary.get("metrics") or {}
     lines = [
         "# Jaeger-OS — system benchmark",
         "",
@@ -209,14 +210,36 @@ def _render_markdown(summary: dict[str, Any]) -> str:
         f"- elapsed: {summary.get('elapsed_s', 0)}s "
         f"(wall: {summary.get('wall_s', 0)}s)",
         "",
+        "## Performance metrics",
+        "",
+        "| Metric | Value |",
+        "|---|---:|",
+        f"| avg latency / case | {metrics.get('avg_latency_s', 0):.2f}s |",
+        f"| p50 latency | {metrics.get('p50_latency_s', 0):.2f}s |",
+        f"| p95 latency | {metrics.get('p95_latency_s', 0):.2f}s |",
+        f"| min / max latency | {metrics.get('min_latency_s', 0):.2f}s / "
+        f"{metrics.get('max_latency_s', 0):.2f}s |",
+        f"| tool dispatches (total) | {metrics.get('total_tool_dispatches', 0)} |",
+        f"| avg tools / turn | {metrics.get('avg_tools_per_turn', 0):.2f} |",
+        f"| answer tokens (total) | {metrics.get('answer_tokens_total', 0)} |",
+        f"| answer tokens / case (avg) | {metrics.get('answer_tokens_avg', 0):.1f} |",
+        f"| answer tokens / sec (corpus) | {metrics.get('answer_tokens_per_sec', 0):.1f} |",
+        f"| prompt tokens (total) | {metrics.get('prompt_tokens_total', 0)} |",
+        f"| dispatch errors | {metrics.get('cases_with_errors', 0)} |",
+        "",
+        f"_Token source: **{metrics.get('answer_tokens_source', 'whitespace_estimate')}**. "
+        f"{metrics.get('tokens_note', '')}_",
+        "",
         "## By suite (graded against advisory thresholds)",
         "",
-        "| Suite | Passed | Total | Rate | Threshold | OK |",
-        "|---|---:|---:|---:|---:|:---:|",
+        "| Suite | Passed | Total | Rate | Threshold | OK | Avg s | p95 s |",
+        "|---|---:|---:|---:|---:|:---:|---:|---:|",
     ]
     # Suites are the operator-facing roll-up — "routing 22/25" reads
     # straight; "routing 88% (threshold 85% ✓)" tells them whether to
-    # cut a release without staring at the per-case table.
+    # cut a release without staring at the per-case table. Per-suite
+    # avg + p95 timing exposes a regression that slows a category
+    # without changing its pass rate.
     suites = summary.get("suites") or {}
     for name, s in suites.items():
         rate_pct = 100 * s.get("pass_rate", 0.0)
@@ -224,16 +247,20 @@ def _render_markdown(summary: dict[str, Any]) -> str:
         ok = "✓" if s.get("meets_threshold") else "✗"
         lines.append(
             f"| {name} | {s.get('passed', 0)} | {s.get('total', 0)} | "
-            f"{rate_pct:.0f}% | {thresh_pct:.0f}% | {ok} |"
+            f"{rate_pct:.0f}% | {thresh_pct:.0f}% | {ok} | "
+            f"{s.get('avg_latency_s', 0):.2f} | "
+            f"{s.get('p95_latency_s', 0):.2f} |"
         )
     lines.append("")
     lines.append("## By tag (every tag the corpus uses)")
     lines.append("")
-    lines.append("| Tag | Passed | Total |")
-    lines.append("|---|---:|---:|")
+    lines.append("| Tag | Passed | Total | Avg s |")
+    lines.append("|---|---:|---:|---:|")
     for tag, counts in sorted((summary.get("by_tag") or {}).items()):
         lines.append(
-            f"| {tag} | {counts.get('passed', 0)} | {counts.get('total', 0)} |"
+            f"| {tag} | {counts.get('passed', 0)} | "
+            f"{counts.get('total', 0)} | "
+            f"{counts.get('avg_latency_s', 0):.2f} |"
         )
     failures = summary.get("failures") or []
     if failures:

@@ -29,6 +29,15 @@ from typing import Any
 def system_health(deep: bool = False) -> dict[str, Any]:
     """Run the runtime health probe.
 
+    Called by ``jaeger health`` (the operator-side CLI verb) and by
+    the boot's preflight diagnostics. NOT exposed to the agent's
+    tool surface — by design. Hiding the function from the model
+    avoids a routing pathology where prompts like "do a self check"
+    stall in prefill on local Gemma checkpoints (the model dithers
+    over disambiguation tokens and llama.cpp's Metal sampler hits
+    a slow path under high first-token entropy). The CLI verb is
+    the operator's path; the function below is the implementation.
+
     ``deep=False`` (default) — 8 fast substrate checks (<3s wall,
     idempotent). Verifies the layers most likely to break silently
     after a config or refactor change: layout writable, sandbox
@@ -45,10 +54,7 @@ def system_health(deep: bool = False) -> dict[str, Any]:
 
     Returns ``{ok, passed, total, deep, checks: [...], elapsed_s}``.
     ``ok`` is True only when every probe passed.
-
-    Use ``--doctor`` for dep / config-file checks. Use
-    ``run_benchmark`` for routing accuracy across many cases. Use
-    this for "is the runtime actually working right now"."""
+    """
     from jaeger_os.core.diagnostics import run_health_checks
     return run_health_checks(deep=bool(deep))
 

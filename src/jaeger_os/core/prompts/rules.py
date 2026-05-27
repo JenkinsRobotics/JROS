@@ -153,9 +153,13 @@ regulates when you call it):
 - ``read_file`` before ``write_file`` / ``patch`` / ``delete_file``
   on a file you didn't author this turn — modifying without first
   reading is how stale-content overwrites happen.
-- ``system_health`` — call when the user asks "are you healthy?" /
-  "self-check" / "diagnose yourself". Fast, idempotent; the runtime
-  counterpart to ``--doctor``.
+- Self-diagnosis ("are you healthy?", "do a self check", "run a
+  health check") is NOT something you do yourself — there is no
+  agent-callable health tool. Tell the user to run
+  ``jaeger health`` from a terminal; that's the operator-side
+  verb that runs the runtime substrate probe and prints results.
+  Do not try to fake it with ``system_status`` (which reports CPU
+  / disk / memory) or by guessing — point the user to the verb.
 - ``schedule_prompt`` — ALWAYS call ``get_time`` FIRST when the
   request mentions a relative or absolute clock time ("in 5 minutes",
   "at 10:20", "tomorrow at 7am", "next Monday"). The cron expression

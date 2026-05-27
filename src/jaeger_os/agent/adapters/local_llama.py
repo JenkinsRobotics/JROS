@@ -240,29 +240,45 @@ class LocalLlamaAdapter(OpenAIAdapter):
         on_heartbeat: Any = None,
         **kwargs: Any,
     ) -> Any:
-        """In-process call — ``stale_timeout`` is **forced to None**
-        regardless of what the caller passes.
+        """In-process call with a **caller-controlled stall watchdog**.
 
-        Why: the in-process llama-cpp call cannot be safely cancelled.
-        :func:`interruptible_call` abandons its worker thread on timeout
-        or interrupt, but the abandoned worker keeps running inside
-        Python, holding the ``Llama`` instance. A subsequent call then
-        sees a half-decoded KV cache and returns ``llama_decode -3``.
+        Earlier this method force-set ``stale_timeout=None`` and
+        substituted an uncancellable interrupt event, because abandoning
+        the llama-cpp call from a worker thread leaves a half-decoded
+        KV cache that produces ``llama_decode -3`` on the next call.
+        That was correct for the next-call safety angle but it had a
+        nasty side-effect: a Metal prefill stall (which we hit on short
+        + ambiguous prompts) hung the loop forever, with no way for the
+        user to recover except SIGKILL from another terminal.
 
-        The parent's HTTP path safely abandons sockets — that's why
-        the timeout exists at all. In-process has nothing to abandon,
-        so we always run to completion. Heartbeats still fire so the
-        TUI can show "still working (N s)…" during long cold prefills.
+        New posture:
+
+          * The interrupt event is STILL ignored for the in-process
+            path. Ctrl-C from the TUI cannot safely tear down a
+            llama-cpp call mid-decode, so we let the model finish (or
+            the watchdog below catch the hang) and the agent loop
+            discards the result at the boundary.
+
+          * The stale-timeout HOWEVER is now passed through. When
+            ``interruptible_call`` raises ``StaleCallTimeout``, the
+            worker thread keeps running in the background (still
+            unsafe to kill), but the agent loop gets control back and
+            can surface a clean message to the user — "the model
+            stalled; use ``jaeger kill`` to recover". A leaked thread
+            is the lesser evil compared with a hung TUI.
+
+          * The abandoned thread is documented as a known caveat. The
+            next in-process call MAY see KV corruption and need a
+            fresh ``Llama`` instance (the agent loop's adapter chain
+            handles this by re-creating the client on certain
+            error-types — see ``_ensure_client``). For one-shot mode
+            (most common case in dev) the process exits anyway.
         """
-        # Deliberately ignore the caller's interrupt_event for the
-        # in-process path. The agent still records the interrupt and
-        # discards the result at the loop boundary when the decode
-        # eventually returns, but we do not abandon llama-cpp mid-call.
         uncancellable_event = threading.Event()
         return super().call(
             formatted,
             uncancellable_event,
-            stale_timeout=None,            # the key change
+            stale_timeout=stale_timeout,    # PASS THROUGH — the watchdog
             on_heartbeat=on_heartbeat,
             **kwargs,
         )

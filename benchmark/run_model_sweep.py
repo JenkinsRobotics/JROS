@@ -214,10 +214,21 @@ def run_one(model_path: str, *, level: int) -> ModelResult:
 
         env = os.environ.copy()
         env["PYTHONPATH"] = (str(SRC) + os.pathsep + env.get("PYTHONPATH", ""))
+        # Forward ``--tags`` / ``--limit`` from the env when the caller
+        # (``jaeger bench compare``) set them. Lets the operator narrow
+        # the sweep to e.g. routing-only without re-running 51 cases
+        # per model.
+        extra_args: list[str] = []
+        _tags = env.get("JAEGER_BENCH_TAGS", "").strip()
+        if _tags:
+            extra_args.extend(["--tags", _tags])
+        _limit = env.get("JAEGER_BENCH_LIMIT", "").strip()
+        if _limit and _limit != "0":
+            extra_args.extend(["--limit", _limit])
         started = time.perf_counter()
         proc = subprocess.run(
             [sys.executable, str(REPO / "benchmark" / "run_flat_bench.py"),
-             "--no-warmup"],
+             "--no-warmup", *extra_args],
             cwd=str(REPO),
             env=env,
             stdout=subprocess.PIPE,

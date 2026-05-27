@@ -111,6 +111,26 @@ def test_build_jaeger_agent_wires_skip_final_tools():
     assert agent.max_iterations == 24
 
 
+def test_build_jaeger_agent_picks_120s_stall_for_local_backend():
+    """In-process llama-cpp can have legitimately slow cold-prefill
+    plus a long decode on a 30B Q4. The default stall watchdog must
+    leave headroom (120s) so legitimate work doesn't false-positive
+    while still catching the multi-minute Metal hangs."""
+    agent = build_jaeger_agent(_FakeLocalClient())
+    assert agent.stale_call_timeout_s == 120.0
+
+
+def test_build_jaeger_agent_honors_explicit_stall_timeout():
+    """The caller (main.py reading config) can override the default —
+    e.g. a power user who wants to surface stalls in 60s instead of
+    120s. Pin the override path."""
+    agent = build_jaeger_agent(
+        _FakeLocalClient(),
+        stale_call_timeout_s=42.0,
+    )
+    assert agent.stale_call_timeout_s == 42.0
+
+
 def test_build_jaeger_agent_finalizer_delegates_to_legacy():
     """The skip-final finalizer must route through the legacy
     ``_fast_finalize_sync`` so phrasing is identical to the

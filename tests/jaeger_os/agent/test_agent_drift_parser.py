@@ -279,6 +279,23 @@ def test_normalize_empty_input_returns_empty():
     assert normalize_tool_name("anything", frozenset()) == "anything"
 
 
+def test_normalize_does_not_route_to_system_health():
+    """``system_health`` is intentionally NOT an agent tool any more
+    (operator-only via ``jaeger health`` CLI). Verify the drift
+    parser does NOT have stale ``self_check`` → ``system_health``
+    aliases — those would silently route the model to a tool that
+    isn't registered, producing a confusing "unknown tool" error."""
+    valid = frozenset({"system_status", "get_time"})  # NB no system_health
+    for alias in ("self_check", "selfcheck", "health_check",
+                  "healthcheck", "check_health", "diagnose"):
+        result = normalize_tool_name(alias, valid)
+        assert result != "system_health", (
+            f"{alias!r} normalized to system_health — the alias "
+            f"map should not have stale entries pointing at a tool "
+            f"that no longer exists on the agent surface"
+        )
+
+
 # ── Llama 3.x / 4 raw-JSON form ──────────────────────────────────────
 
 

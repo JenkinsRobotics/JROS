@@ -134,6 +134,7 @@ def build_jaeger_agent(
     max_iterations: int = 24,
     ctx_window: int | None = None,
     artifact_dir: Any = None,
+    stale_call_timeout_s: float | None = None,
 ) -> JaegerAgent:
     """Construct a :class:`JaegerAgent` wired against the provided
     JROS client. The skip-final finalizer is the legacy bounded-chat
@@ -167,7 +168,22 @@ def build_jaeger_agent(
         ContextGuard(ContextBudget(ctx_window=ctx_window, artifact_dir=artifact_dir))
         if ctx_window else None
     )
-    return JaegerAgent(
+    # Default stall timeout depends on the backend. HTTP adapters do
+    # well with 30s (the SDK is usually streaming or about to error
+    # out). In-process llama.cpp on Metal can sit in a long prefill
+    # for 60-90s on a cold load of a big model, so the default for
+    # the local backend is more generous. The caller can override.
+    if stale_call_timeout_s is None:
+        if adapter.__class__.__name__ == "LocalLlamaAdapter":
+            # Cold prefill on a 30B Q4 can take ~60s; allow headroom
+            # for an unusual prompt without false-positive stall
+            # alarms during legitimate slow decodes. The pathological
+            # hang we're guarding against is multi-minute, so 120s
+            # catches it cleanly while letting normal work finish.
+            stale_call_timeout_s = 120.0
+        else:
+            stale_call_timeout_s = 30.0
+    agent = JaegerAgent(
         adapter=adapter,
         system_prompt=system_prompt,
         toolsets=toolsets,
@@ -177,6 +193,8 @@ def build_jaeger_agent(
         max_iterations=max_iterations,
         context_guard=guard,
     )
+    agent.stale_call_timeout_s = stale_call_timeout_s
+    return agent
 
 
 def _tool_activity_lines(messages: list[Message]) -> list[str]:
@@ -274,6 +292,11 @@ def drive_one_turn(
         "halt_reason": agent.last_halt_reason,
         "iterations": agent.last_iteration_count,
         "new_messages": new_messages,
+        # Real token counts when the adapter reported usage; 0 when
+        # the adapter doesn't expose it (the bench falls back to a
+        # whitespace-split estimate in that case).
+        "prompt_tokens": agent.last_prompt_tokens,
+        "completion_tokens": agent.last_completion_tokens,
     }
 
 

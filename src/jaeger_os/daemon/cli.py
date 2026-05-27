@@ -49,7 +49,7 @@ SUBCOMMANDS: frozenset[str] = frozenset({
     "attach", "rich-tui",
     "setup", "instance", "migrate",
     "backup", "restore", "update",
-    "skill", "memory", "kill",
+    "skill", "memory", "kill", "health",
 })
 
 
@@ -122,6 +122,9 @@ def dispatch(argv: Sequence[str]) -> int:
     if argv[0] == "kill":
         from jaeger_os.daemon.kill_verb import _cmd_kill_argv
         return _cmd_kill_argv(list(argv[1:]))
+    if argv[0] == "health":
+        from jaeger_os.daemon.health_verb import _cmd_health_argv
+        return _cmd_health_argv(list(argv[1:]))
     parser = argparse.ArgumentParser(
         prog="jaeger", add_help=False,
         description="Jaeger daemon lifecycle commands.",
@@ -208,6 +211,10 @@ def _cmd_bench(argv: list[str]) -> int:
             return 1
         return subprocess.call([sys.executable, str(script), *rest])
 
+    if verb == "compare":
+        from jaeger_os.daemon.bench_compare_verb import _cmd_bench_compare_argv
+        return _cmd_bench_compare_argv(rest)
+
     print(f"unknown bench verb: {verb!r}", file=sys.stderr)
     _print_bench_usage()
     return 2
@@ -215,10 +222,12 @@ def _cmd_bench(argv: list[str]) -> int:
 
 def _print_bench_usage() -> None:
     print(
-        "usage: jaeger bench {run | timing} [bench-specific args]\n"
+        "usage: jaeger bench {run | timing | compare} [bench-specific args]\n"
         "\n"
         "  run     — flat routing/multistep/multiturn/recovery corpus\n"
         "  timing  — wall-clock per-prompt timing suite\n"
+        "  compare — pick multiple models from a list, bench each,\n"
+        "            write a comparison report (operator-driven)\n"
         "\n"
         "  jaeger bench run --tags routing --limit 5\n"
         "  jaeger bench run --ids time_now,calc_sqrt\n"
@@ -566,7 +575,7 @@ def _live_status(lifecycle: Lifecycle) -> dict | None:
 
 def _print_usage() -> None:
     print(
-        "Usage: jaeger {start|stop|status|restart|kill|tray|bench} "
+        "Usage: jaeger {start|stop|status|restart|kill|health|tray|bench} "
         "[--instance NAME]\n"
         "\n"
         "  start    Bring the daemon up in the background.\n"
@@ -576,6 +585,9 @@ def _print_usage() -> None:
         "           stall and Ctrl-C won't break out. Idempotent.\n"
         "  status   Show whether the daemon is running.\n"
         "  restart  Stop the running daemon and start a fresh one.\n"
+        "  health   Runtime substrate probe (post-boot diagnostics).\n"
+        "           Pairs with ``--doctor`` which checks deps BEFORE\n"
+        "           boot. ``--deep`` adds live agent-loop turns.\n"
         "  tray     Run the macOS menu-bar tray (foreground).\n"
         "  bench    Run a JROS benchmark — `jaeger bench run|timing`.\n"
         "\n"

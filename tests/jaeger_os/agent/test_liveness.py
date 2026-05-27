@@ -226,3 +226,132 @@ def test_stale_timeout_triggers_fallback_chain():
     result = agent.run_turn("hi")
     # Backup served the response.
     assert result == "ok"
+
+
+def test_accumulate_usage_extracts_openai_shape():
+    """OpenAI / llama-cpp put token usage under ``raw["usage"]`` with
+    ``prompt_tokens`` / ``completion_tokens``. The agent must
+    accumulate these so the bench can report real throughput."""
+    agent = JaegerAgent(adapter=_SlowAdapter())
+    agent._accumulate_usage({
+        "choices": [{"message": {"content": "hi"}}],
+        "usage": {"prompt_tokens": 100, "completion_tokens": 20},
+    })
+    assert agent.last_prompt_tokens == 100
+    assert agent.last_completion_tokens == 20
+
+
+def test_accumulate_usage_extracts_anthropic_shape():
+    """Anthropic puts the same data under ``input_tokens`` /
+    ``output_tokens``. The helper must handle both names."""
+    agent = JaegerAgent(adapter=_SlowAdapter())
+    agent._accumulate_usage({
+        "content": [{"type": "text", "text": "hi"}],
+        "usage": {"input_tokens": 50, "output_tokens": 10},
+    })
+    assert agent.last_prompt_tokens == 50
+    assert agent.last_completion_tokens == 10
+
+
+def test_accumulate_usage_sums_across_iterations():
+    """A multi-step turn racks up multiple model calls — the counts
+    must accumulate, not overwrite."""
+    agent = JaegerAgent(adapter=_SlowAdapter())
+    agent._accumulate_usage({"usage": {"prompt_tokens": 100, "completion_tokens": 20}})
+    agent._accumulate_usage({"usage": {"prompt_tokens": 110, "completion_tokens": 5}})
+    assert agent.last_prompt_tokens == 210
+    assert agent.last_completion_tokens == 25
+
+
+def test_accumulate_usage_silently_skips_missing_field():
+    """An adapter that doesn't report usage must not break anything
+    — the helper just no-ops and the bench falls back to the
+    whitespace estimate."""
+    agent = JaegerAgent(adapter=_SlowAdapter())
+    agent._accumulate_usage({"choices": []})       # no usage key
+    agent._accumulate_usage("not even a dict")     # type: ignore
+    agent._accumulate_usage({"usage": "wrong type"})
+    assert agent.last_prompt_tokens == 0
+    assert agent.last_completion_tokens == 0
+
+
+def test_accumulate_usage_resets_at_start_of_run_turn():
+    """Each call to ``run_turn`` starts fresh; previous turns'
+    token counts must not carry over."""
+    adapter = _SlowAdapter()
+    agent = JaegerAgent(adapter=adapter)
+    agent.last_prompt_tokens = 999
+    agent.last_completion_tokens = 999
+    agent.run_turn("hi")
+    # _SlowAdapter doesn't report usage → both stay 0 after reset.
+    assert agent.last_prompt_tokens == 0
+    assert agent.last_completion_tokens == 0
+
+
+class _StallingAdapter:
+    """Adapter that synchronously raises ``StaleCallTimeout`` on
+    every call — simulates an adapter whose ``interruptible_call``
+    inner wrapper tripped its watchdog. ``_SlowAdapter`` above
+    doesn't actually raise (it just sleeps), so it can't exercise
+    the loop's ``except StaleCallTimeout`` branch."""
+
+    name = "stalling"
+
+    def __init__(self, *, returns: dict | None = None) -> None:
+        self.returns = returns  # None ⇒ raise; dict ⇒ return normally
+
+    def describe(self) -> str:
+        return "stalling-adapter"
+
+    def format_messages(self, messages, tools, system):  # noqa: ARG002
+        return {"messages": messages}
+
+    def call(self, formatted, interrupt_event, *,
+             stale_timeout=None, on_heartbeat=None, **kwargs):  # noqa: ARG002
+        if self.returns is None:
+            raise StaleCallTimeout(
+                f"no response after {(stale_timeout or 0):.1f}s (test)"
+            )
+        return self.returns
+
+    def parse_response(self, raw):
+        return raw
+
+    def supports(self, feature):  # noqa: ARG002
+        return False
+
+
+def test_stale_timeout_sets_stalled_halt_reason_when_chain_exhausted():
+    """When EVERY adapter in the chain raises StaleCallTimeout, the
+    loop must surface a clean ``stalled`` halt reason rather than
+    letting the exception escape as a generic crash. This is the
+    user-facing recovery signal — the TUI / latency log distinguishes
+    'model stalled' from 'something exploded' on this."""
+    primary = _StallingAdapter()
+    backup = _StallingAdapter()
+    agent = JaegerAgent(adapter=primary, fallback_adapters=[backup])
+    agent.stale_call_timeout_s = 0.1
+    with pytest.raises(StaleCallTimeout):
+        agent.run_turn("hi")
+    assert agent.last_halt_reason == "stalled"
+
+
+def test_stalled_message_mentions_recovery_path():
+    """The thinking callback emitted on stall must reference the
+    ``jaeger kill`` recovery instructions so a non-expert user knows
+    what to do when the model hangs."""
+    seen_thoughts: list[str] = []
+    cb = AgentCallbacks(thinking=lambda s: seen_thoughts.append(s))
+    # Primary stalls, backup returns ok — the loop continues past
+    # the primary, but the thinking callback still emits the stall
+    # notice. That's the visible signal in the TUI.
+    primary = _StallingAdapter()
+    backup = _StallingAdapter(returns={"role": "assistant", "content": "ok"})
+    agent = JaegerAgent(adapter=primary, fallback_adapters=[backup],
+                       callbacks=cb)
+    agent.stale_call_timeout_s = 0.1
+    result = agent.run_turn("hi")
+    assert result == "ok"
+    stall_messages = [s for s in seen_thoughts if "stalled" in s.lower()]
+    assert stall_messages, "expected a 'stalled' notice in the thinking stream"
+    assert "jaeger kill" in stall_messages[0]

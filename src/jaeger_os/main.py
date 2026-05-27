@@ -66,68 +66,35 @@ from jaeger_os.core.instance.setup_wizard import run_wizard
 
 
 # ---------------------------------------------------------------------------
-# Tools whose dict result IS the answer (skip the final-LLM round-trip).
+# Skip-final tools — DISABLED 2026-05-26.
+#
+# Historical context: this set listed tools whose dict result was
+# treated as "the answer", short-circuiting the agent loop after the
+# first tool call. A bounded 120-token finalize pass formatted the
+# result into a brief user-facing sentence. Saved ~1-3s per turn on
+# simple queries.
+#
+# Why removed: skip-final bypasses the agent's actual reasoning. The
+# model never gets a chance to:
+#   - decide whether the result fully answers the question
+#   - catch + retry a wrong tool call
+#   - chain into a follow-up step
+#   - shape the answer to the user's conversational tone
+#
+# In practice this produced robotic-feeling answers ("workspace/haiku.txt",
+# "2026-05-26 10:13:19 PM PDT") instead of natural ones. It also
+# created brittle coupling between this list and the system prompt
+# rules — e.g. the rule "call get_time before schedule_prompt" was
+# silently broken by get_time being in skip-final, which exited the
+# loop before schedule_prompt could fire.
+#
+# Empty set = every turn runs the full agent loop, every time. The
+# ~1-3s latency cost on pure single-tool queries (calculate, recall,
+# get_time, etc.) is the price of a coherent reasoning surface. If
+# we ever want this back, do it as an opt-in per-turn signal from
+# the model rather than a static list.
 # ---------------------------------------------------------------------------
-SKIP_FINAL_TOOLS = frozenset({
-    # NB historical name. These tools are "FAST_FINALIZE" — the agent.iter
-    # loop is short-circuited after the FIRST tool call returns, then a
-    # single bounded ``client.chat`` finalize pass (max_tokens=120,
-    # temp=0.2) turns the tool result into a one-sentence user answer.
-    # The LLM stays IN the pipeline (so the answer is conversational and
-    # follow-up context is consistent), but the second-pass cost is
-    # capped so latency stays close to the prior bypass model.
-    "get_time", "calculate", "system_status",
-    "list_facts", "recall", "remember", "forget",
-    # NB: read_file is INTENTIONALLY not skip-final. A read is almost
-    # never a terminal action — it's usually step 1 of "read then act"
-    # (read a file, then finish/fix/rewrite it). Skip-final cut the loop
-    # off after the read, so "finish the code" turns never reached
-    # write_file. Reads now run the full agent.iter loop so the model
-    # can chain into the write.
-    #
-    # Mutating file writers — ``write_file``, ``append_file``, ``patch``,
-    # ``delete_file`` — were ALSO skip-final in 0.1.0. Removed per
-    # review finding #13: a single user request ("fix the typo in
-    # README") often needs read → patch → verify → explain even if
-    # the model's first call is a write. The lexical multistep guard
-    # helped some, but the safer default is "writers run the full
-    # loop", letting the model self-confirm + answer.
-    "list_skill_dir",
-    "clarify",
-    # Scheduling read-only ops (list/cancel) skip-final fine; creation
-    # ``schedule_prompt`` is tier-gated and runs the full loop so its
-    # confirmation prompt isn't truncated.
-    "list_schedules",
-    "help_me",
-    "list_credentials",
-    "reload_skills",
-    # Parity ports from pydantic_ai — same skip-final rationale: their
-    # dict result IS the user-facing answer.
-    "text_to_speech",
-    "open_on_host",
-    "delegate_task",
-    "send_message",
-    # get_weather: the result IS a single ready-to-show sentence
-    # ("Sunny, 83°F in Downey, CA") — fast-finalize still adds a
-    # conversational shape ("It's currently sunny and 83 in Downey").
-    # NOTE: web_search is INTENTIONALLY not skip-final — its result is
-    # a list of 5+ sources the model digests through the FULL agent
-    # iter loop (not the bounded fast-finalize) so it can pick the most
-    # relevant fact + cite.
-    "get_weather",
-    # Plugin awareness — output is structured/listy, the formatter
-    # renders a clean per-plugin status report; no value in a second
-    # LLM round paraphrasing it.
-    "list_plugins",
-    "setup_plugin",
-    # Audio input — the transcript IS the user's spoken answer; the
-    # model surfaces it directly so the user sees what was heard.
-    "listen",
-    # Kanban board mutations — quick local bookkeeping; the dict result
-    # IS the answer. board_view is NOT skip-final — its card list is
-    # digested through the full loop so the model can act on the board.
-    "board_add", "board_move", "board_update",
-})
+SKIP_FINAL_TOOLS: frozenset[str] = frozenset()
 
 
 def _format_tool_result_as_answer(name: str, result: Any) -> str:
@@ -1327,13 +1294,14 @@ def _register_builtins(client: Any) -> None:
         finished. Faster than polling ``check_background`` in a loop."""
         return t.pending_background()
 
-    @register_tool_from_function
-    def system_health(deep: bool = False) -> dict:
-        """Fast runtime health probe — 8 substrate checks (<3s).
-        ``deep=True`` adds three live-agent turns (free-text, read,
-        sandbox write). Call when the user asks "are you healthy?".
-        See ``describe_tool("system_health")`` for the full list."""
-        return t.system_health(deep=deep)
+    # ``system_health`` is intentionally NOT registered as an agent
+    # tool — operator-only access via ``jaeger health`` CLI verb.
+    # Hiding it from the model surface fixed a prefill stall: prompts
+    # like "do a self check" routed across ``system_health`` /
+    # ``system_status`` and llama.cpp's Metal sampler hung at high
+    # first-token entropy. The underlying function is still imported
+    # by the CLI verb (``daemon/health_verb.py``) and by boot
+    # preflight; only the agent-facing registration is gone.
 
     @register_tool_from_function
     def run_benchmark(tags: str = "", limit: int = 0,
@@ -2176,6 +2144,10 @@ def _run_turn_via_jaeger_agent(
         _artifact_dir = (
             (_layout.logs_dir / "tool_results") if _layout is not None else None
         )
+        # Stall watchdog — caller-controlled via ``model.stall_timeout_s``
+        # in config.yaml. ``None`` lets ``build_jaeger_agent`` pick a
+        # backend-appropriate default (120s for in-process, 30s for HTTP).
+        _stall_s = getattr(getattr(_cfg, "model", None), "stall_timeout_s", None)
         _jaeger_agents_by_session[key] = build_jaeger_agent(
             client,
             system_prompt=_pipeline["system_prompt"],
@@ -2184,6 +2156,7 @@ def _run_turn_via_jaeger_agent(
             callbacks=_status_cb,
             ctx_window=_ctx,
             artifact_dir=_artifact_dir,
+            stale_call_timeout_s=_stall_s,
         )
     jaeger_agent = _jaeger_agents_by_session[key]
 

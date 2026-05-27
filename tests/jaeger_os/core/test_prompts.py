@@ -143,10 +143,56 @@ def test_schedule_rule_disambiguates_oneshot_vs_recurring(tmp_path) -> None:
     assert "clock" in sp.lower()  # "clock 5-minute marks"
 
 
-def test_system_health_is_in_core_toolset() -> None:
-    """``system_health`` must be in CORE so the model can call it
-    without first calling ``load_toolset('diagnostics')`` — that
-    extra routing hop was the root cause of multi-minute Metal
-    stalls on simple 'self-check' prompts during live testing."""
-    from jaeger_os.core.skills.toolsets import CORE
-    assert "system_health" in CORE
+def test_system_health_is_NOT_in_agent_surface() -> None:
+    """``system_health`` is INTENTIONALLY hidden from the model.
+
+    The original design exposed it as an agent tool so the user
+    could say "do a self check" and have the agent run the probe.
+    In live testing this caused multi-minute prefill stalls on
+    local Gemma checkpoints — the model dithered over
+    ``system_health`` vs ``system_status`` and llama.cpp's Metal
+    sampler hung at high first-token entropy. Both 4B and 26B
+    Gemmas reproduced the hang identically.
+
+    Fix: removed from CORE, removed from the ``diagnostics``
+    toolset, and removed the ``@register_tool_from_function``
+    registration in ``main.py``. Operators access the probe via
+    ``jaeger health`` (CLI verb) — the same shape Hermes Agent
+    uses for its self-test.
+
+    Pin all three surfaces here so a future "let's just put it back"
+    refactor gets caught by this test."""
+    from jaeger_os.core.skills.toolsets import CORE, TOOLSETS
+    assert "system_health" not in CORE, (
+        "system_health must NOT be in CORE — re-adding it brings back "
+        "the prefill stall. Use ``jaeger health`` CLI verb instead."
+    )
+    diagnostics = TOOLSETS.get("diagnostics", frozenset())
+    assert "system_health" not in diagnostics, (
+        "system_health must NOT be in any agent-visible toolset — "
+        "operator-only via ``jaeger health`` CLI."
+    )
+
+
+def test_skip_final_tools_is_empty() -> None:
+    """Skip-final is DISABLED — the set must stay empty so every
+    turn runs the full agent loop. Re-adding any tool here means:
+
+      (a) the model's reasoning is bypassed for that tool — the
+          120-token bounded formatter produces robotic answers
+          ("workspace/haiku.txt", "2026-05-26 10:13:19 PM PDT")
+          instead of conversational ones
+      (b) any rule that uses the tool as a PREPARATION step (e.g.
+          "call get_time before schedule_prompt") silently breaks,
+          because skip-final exits the loop after the first tool
+          call
+
+    We removed the mechanism 2026-05-26 after live testing showed
+    both failure modes. If you want fast-paths back, do it as an
+    opt-in per-turn signal from the model, NOT a static list."""
+    from jaeger_os.main import SKIP_FINAL_TOOLS
+    assert SKIP_FINAL_TOOLS == frozenset(), (
+        "SKIP_FINAL_TOOLS must stay empty. Adding tools back here "
+        "produces robotic answers AND silently breaks any rule "
+        "that uses the tool as a preparation step. Don't re-add."
+    )

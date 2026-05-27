@@ -92,6 +92,21 @@ class ModelConfig(BaseModel):
                     "persisted here so the agent can extend the scan set "
                     "without editing core code.",
     )
+    stall_timeout_s: float | None = Field(
+        None,
+        description="Wall-clock seconds before the agent declares the "
+                    "model call stalled and surfaces a recoverable error "
+                    "(``stalled`` halt reason). ``None`` uses the backend "
+                    "default — 120s for in-process llama-cpp (allows for "
+                    "long cold prefills + 30B-class decode), 30s for HTTP "
+                    "backends. The pathological Metal prefill hangs we've "
+                    "seen are multi-minute, so 120s catches them without "
+                    "false-positive on legitimate slow decodes. Lower the "
+                    "value to surface stalls faster (risk: cutting off "
+                    "legitimate long answers); raise it to be more "
+                    "patient. Use ``jaeger kill`` from another terminal "
+                    "to nuke a hung process irrespective of this value.",
+    )
 
 
 class DisplayConfig(BaseModel):

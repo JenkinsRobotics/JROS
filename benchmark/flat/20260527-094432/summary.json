@@ -1,0 +1,67 @@
+{
+  "total": 3,
+  "passed": 3,
+  "pass_rate": 1.0,
+  "routing_passed": 3,
+  "routing_total": 3,
+  "answer_passed": 2,
+  "answer_total": 2,
+  "errors": 0,
+  "elapsed_s": 27.51,
+  "metrics": {
+    "avg_latency_s": 9.169,
+    "p50_latency_s": 1.278,
+    "p95_latency_s": 25.196,
+    "min_latency_s": 1.033,
+    "max_latency_s": 25.196,
+    "total_tool_dispatches": 3,
+    "avg_tools_per_turn": 1.0,
+    "answer_tokens_total": 23,
+    "answer_tokens_avg": 7.7,
+    "answer_tokens_per_sec": 0.8,
+    "cases_with_errors": 0,
+    "tokens_note": "whitespace-split estimate; not real tokenizer counts"
+  },
+  "suites": {
+    "smoke": {
+      "total": 3,
+      "passed": 3,
+      "pass_rate": 1.0,
+      "threshold": 0.8,
+      "meets_threshold": true,
+      "avg_latency_s": 9.169,
+      "p95_latency_s": 25.196,
+      "blurb": "5-case sanity check; routing only"
+    },
+    "routing": {
+      "total": 3,
+      "passed": 3,
+      "pass_rate": 1.0,
+      "threshold": 0.85,
+      "meets_threshold": true,
+      "avg_latency_s": 9.169,
+      "p95_latency_s": 25.196,
+      "blurb": "single-turn, single-tool dispatch"
+    },
+    "full": {
+      "total": 3,
+      "passed": 3,
+      "pass_rate": 1.0,
+      "threshold": 0.7,
+      "meets_threshold": true,
+      "avg_latency_s": 9.169,
+      "p95_latency_s": 25.196,
+      "blurb": "every case in the corpus"
+    }
+  },
+  "by_tag": {
+    "routing": {
+      "total": 3,
+      "passed": 3,
+      "avg_latency_s": 9.169
+    }
+  },
+  "failures": [],
+  "wall_s": 27.51,
+  "load_s": 4.7
+}

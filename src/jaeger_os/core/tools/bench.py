@@ -162,22 +162,45 @@ def run_benchmark(
     if save and rows:
         try:
             layout = _require_layout()
-            out_dir = Path(layout.logs_dir) / "bench" / \
-                time.strftime("%Y%m%d-%H%M%S")
+            # Stamp the model identity into the summary so the
+            # history aggregator can attribute the run. Then nest the
+            # output under ``<logs>/bench/<model>/<ts>/`` so a
+            # "list every run of this model" browse is a single
+            # ``ls``, not a parse-summary-jsons exercise.
+            model_name = "unknown"
+            try:
+                from jaeger_os.main import _pipeline as _pl
+                _cfg = _pl.get("config")
+                _mp = getattr(getattr(_cfg, "model", None), "model_path", None)
+                if _mp:
+                    summary["model_path"] = str(_mp)
+                    model_name = Path(str(_mp)).stem
+                    summary["model_name"] = model_name
+            except Exception:  # noqa: BLE001
+                pass
+            ts = time.strftime("%Y%m%d-%H%M%S")
+            summary["run_id"] = ts
+            out_dir = Path(layout.logs_dir) / "bench" / model_name / ts
             out_dir.mkdir(parents=True, exist_ok=True)
-            (out_dir / "rows.jsonl").write_text(
+            # Match the flat-bench naming convention: every artifact
+            # carries ``<model>-<ts>`` so a file copied out of its
+            # folder still self-identifies. The generic
+            # ``summary.json`` / ``rows.jsonl`` filenames the original
+            # layout used were impossible to attribute once moved.
+            prefix = f"{model_name}-{ts}"
+            (out_dir / f"{prefix}-rows.jsonl").write_text(
                 "\n".join(json.dumps(r, default=str, ensure_ascii=False)
                           for r in summary["rows"]) + "\n",
                 encoding="utf-8",
             )
-            (out_dir / "summary.json").write_text(
+            (out_dir / f"{prefix}-summary.json").write_text(
                 json.dumps(
                     {k: v for k, v in summary.items() if k != "rows"},
                     indent=2, default=str, ensure_ascii=False,
                 ),
                 encoding="utf-8",
             )
-            (out_dir / "summary.md").write_text(
+            (out_dir / f"{prefix}-summary.md").write_text(
                 _render_markdown(summary), encoding="utf-8",
             )
             summary["report_dir"] = str(out_dir)

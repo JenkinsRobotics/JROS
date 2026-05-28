@@ -1761,7 +1761,7 @@ def _strip_drift_markup(text: str) -> str:
     # Use the agent layer's drift parser to strip tool-call envelopes
     # from text we'd otherwise show to the user (TUI banner, finalize
     # fallback). The parser knows the same patterns as the adapters.
-    from jaeger_os.agent.parsing.drift_parser import _DRIFT_PATTERNS  # noqa: PLC2701
+    from jaeger_os.agent.dialects import _DRIFT_PATTERNS  # noqa: PLC2701
     cleaned = text
     for pattern in _DRIFT_PATTERNS:
         cleaned = pattern.sub("", cleaned)

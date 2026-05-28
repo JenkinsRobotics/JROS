@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import json
 
-from jaeger_os.agent.parsing.drift_parser import (
+from jaeger_os.agent.dialects import (
     extract_tool_calls,
     normalize_tool_name,
     repair_arguments,

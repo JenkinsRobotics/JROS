@@ -131,7 +131,7 @@ def _from_openai_tool_calls(raw_calls: Any) -> list[ToolCall]:
             # tolerance — same JSON repair, just applied to the
             # structured tool_calls path too.
             try:
-                from jaeger_os.agent.parsing.drift_parser import repair_arguments
+                from jaeger_os.agent.dialects import repair_arguments
                 repaired, ok = repair_arguments(args_str)
                 if ok and isinstance(repaired, dict):
                     arguments = repaired

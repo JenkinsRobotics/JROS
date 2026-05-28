@@ -19,7 +19,7 @@ import os
 import pytest
 from pydantic import BaseModel
 
-from jaeger_os.agent.parsing.drift_parser import normalize_tool_name
+from jaeger_os.agent.dialects import normalize_tool_name
 from jaeger_os.agent.schemas.tool_schema import ToolDef
 
 

@@ -215,6 +215,10 @@ def _cmd_bench(argv: list[str]) -> int:
         from jaeger_os.daemon.bench_compare_verb import _cmd_bench_compare_argv
         return _cmd_bench_compare_argv(rest)
 
+    if verb == "history":
+        from jaeger_os.daemon.bench_history_verb import _cmd_bench_history_argv
+        return _cmd_bench_history_argv(rest)
+
     print(f"unknown bench verb: {verb!r}", file=sys.stderr)
     _print_bench_usage()
     return 2
@@ -222,12 +226,15 @@ def _cmd_bench(argv: list[str]) -> int:
 
 def _print_bench_usage() -> None:
     print(
-        "usage: jaeger bench {run | timing | compare} [bench-specific args]\n"
+        "usage: jaeger bench {run | timing | compare | history} "
+        "[bench-specific args]\n"
         "\n"
         "  run     — flat routing/multistep/multiturn/recovery corpus\n"
         "  timing  — wall-clock per-prompt timing suite\n"
         "  compare — pick multiple models from a list, bench each,\n"
         "            write a comparison report (operator-driven)\n"
+        "  history — rolling leaderboard across every model ever\n"
+        "            benched on this machine (sweep + flat artifacts)\n"
         "\n"
         "  jaeger bench run --tags routing --limit 5\n"
         "  jaeger bench run --ids time_now,calc_sqrt\n"

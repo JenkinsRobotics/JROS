@@ -10,7 +10,7 @@ The remaining 5%:
     works verbatim.
   • Gemma 4 / Qwen3-Coder routinely emit tool calls as TEXT inside
     ``<tool_call>…</tool_call>`` blocks even when ``tools=[...]`` is
-    passed structurally — :mod:`jaeger_os.agent.parsing.drift_parser` salvages
+    passed structurally — :mod:`jaeger_os.agent.dialects` salvages
     those after the parent's parse step.
 
 Construction stays light: nothing loads at import time. A real
@@ -24,9 +24,25 @@ import threading
 from pathlib import Path
 from typing import Any
 
-from jaeger_os.agent.parsing.drift_parser import extract_tool_calls
+from jaeger_os.agent.dialects import (
+    detect_family,
+    detect_reasoning,
+    extract_tool_calls,
+    render_tools_for,
+    strip_think_blocks,
+    textify_tool_history,
+)
 from jaeger_os.agent.schemas.message_types import Message
+from jaeger_os.agent.schemas.tool_schema import ToolDef
 from .openai import OpenAIAdapter
+
+
+# Stall-watchdog floor for reasoning models. They legitimately spend
+# minutes deliberating in ``<think>`` blocks; the default 120s floor
+# fires mid-thought, abandons the llama worker, and the next call hits
+# a corrupted KV cache → process crash (the 2026-05-28 ``0/1`` aborts).
+# A reasoning model gets at least this long before the watchdog trips.
+_REASONING_STALL_FLOOR_S = 300.0
 
 
 # Sensible llama-cpp defaults for Apple Silicon. Match the existing
@@ -84,7 +100,9 @@ class _LlamaChatFacade:
             kwargs.pop(hostonly, None)
         msgs = kwargs.get("messages")
         if isinstance(msgs, list):
-            kwargs["messages"] = [_decode_tool_call_args(m) for m in msgs]
+            kwargs["messages"] = [
+                _coerce_none_content(_decode_tool_call_args(m)) for m in msgs
+            ]
         # Phase-8 hardening: sanitise tool schemas before handing them
         # to llama-cpp's grammar generator. The generator rejects
         # bare-string schema values, ``type: [X, "null"]`` arrays, and
@@ -102,6 +120,22 @@ class _LlamaModelsStub:
     def list() -> Any:
         from types import SimpleNamespace
         return SimpleNamespace(data=[])
+
+
+def _coerce_none_content(msg: Any) -> Any:
+    """Return ``msg`` with ``content=None`` rewritten to ``""``.
+
+    A pure tool-call assistant turn carries ``content=None`` in the
+    OpenAI wire shape — fine for OpenAI's API, but many GGUF chat
+    templates render content with an unguarded ``'</think>' in content``
+    or ``content + …`` and crash on ``None`` (verified: DeepSeek-R1's
+    embedded template, 2026-05-28). We're the in-process path that runs
+    the template directly, so we feed it a clean empty string instead.
+    Matching the model means adapting to its template, not the reverse.
+    """
+    if isinstance(msg, dict) and msg.get("content") is None:
+        return {**msg, "content": ""}
+    return msg
 
 
 def _decode_tool_call_args(msg: Any) -> Any:
@@ -199,6 +233,115 @@ class LocalLlamaAdapter(OpenAIAdapter):
         self._llama = llama
         # Override the diagnostic name so /runtime shows the right label.
         self.name = "local-llama"
+        # Whether to embed the tool catalogue in the system prompt using
+        # the MODEL'S NATIVE dialect (on top of the structured ``tools=``
+        # param). Default ON. See ``format_messages``.
+        self.inject_tools_prose = True
+        # Cached tool dialect ("chatml" / "mistral" / "llama3" / …),
+        # resolved lazily on first ``format_messages``.
+        self._tool_family: str | None = None
+        # Cached reasoning flag (model emits <think> deliberation).
+        self._is_reasoning: bool | None = None
+
+    # ── tool presentation ───────────────────────────────────────────
+
+    def _resolve_tool_family(self) -> str:
+        """Determine the model's native tool dialect from its name +
+        embedded chat template. Cached after the first call.
+
+        Principle: we match the model. Each family was trained on a
+        specific tool dialect; we present tools in THAT dialect so the
+        model never has to drift to a foreign format.
+        """
+        if self._tool_family is not None:
+            return self._tool_family
+        name = ""
+        if self.model_path is not None:
+            name = Path(self.model_path).stem
+        template = ""
+        # The embedded chat template lives in the Llama metadata once
+        # the client is built. Read it if available; fall back to the
+        # name alone otherwise (the name is usually enough).
+        llama = self._llama
+        meta = getattr(llama, "metadata", None) if llama is not None else None
+        if isinstance(meta, dict):
+            template = meta.get("tokenizer.chat_template", "") or ""
+            if not name:
+                name = meta.get("general.name", "") or ""
+        self._tool_family = detect_family(name, template)
+        self._is_reasoning = detect_reasoning(name, template)
+        return self._tool_family
+
+    def _resolve_reasoning(self) -> bool:
+        """Whether this model emits ``<think>`` deliberation. Resolved
+        alongside the tool family (same name+template signals)."""
+        if self._is_reasoning is None:
+            self._resolve_tool_family()  # populates both
+        return bool(self._is_reasoning)
+
+    def format_messages(
+        self,
+        messages: list[Message],
+        tools: list[ToolDef],
+        system: str,
+    ) -> dict[str, Any]:
+        """Build the chat-completion kwargs, presenting tools through
+        BOTH channels:
+
+          1. The structured ``tools=`` param (parent OpenAIAdapter) —
+             llama-cpp applies the model's chat template when its handler
+             supports function-calling. This works for models whose GGUF
+             template renders tools (Gemma-4, some Qwen).
+
+          2. A NATIVE-DIALECT tool block embedded in the system prompt
+             (this override, via :mod:`jaeger_os.agent.dialects`). Many GGUF
+             builds ship templates with the tool section stripped (the
+             LM Studio Hermes-3 build, verified), so the structured
+             param silently no-ops and the model never sees the tools →
+             it answers as a plain chatbot (the 3.9% flatlines in the
+             2026-05-27 sweep).
+
+        Crucially, the prose block is rendered in the MODEL'S OWN
+        dialect — Hermes/Qwen get ``<tools>`` + ``<tool_call>``, Mistral
+        gets ``[AVAILABLE_TOOLS]`` + ``[TOOL_CALLS]``, Llama gets the
+        ``<|python_tag|>`` convention. We match the model; it never
+        drifts to a format foreign to it. The drift parser reads back
+        whatever native format it emits.
+
+        Gemma + unknown families inject nothing here (their structured
+        path works / we don't want to perturb a working model).
+        """
+        kwargs = super().format_messages(messages, tools, system)
+        if not (self.inject_tools_prose and tools):
+            return kwargs
+        family = self._resolve_tool_family()
+        addition = render_tools_for(family, tools)
+        if not addition:
+            return kwargs  # gemma/unknown → structured channel only
+        wire = kwargs.get("messages") or []
+        for entry in wire:
+            if entry.get("role") == "system":
+                existing = entry.get("content") or ""
+                entry["content"] = (
+                    f"{existing}\n\n{addition}" if existing else addition
+                )
+                break
+        else:
+            wire.insert(0, {"role": "system", "content": addition})
+        # Prose families are driven entirely as TEXT: rewrite tool-call
+        # history into native in-dialect text turns and drop the
+        # structured ``tools=`` param. Otherwise the conversation history
+        # (assistant ``tool_calls`` + ``tool`` results) routes back
+        # through the model's own GGUF tool template — which is fragile
+        # and mutually incompatible across builds (DeepSeek-R1 crashes on
+        # dict args / None content; Hermes builds strip the tool section).
+        # We presented the catalogue as prose, so the structured channel
+        # is redundant here. Gemma already returned above (its handler
+        # works), so reaching this point means a text-driven family.
+        kwargs["messages"] = textify_tool_history(wire, family)
+        kwargs.pop("tools", None)
+        kwargs.pop("tool_choice", None)
+        return kwargs
 
     # ── client lifecycle ────────────────────────────────────────────
 
@@ -274,6 +417,15 @@ class LocalLlamaAdapter(OpenAIAdapter):
             error-types — see ``_ensure_client``). For one-shot mode
             (most common case in dev) the process exits anyway.
         """
+        # Reasoning models legitimately deliberate for minutes; raise
+        # the watchdog floor so it doesn't fire mid-think (which would
+        # abandon the worker + corrupt the KV cache for the next call).
+        if (
+            stale_timeout is not None
+            and self._resolve_reasoning()
+            and stale_timeout < _REASONING_STALL_FLOOR_S
+        ):
+            stale_timeout = _REASONING_STALL_FLOOR_S
         uncancellable_event = threading.Event()
         return super().call(
             formatted,
@@ -297,7 +449,29 @@ class LocalLlamaAdapter(OpenAIAdapter):
         """
         message = super().parse_response(raw)
         text = message.get("content") or ""
-        if "<" not in text:
+        # Reasoning models emit ``<think>…</think>`` deliberation BEFORE
+        # the answer / tool call. Strip it first so (a) the drift parser
+        # doesn't try to read tool calls out of the reasoning, and (b)
+        # the visible answer isn't a wall of internal monologue. The
+        # actual tool call (if any) comes after ``</think>``.
+        if "<think>" in text:
+            stripped = strip_think_blocks(text)
+            message["content"] = stripped or None
+            text = stripped
+        # Cheap pre-filter: skip the drift parser only when the text
+        # can't possibly hold a tool call. Two shapes qualify:
+        #   * angle-bracket envelopes — ``<tool_call>``, ``<|python_tag|>``
+        #   * bare top-level JSON — ``{"name": …, "arguments": …}`` with
+        #     NO wrapping (DeepSeek-R1, Qwen, Llama emit this natively).
+        # The original guard only checked for ``<`` and so silently
+        # dropped every bare-JSON tool call — the model did the right
+        # thing in its native format but JROS treated the JSON as a
+        # plain-text answer (the 2026-05-28 DeepSeek-R1 0% flatline).
+        _has_envelope = "<" in text
+        _has_bare_json = "{" in text and (
+            '"name"' in text or '"tool_name"' in text
+        )
+        if not (_has_envelope or _has_bare_json):
             return message
         salvaged = extract_tool_calls(text)
         if not salvaged:
@@ -305,6 +479,14 @@ class LocalLlamaAdapter(OpenAIAdapter):
         # Strip the envelopes from the visible text so the loop doesn't
         # echo the markup back to the user on the final answer.
         cleaned = self._strip_tool_call_blocks(text).strip()
+        # Bare-JSON tool calls (no envelope) aren't removed by the
+        # envelope stripper — so when the cleaned remainder is itself
+        # just a tool-call JSON object, null it. Otherwise the model's
+        # raw ``{"name": …}`` would surface as the visible "answer".
+        if cleaned.startswith("{") and (
+            '"name"' in cleaned or '"tool_name"' in cleaned
+        ):
+            cleaned = ""
         message["content"] = cleaned or None
         existing = list(message.get("tool_calls") or [])
         existing.extend(salvaged)

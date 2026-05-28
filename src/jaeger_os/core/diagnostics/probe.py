@@ -233,7 +233,7 @@ def _check_drift_parser() -> tuple[bool, str]:
     ``[get_time(...)]`` is not a recognised dialect (Gemma never
     produces that) and would give a false negative.
     """
-    from jaeger_os.agent.parsing.drift_parser import extract_tool_calls
+    from jaeger_os.agent.dialects import extract_tool_calls
     sample = '<|tool_call>call:get_time(timezone="UTC")<tool_call|>'
     try:
         calls = extract_tool_calls(sample)

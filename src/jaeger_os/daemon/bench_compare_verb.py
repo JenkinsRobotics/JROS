@@ -79,6 +79,13 @@ def _cmd_bench_compare_argv(argv: list[str]) -> int:
         "--instance", default=None,
         help="instance name (default: active)",
     )
+    parser.add_argument(
+        "--force", action="store_true",
+        help="bypass the memory-safety guard (DANGEROUS — large dense "
+             "models can kernel-panic an Apple Silicon machine by "
+             "exhausting unified memory). Only use if you know the "
+             "model fits.",
+    )
     parser.add_argument("-h", "--help", action="store_true")
     args = parser.parse_args(argv)
     if args.help:
@@ -108,6 +115,39 @@ def _cmd_bench_compare_argv(argv: list[str]) -> int:
             print("[jaeger bench compare] cancelled — no models selected",
                   file=sys.stderr)
             return 2
+
+    # ── memory-safety guard ──────────────────────────────────
+    # A bench must NEVER be able to kernel-panic the machine. Large
+    # DENSE models on Apple Silicon's unified memory exhaust RAM,
+    # thrash swap, and starve the kernel watchdog → panic + reboot.
+    # (Confirmed twice on a 32 GB M1 Max: gemma-4-31B dense + Qwen3.6-27B
+    # dense.) MoE models of the same on-disk size are safe because
+    # only the active experts (~3-4B) drive sustained compute.
+    safe, blocked = _memory_safety_partition(selected)
+    if blocked and not args.force:
+        print()
+        print("⚠ MEMORY-SAFETY GUARD — the following model(s) are likely "
+              "to crash this machine and were EXCLUDED:")
+        for b in blocked:
+            print(f"  ✗ {pathlib.Path(b['path']).name}  "
+                  f"({b['size_gb']:.1f} GB, {b['kind']}) — {b['reason']}")
+        print()
+        if not safe:
+            print("[jaeger bench compare] every selected model was blocked "
+                  "by the memory-safety guard. Pick smaller / MoE models, "
+                  "or pass --force if you're certain they fit.",
+                  file=sys.stderr)
+            return 2
+        print(f"Proceeding with the {len(safe)} safe model(s) only. "
+              f"Pass --force to include the blocked ones anyway.")
+        selected = [s["path"] for s in safe]
+    elif blocked and args.force:
+        print()
+        print("⚠ --force: running BLOCKED models despite the memory-safety "
+              "guard. If the machine hangs, the kernel watchdog will "
+              "reboot it. You were warned.")
+        for b in blocked:
+            print(f"  ! {pathlib.Path(b['path']).name} ({b['size_gb']:.1f} GB)")
 
     # Summary of the chosen set before launching.
     print()
@@ -152,6 +192,17 @@ def _cmd_bench_compare_argv(argv: list[str]) -> int:
         env["JAEGER_BENCH_TAGS"] = args.tags
     if args.limit:
         env["JAEGER_BENCH_LIMIT"] = str(args.limit)
+    # macOS fork-safety. The sweep driver imports numpy + jaeger
+    # modules then fork()s each per-model bench subprocess. On
+    # macOS 26's new "xzone" allocator, fork() after complex
+    # allocation crashes the child in ``_malloc_fork_child``
+    # (libmalloc assertion). ``MallocNanoZone=0`` selects the older
+    # allocator that survives fork; ``OBJC_DISABLE_INITIALIZE_FORK_SAFETY``
+    # quiets the Metal/Obj-C fork guard. Both must be in the env at
+    # process START, so we set them on the env the sweep inherits —
+    # they propagate to its bench subprocesses too.
+    env.setdefault("MallocNanoZone", "0")
+    env.setdefault("OBJC_DISABLE_INITIALIZE_FORK_SAFETY", "YES")
 
     rc = subprocess.call(
         [sys.executable, str(sweep_script), models_file],
@@ -312,6 +363,119 @@ def _interactive_pick(
             seen.add(p)
             out.append(p)
     return out
+
+
+# ── memory-safety guard ──────────────────────────────────────────
+#
+# A benchmark must never be able to crash the host. On Apple Silicon
+# the GPU shares the CPU's unified memory, so a model whose weights +
+# KV cache + the OS working set exceed physical RAM forces heavy swap.
+# Sustained swap thrashing under a DENSE model (every token touches
+# every weight) starves the kernel watchdog → panic + reboot.
+# Confirmed twice on a 32 GB M1 Max with gemma-4-31B (dense 18.7 GB)
+# and Qwen3.6-27B (dense 16.5 GB).
+#
+# MoE models of the same on-disk size are safe: their weights are all
+# resident, but only the active experts (~3-4B) drive compute each
+# token, so sustained GPU/memory-bandwidth pressure is far lower and
+# the machine stays responsive enough for the watchdog to check in.
+#
+# Heuristic:
+#   * Detect MoE from the filename's active-param marker (``A3B`` /
+#     ``A4B`` / ``-MoE``).
+#   * DENSE models: block when weights exceed ``_DENSE_MAX_FRACTION``
+#     of total RAM (default 0.45 — leaves headroom for KV + OS + the
+#     sustained-compute working set).
+#   * MoE models: block only when weights exceed ``_MOE_MAX_FRACTION``
+#     (default 0.72 — they still have to FIT, but tolerate a larger
+#     resident footprint because sustained pressure is lighter).
+
+_DENSE_MAX_FRACTION = 0.45
+_MOE_MAX_FRACTION = 0.72
+
+
+def _total_ram_bytes() -> int:
+    """Total physical RAM. macOS via ``hw.memsize``; Linux via
+    ``/proc/meminfo``. Falls back to a conservative 16 GB when neither
+    is available (so the guard errs toward caution)."""
+    try:
+        import subprocess
+        out = subprocess.check_output(
+            ["sysctl", "-n", "hw.memsize"], text=True, timeout=3,
+        ).strip()
+        return int(out)
+    except Exception:  # noqa: BLE001 — not macOS / sysctl missing
+        pass
+    try:
+        with open("/proc/meminfo", encoding="utf-8") as fh:
+            for line in fh:
+                if line.startswith("MemTotal:"):
+                    kb = int(line.split()[1])
+                    return kb * 1024
+    except Exception:  # noqa: BLE001
+        pass
+    return 16 * 1024 ** 3  # conservative fallback
+
+
+def _is_moe(name: str) -> bool:
+    """True when the filename signals a mixture-of-experts model via
+    an active-param marker (``A3B``, ``A4B``) or an explicit ``MoE``
+    tag. These tolerate larger resident footprints because only the
+    active experts drive sustained compute."""
+    import re
+    low = name.lower()
+    if "moe" in low:
+        return True
+    # ``A3B`` / ``A4B`` / ``A22B`` active-param marker.
+    return bool(re.search(r"[-_.]a\d+b", low))
+
+
+def _memory_safety_partition(
+    paths: list[str],
+    *,
+    ram_bytes: int | None = None,
+) -> tuple[list[dict], list[dict]]:
+    """Split ``paths`` into (safe, blocked) by the memory heuristic.
+
+    Each list holds dicts ``{path, size_gb, kind, reason}`` so the
+    caller can render an explanation. ``kind`` is "MoE" or "dense".
+    A model whose size can't be read is treated as safe (we don't
+    want a stat() failure to silently drop a model)."""
+    ram = ram_bytes if ram_bytes is not None else _total_ram_bytes()
+    ram_gb = ram / 1e9
+    dense_cap = _DENSE_MAX_FRACTION * ram_gb
+    moe_cap = _MOE_MAX_FRACTION * ram_gb
+
+    safe: list[dict] = []
+    blocked: list[dict] = []
+    for p in paths:
+        name = pathlib.Path(p).name
+        try:
+            size_gb = pathlib.Path(p).stat().st_size / 1e9
+        except OSError:
+            safe.append({"path": p, "size_gb": 0.0, "kind": "unknown",
+                         "reason": "size unreadable; allowed"})
+            continue
+        moe = _is_moe(name)
+        kind = "MoE" if moe else "dense"
+        cap = moe_cap if moe else dense_cap
+        if size_gb > cap:
+            blocked.append({
+                "path": p, "size_gb": size_gb, "kind": kind,
+                "reason": (
+                    f"{kind} weights {size_gb:.1f} GB exceed the "
+                    f"{cap:.1f} GB safe cap for {ram_gb:.0f} GB RAM "
+                    f"({'MoE' if moe else 'dense'} limit "
+                    f"{int((_MOE_MAX_FRACTION if moe else _DENSE_MAX_FRACTION)*100)}%"
+                    f" of RAM)"
+                ),
+            })
+        else:
+            safe.append({
+                "path": p, "size_gb": size_gb, "kind": kind,
+                "reason": "within safe cap",
+            })
+    return safe, blocked
 
 
 # ── helpers ─────────────────────────────────────────────────────

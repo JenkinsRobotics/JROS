@@ -633,7 +633,7 @@ class JaegerAgent:
         # self-correct, rather than silently dispatching a guess.
         if name and name not in dispatch_map:
             try:
-                from jaeger_os.agent.parsing.drift_parser import normalize_tool_name
+                from jaeger_os.agent.dialects import normalize_tool_name
                 valid = frozenset(dispatch_map.keys())
                 normalised = normalize_tool_name(name, valid)
                 if normalised != name and normalised in dispatch_map:

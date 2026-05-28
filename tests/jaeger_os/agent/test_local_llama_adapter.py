@@ -93,6 +93,218 @@ def test_provider_and_name_set_to_local_llama():
 # ── format → call → parse round-trip ───────────────────────────────
 
 
+def test_format_messages_injects_native_dialect_per_family():
+    """The adapter injects tools in the model's OWN dialect (we match
+    the model). A Hermes/chatml model gets <tool_call>; a Mistral model
+    gets [TOOL_CALLS] — never the wrong one forced on it."""
+    from pydantic import BaseModel
+    from jaeger_os.agent.schemas.tool_schema import ToolDef
+
+    class _A(BaseModel):
+        x: int
+
+    tool = ToolDef(name="calc", description="calc", args_model=_A,
+                   fn=lambda x: {"ok": True})
+
+    # Hermes-named model → chatml dialect.
+    a = LocalLlamaAdapter(model_path="/m/Hermes-3-Llama-3.1-8B.gguf")
+    kw = a.format_messages([{"role": "user", "content": "hi"}], [tool], "sys")
+    sys_text = next(m["content"] for m in kw["messages"] if m["role"] == "system")
+    assert "<tool_call>" in sys_text
+    assert "<tools>" in sys_text
+    assert "[TOOL_CALLS]" not in sys_text  # not forced into Mistral format
+
+    # Mistral-named model → mistral dialect.
+    b = LocalLlamaAdapter(model_path="/m/Mistral-Nemo-Instruct-2407.gguf")
+    kw = b.format_messages([{"role": "user", "content": "hi"}], [tool], "sys")
+    sys_text = next(m["content"] for m in kw["messages"] if m["role"] == "system")
+    assert "[TOOL_CALLS]" in sys_text
+    assert "<tool_call>" not in sys_text  # not forced into Hermes format
+
+
+def test_format_messages_gemma_injects_no_prose():
+    """Gemma works through structured tools= — the adapter must NOT
+    add prose for it (avoid perturbing a model that already routes)."""
+    from pydantic import BaseModel
+    from jaeger_os.agent.schemas.tool_schema import ToolDef
+
+    class _A(BaseModel):
+        x: int
+
+    tool = ToolDef(name="calc", description="calc", args_model=_A,
+                   fn=lambda x: {"ok": True})
+    a = LocalLlamaAdapter(model_path="/m/gemma-4-26B-A4B-it.gguf")
+    kw = a.format_messages([{"role": "user", "content": "hi"}], [tool], "sys")
+    sys_text = next(m["content"] for m in kw["messages"] if m["role"] == "system")
+    # System is just the original — no injected tool block.
+    assert "<tools>" not in sys_text
+    assert "[AVAILABLE_TOOLS]" not in sys_text
+    # But structured tools= is still passed (gemma's working channel).
+    assert "tools" in kw and kw["tools"]
+
+
+def test_format_messages_prose_family_drops_structured_tools():
+    """Prose families are driven entirely as TEXT — the structured
+    ``tools=`` param is dropped so the conversation never routes through
+    the model's fragile GGUF tool template (DeepSeek-R1 crashes on dict
+    args; Hermes builds strip the tool section). The catalogue is in the
+    system prose instead."""
+    from pydantic import BaseModel
+    from jaeger_os.agent.schemas.tool_schema import ToolDef
+
+    class _A(BaseModel):
+        x: int
+
+    tool = ToolDef(name="calc", description="calc", args_model=_A,
+                   fn=lambda x: {"ok": True})
+    a = LocalLlamaAdapter(model_path="/m/Hermes-3-Llama-3.1-8B.gguf")
+    kw = a.format_messages([{"role": "user", "content": "hi"}], [tool], "sys")
+    assert not kw.get("tools")  # structured channel dropped for prose families
+    sys_text = next(m["content"] for m in kw["messages"] if m["role"] == "system")
+    assert "<tools>" in sys_text  # catalogue lives in the prose instead
+
+
+def test_reasoning_model_gets_higher_stall_floor():
+    """A reasoning model legitimately thinks for minutes; the watchdog
+    floor is raised so it doesn't fire mid-think (which would corrupt
+    the KV cache → crash the next call). Verify a low caller timeout
+    is bumped to the reasoning floor."""
+    import threading
+    from unittest.mock import patch
+
+    fake = _FakeLlama(_mk_response("ok"))
+    a = LocalLlamaAdapter(llama=fake,
+                          model_path="/m/DeepSeek-R1-0528-Qwen3-8B.gguf")
+    captured: dict[str, Any] = {}
+    real = __import__("jaeger_os.agent.loop.interrupt",
+                      fromlist=["interruptible_call"]).interruptible_call
+
+    def _spy(fn, ev, **kw):
+        captured.update(kw)
+        return real(fn, ev, **kw)
+
+    with patch("jaeger_os.agent.adapters.openai.interruptible_call", _spy):
+        a.call({"model": "x", "messages": []}, threading.Event(),
+               stale_timeout=120.0)
+    assert captured["stale_timeout"] == 300.0, (
+        "reasoning model's 120s caller timeout should be raised to the "
+        "300s reasoning floor"
+    )
+
+
+def test_non_reasoning_model_keeps_caller_timeout():
+    """A plain model keeps whatever timeout the caller passed — the
+    floor only applies to reasoning models."""
+    import threading
+    from unittest.mock import patch
+
+    fake = _FakeLlama(_mk_response("ok"))
+    a = LocalLlamaAdapter(llama=fake, model_path="/m/Qwen3.5-9B.gguf")
+    captured: dict[str, Any] = {}
+    real = __import__("jaeger_os.agent.loop.interrupt",
+                      fromlist=["interruptible_call"]).interruptible_call
+
+    def _spy(fn, ev, **kw):
+        captured.update(kw)
+        return real(fn, ev, **kw)
+
+    with patch("jaeger_os.agent.adapters.openai.interruptible_call", _spy):
+        a.call({"model": "x", "messages": []}, threading.Event(),
+               stale_timeout=120.0)
+    assert captured["stale_timeout"] == 120.0
+
+
+def test_parse_response_strips_think_keeps_tool_call():
+    """A reasoning model emits <think>…</think> then a tool call. The
+    adapter must strip the think block but still surface the call."""
+    a = LocalLlamaAdapter(llama=_FakeLlama(_mk_response("x")))
+    raw = _mk_response(
+        '<think>I should check the time</think>\n'
+        '<tool_call>{"name": "get_time", "arguments": {}}</tool_call>'
+    )
+    msg = a.parse_response(raw)
+    # Think block gone from visible content.
+    assert "<think>" not in (msg.get("content") or "")
+    # Tool call salvaged.
+    names = [tc.get("name") for tc in (msg.get("tool_calls") or [])]
+    assert "get_time" in names
+
+
+def test_parse_response_strips_think_plain_answer():
+    """Reasoning then a plain answer — visible content is just the
+    answer, not the monologue."""
+    a = LocalLlamaAdapter(llama=_FakeLlama(_mk_response("x")))
+    raw = _mk_response("<think>deliberating at length</think>It is 5pm.")
+    msg = a.parse_response(raw)
+    assert msg.get("content") == "It is 5pm."
+
+
+def test_facade_coerces_none_content_to_empty_string():
+    """A pure tool-call assistant turn carries ``content=None`` (OpenAI
+    wire shape). Many GGUF templates render content with an unguarded
+    ``'</think>' in content`` and crash on None (DeepSeek-R1). The
+    in-process facade must feed the template ``""`` instead. We send a
+    history with a None-content assistant turn and assert what reaches
+    ``create_chat_completion``."""
+    fake = _FakeLlama(_mk_response("ok"))
+    a = LocalLlamaAdapter(llama=fake)
+    history = [
+        {"role": "user", "content": "what time is it"},
+        {"role": "assistant", "content": None,
+         "tool_calls": [{"id": "x", "type": "function",
+                         "function": {"name": "get_time", "arguments": "{}"}}]},
+        {"role": "tool", "content": "12:00", "tool_call_id": "x"},
+    ]
+    a.call({"model": "x", "messages": history}, threading.Event())
+    sent = fake.last_kwargs["messages"]
+    assistant = next(m for m in sent if m.get("role") == "assistant")
+    assert assistant["content"] == "", "None content must become empty string"
+    # Non-None content is untouched.
+    assert all(
+        m["content"] is not None for m in sent if "content" in m
+    )
+
+
+def test_parse_response_salvages_bare_json_tool_call():
+    """DeepSeek-R1 / Qwen / Llama emit tool calls as BARE JSON with no
+    envelope: ``{"name": ..., "arguments": ...}``. The old guard
+    (``if "<" not in text: return``) skipped the parser for these, so
+    the JSON leaked out as a plain-text answer (the 2026-05-28
+    DeepSeek-R1 0% flatline). Verify the parser now runs + the call
+    is salvaged + the content is nulled."""
+    a = LocalLlamaAdapter(llama=_FakeLlama(_mk_response("x")))
+    raw = _mk_response(
+        '{"name": "get_time", "arguments": {"timezone": "Asia/Shanghai"}}'
+    )
+    msg = a.parse_response(raw)
+    names = [tc.get("name") for tc in (msg.get("tool_calls") or [])]
+    assert "get_time" in names, "bare-JSON tool call must be salvaged"
+    # The raw JSON must NOT surface as the visible answer.
+    assert not (msg.get("content") or "").strip().startswith("{")
+
+
+def test_parse_response_bare_json_after_think():
+    """Reasoning model: <think> … </think> then a bare-JSON call.
+    Strip think AND salvage the bare JSON."""
+    a = LocalLlamaAdapter(llama=_FakeLlama(_mk_response("x")))
+    raw = _mk_response(
+        '<think>shanghai is UTC+8</think>\n'
+        '{"name": "get_time", "arguments": {"timezone": "Asia/Shanghai"}}'
+    )
+    msg = a.parse_response(raw)
+    names = [tc.get("name") for tc in (msg.get("tool_calls") or [])]
+    assert "get_time" in names
+
+
+def test_parse_response_plain_text_no_false_tool_call():
+    """A genuine plain-text answer with no JSON/envelope must NOT be
+    misread as a tool call (guard against over-eager salvage)."""
+    a = LocalLlamaAdapter(llama=_FakeLlama(_mk_response("x")))
+    msg = a.parse_response(_mk_response("It is 5pm in Shanghai."))
+    assert not (msg.get("tool_calls") or [])
+    assert msg.get("content") == "It is 5pm in Shanghai."
+
+
 def test_call_dispatches_to_llama_with_strip_http_kwargs():
     """``api_key`` / ``base_url`` / ``timeout`` make no sense in-process
     — the facade must strip them before handing kwargs to llama-cpp."""

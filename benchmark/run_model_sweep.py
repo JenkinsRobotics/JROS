@@ -177,6 +177,31 @@ def _write_model_path(text: str, new_model_path: str) -> str:
 # ── run one model ──────────────────────────────────────────────────
 
 
+_HYBRID_FAMILY_TOKENS = ("qwen3", "gemma-4", "gemma4")
+# Names that LOOK like the hybrid families but aren't (the sanity sweep
+# verified these emit no ``enable_thinking`` toggle in their template):
+#   * ``deepseek`` — DeepSeek-R1 is *distilled from* Qwen3 but always
+#     reasons; no toggle.
+#   * ``coder`` — Qwen3-Coder is a coder fine-tune; no toggle.
+#   * ``reasoning`` / ``deephermes`` — explicit always-reasoning models.
+_HYBRID_FALSE_POSITIVES = ("deepseek", "coder", "reasoning", "deephermes")
+
+
+def _is_hybrid_by_name(stem: str) -> bool:
+    """Best-effort 'is this a hybrid thinking model' check from the
+    filename stem. Qwen3.x and gemma-4 expose ``enable_thinking`` in
+    their chat templates; everything else doesn't. Used to decide
+    whether the sweep runs one mode (default) or two (think + direct).
+    If the heuristic gets it wrong (declares hybrid when not), the
+    runtime check in :class:`LocalLlamaAdapter` makes the toggle a
+    no-op anyway — worst case is a duplicated subprocess, never a
+    behaviour change."""
+    low = stem.lower()
+    if any(bad in low for bad in _HYBRID_FALSE_POSITIVES):
+        return False
+    return any(tok in low for tok in _HYBRID_FAMILY_TOKENS)
+
+
 def _human_name(path: str) -> str:
     """Short label for the report — last component minus the .gguf."""
     return pathlib.Path(path).stem
@@ -284,6 +309,18 @@ def run_one(model_path: str, *, level: int) -> ModelResult:
         if _limit and _limit != "0":
             extra_args.extend(["--limit", _limit])
         started = time.perf_counter()
+        # Per-model wall-clock cap. Default 60 min — Qwen3.6-35B-A3B and
+        # similarly-heavy 30B+ MoEs regularly land in the 35-45 min range
+        # on this hardware for the 51-case corpus, and speak_file /
+        # web_news outliers add ~50-100s each. Overridable via
+        # ``JAEGER_BENCH_MODEL_TIMEOUT`` (seconds) — a big unattended
+        # sweep over many models lowers it so one slow/stalling model
+        # can't eat an hour and starve the rest of the queue.
+        try:
+            _model_timeout = float(os.environ.get(
+                "JAEGER_BENCH_MODEL_TIMEOUT", "") or 3600)
+        except ValueError:
+            _model_timeout = 3600.0
         proc = subprocess.run(
             [sys.executable, str(REPO / "benchmark" / "run_flat_bench.py"),
              "--no-warmup", *extra_args],
@@ -292,15 +329,7 @@ def run_one(model_path: str, *, level: int) -> ModelResult:
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
-            # 60 min cap per model. Was 40 min, but Qwen3.6-35B-A3B
-            # (and similarly-heavy 30B+ MoEs) regularly land in the
-            # 35-45 minute range on this hardware for the 51-case
-            # corpus, hitting the old cap with no headroom. 60 min
-            # accommodates speak_file / web_news outliers (~50-100s
-            # each on Qwen) without false-positive timeouts on the
-            # bigger models. Smaller models still finish in <10 min;
-            # the larger ceiling is wasted on them but harmless.
-            timeout=3600,
+            timeout=_model_timeout,
         )
         wall = time.perf_counter() - started
     except subprocess.TimeoutExpired as exc:
@@ -501,14 +530,43 @@ def main() -> int:
               file=sys.stderr)
         return 2
 
-    print(f"Sweeping {len(paths)} model(s) over the flat bench corpus",
+    # Hybrid-thinking models (Qwen3.x, gemma-4) expose an
+    # ``enable_thinking`` knob in their chat template — same idea as
+    # Claude's / GPT-o1's ``thinking`` flag. The sweep runs them
+    # TWICE (once with thinking ON, once OFF) so the leaderboard can
+    # show the deep-think vs direct-mode tradeoff side-by-side; the
+    # toggle is otherwise a no-op (the LocalLlamaAdapter only flips it
+    # for models whose template actually has the knob). Set
+    # ``JAEGER_BENCH_THINKING=auto``/``on``/``off`` to override.
+    forced_mode = (os.environ.get("JAEGER_BENCH_THINKING") or "").strip().lower()
+    plan: list[tuple[str, str]] = []   # (model_path, thinking_mode)
+    for p in paths:
+        if forced_mode in ("on", "off", "true", "false", "1", "0"):
+            plan.append((p, forced_mode))           # explicit override
+        elif _is_hybrid_by_name(pathlib.Path(p).stem):
+            plan.append((p, "on"))
+            plan.append((p, "off"))                  # both modes
+        else:
+            plan.append((p, "auto"))                 # model default
+
+    n_models = len({p for p, _ in plan})
+    print(f"Sweeping {n_models} model(s) → {len(plan)} run(s) over the "
+          f"flat bench corpus (hybrid models run think-ON + think-OFF)",
           flush=True)
     results: list[ModelResult] = []
-    for p in paths:
+    for p, mode in plan:
+        # Set the per-run env for this subprocess only — JAEGER_BENCH_THINKING
+        # is read by run_flat_bench's adapter wiring + stamped into the
+        # summary so the leaderboard groups by (model, mode).
+        if mode == "auto":
+            os.environ.pop("JAEGER_BENCH_THINKING", None)
+        else:
+            os.environ["JAEGER_BENCH_THINKING"] = mode
         results.append(run_one(p, level=args.level))
         # Write incremental progress so a crash mid-sweep doesn't lose
         # the partial results.
         _write_jsonl([results[-1]], out_dir=SWEEP_DIR)
+    os.environ.pop("JAEGER_BENCH_THINKING", None)
 
     _write_report(results, level=args.level, out_dir=SWEEP_DIR)
 

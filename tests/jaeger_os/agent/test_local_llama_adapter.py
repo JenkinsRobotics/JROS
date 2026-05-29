@@ -59,6 +59,38 @@ def _mk_response(
 # ── construction ───────────────────────────────────────────────────
 
 
+class _HybridLlama:
+    """Duck-types both ``create_chat_completion`` AND
+    ``create_completion`` (the lower-level path the thinking toggle
+    routes to) + exposes a chat template with ``enable_thinking`` in
+    metadata, so the adapter detects this fake as a hybrid model."""
+
+    _HYBRID_TEMPLATE = (
+        "{%- if add_generation_prompt %}{{- 'BOS' }}{%- endif %}"
+        "{%- for m in messages %}{{- '|' + m.role + ':' + (m.content or '') }}"
+        "{%- endfor %}"
+        "{%- if enable_thinking is defined and not enable_thinking %}"
+        "{{- '|NOTHINK' }}{%- else %}{{- '|THINK' }}{%- endif %}"
+    )
+
+    def __init__(self) -> None:
+        self.last_chat_kwargs: dict[str, Any] | None = None
+        self.last_completion_kwargs: dict[str, Any] | None = None
+        self.metadata = {"tokenizer.chat_template": self._HYBRID_TEMPLATE}
+
+    def create_chat_completion(self, **kwargs: Any) -> Any:
+        self.last_chat_kwargs = kwargs
+        return _mk_response("structured-path")
+
+    def create_completion(self, **kwargs: Any) -> Any:
+        self.last_completion_kwargs = kwargs
+        return {
+            "id": "x", "model": "fake",
+            "choices": [{"text": "direct-path", "finish_reason": "stop"}],
+            "usage": {"prompt_tokens": 0, "completion_tokens": 1},
+        }
+
+
 def test_constructor_requires_path_or_pre_loaded_llama():
     """Calling ``call()`` without either is the failure point — but
     construction is allowed so callers can build the adapter lazily."""
@@ -162,6 +194,72 @@ def test_format_messages_prose_family_drops_structured_tools():
     assert not kw.get("tools")  # structured channel dropped for prose families
     sys_text = next(m["content"] for m in kw["messages"] if m["role"] == "system")
     assert "<tools>" in sys_text  # catalogue lives in the prose instead
+
+
+def test_enable_thinking_none_preserves_default_path():
+    """Default ``enable_thinking=None`` must NOT touch the structured
+    chat-completion path — same behaviour as before the toggle landed.
+    Critical: the in-flight benchmark depends on this guarantee."""
+    fake = _HybridLlama()
+    a = LocalLlamaAdapter(llama=fake)  # enable_thinking defaults to None
+    kw = a.format_messages([{"role": "user", "content": "hi"}], [], "sys")
+    assert "_thinking_prompt" not in kw
+    a.call(kw, threading.Event())
+    assert fake.last_chat_kwargs is not None
+    assert fake.last_completion_kwargs is None
+
+
+def test_enable_thinking_false_routes_through_manual_render():
+    """A hybrid model with ``enable_thinking=False`` must bypass
+    ``create_chat_completion`` and call ``create_completion`` on a
+    template-rendered prompt that carries the flag — that's the only
+    way to take Qwen3.x / gemma-4 out of reasoning mode (the chat API
+    won't take the kwarg)."""
+    fake = _HybridLlama()
+    a = LocalLlamaAdapter(llama=fake, enable_thinking=False)
+    kw = a.format_messages([{"role": "user", "content": "hi"}], [], "sys")
+    assert "_thinking_prompt" in kw, "format_messages must stash the rendered prompt"
+    assert "NOTHINK" in kw["_thinking_prompt"]
+    a.call(kw, threading.Event())
+    assert fake.last_completion_kwargs is not None, "must use create_completion"
+    assert fake.last_chat_kwargs is None, "structured path must NOT also fire"
+
+
+def test_enable_thinking_true_renders_with_think_flag():
+    """For symmetry: forcing ``enable_thinking=True`` also takes the
+    manual-render path so think-ON and think-OFF runs use the SAME
+    code path and are directly comparable in the bench."""
+    fake = _HybridLlama()
+    a = LocalLlamaAdapter(llama=fake, enable_thinking=True)
+    kw = a.format_messages([{"role": "user", "content": "hi"}], [], "sys")
+    assert "_thinking_prompt" in kw
+    assert "THINK" in kw["_thinking_prompt"]
+    assert "NOTHINK" not in kw["_thinking_prompt"]
+
+
+def test_enable_thinking_no_op_on_non_hybrid_model():
+    """A non-hybrid model (template has no ``enable_thinking``) ignores
+    the toggle — the structured path runs unchanged. Safety net for
+    always-reasoning models (DeepSeek-R1) and plain models (gemma-3)."""
+    fake = _FakeLlama(_mk_response("ok"))   # no metadata → non-hybrid
+    a = LocalLlamaAdapter(llama=fake, enable_thinking=False)
+    kw = a.format_messages([{"role": "user", "content": "hi"}], [], "sys")
+    assert "_thinking_prompt" not in kw, (
+        "non-hybrid model: thinking toggle must be a no-op"
+    )
+
+
+def test_thinking_path_response_is_chat_shaped_for_parse_response():
+    """The manual-render path uses ``create_completion`` whose response
+    is text-shaped. The facade must wrap it into the chat-completion
+    shape so ``OpenAIAdapter.parse_response`` decodes it unchanged —
+    otherwise the agent loop crashes on the missing ``message`` field."""
+    fake = _HybridLlama()
+    a = LocalLlamaAdapter(llama=fake, enable_thinking=False)
+    kw = a.format_messages([{"role": "user", "content": "hi"}], [], "sys")
+    raw = a.call(kw, threading.Event())
+    assert raw["choices"][0]["message"]["role"] == "assistant"
+    assert raw["choices"][0]["message"]["content"] == "direct-path"
 
 
 def test_reasoning_model_gets_higher_stall_floor():

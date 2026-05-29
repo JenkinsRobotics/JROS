@@ -22,7 +22,11 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Callable
 
-from jaeger_os.core.runtime.process_slot import acquire_slot, existing_slot_pid
+from jaeger_os.core.runtime.process_slot import (
+    acquire_slot,
+    acquire_slot_exclusive,
+    existing_slot_pid,
+)
 
 
 _SLOT = "tray"
@@ -35,10 +39,17 @@ def existing_tray_pid(run_dir: Path) -> int | None:
 
 
 def acquire_tray_slot(run_dir: Path) -> Callable[[], None]:
-    """Claim the tray slot for this process. See
-    :func:`jaeger_os.core.runtime.process_slot.acquire_slot` for the
-    full contract."""
+    """Claim the tray slot for this process (non-atomic). See
+    :func:`jaeger_os.core.runtime.process_slot.acquire_slot`."""
     return acquire_slot(run_dir, _SLOT)
 
 
-__all__ = ["acquire_tray_slot", "existing_tray_pid"]
+def claim_tray_slot(run_dir: Path) -> tuple[bool, int | None, Callable[[], None]]:
+    """Atomically claim the single tray slot. Returns
+    ``(acquired, owner_pid, cleanup)``. The ONLY race-free gate under
+    concurrent launches — exactly one process wins; the rest must exit
+    without drawing an icon. See :func:`acquire_slot_exclusive`."""
+    return acquire_slot_exclusive(run_dir, _SLOT)
+
+
+__all__ = ["acquire_tray_slot", "claim_tray_slot", "existing_tray_pid"]

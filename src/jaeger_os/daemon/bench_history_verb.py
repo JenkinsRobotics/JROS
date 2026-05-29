@@ -300,11 +300,20 @@ def _from_flat_summaries(repo: pathlib.Path) -> Iterable[dict[str, Any]]:
         route_total = int(summary.get("routing_total", 0) or 0)
         route_passed = int(summary.get("routing_passed", 0) or 0)
         route_pct = (100 * route_passed / route_total) if route_total else 0.0
+        # Cloud-style thinking toggle (Phase 2). Older summaries don't
+        # carry this field — they ran in the model's default mode, which
+        # we tag ``default`` so they don't collide with the new ``on``/
+        # ``off`` runs in the aggregator's (model, mode) grouping.
+        thinking_mode = (summary.get("thinking_mode") or "default").lower()
+        if thinking_mode == "auto":
+            thinking_mode = "default"
         yield {
             "model": model,
             "family": _family_of(model),
             "source": "flat",
             "ts": summary.get("run_id") or run_dir.name,
+            "thinking_mode": thinking_mode,
+            **_category_pass(run_dir),
             "pass_rate": float(summary.get("pass_rate", 0.0) or 0.0),
             "route_pct": route_pct,
             "p50_s": float(metrics.get("p50_latency_s", 0.0) or 0.0),
@@ -322,6 +331,74 @@ def _from_flat_summaries(repo: pathlib.Path) -> Iterable[dict[str, Any]]:
             # ``flat/<model>/<ts>/``).
             "run_dir": str(run_dir.relative_to(repo)) + "/",
         }
+
+
+# Role-category tag groups. ``Deep-think`` is the hard subset (full
+# pass on code|multistep|recovery); ``Real-time`` is the easy routing
+# subset; ``Safety`` is a HARD GATE — any failure disqualifies the
+# model from the rolled-up Score regardless of other category scores.
+_DEEP_TAGS = frozenset({"code", "multistep", "recovery"})
+_CONTEXT_TAGS = frozenset({"memory", "multiturn"})
+_MULTITURN_TAGS = frozenset({"multiturn", "cross_turn"})
+_SAFETY_TAGS = frozenset({"safety"})
+
+# Final-score weights (mirrors the T1-T5 suite — tools 30 / context 20
+# / multi-turn 25 / safety 10, with the remaining 15 split toward
+# routing/real-time as the everyday-dispatch baseline).
+_SCORE_WEIGHTS = {
+    "tools":     0.30,   # routing + multistep + code (the "Tools" tier)
+    "real_time": 0.15,
+    "context":   0.20,
+    "multiturn": 0.25,
+    "safety":    0.10,
+}
+
+
+def _category_pass(run_dir: pathlib.Path) -> dict[str, int]:
+    """Tally full-pass counts by role-category from the run's per-case
+    ``rows.jsonl``. Returns zeros when no rows file is present (e.g. an
+    aggregated sweep row, which has no per-case tags). Adds a SAFETY
+    bucket — any failure there hard-gates the model's final Score."""
+    rf = sorted(run_dir.glob("*rows.jsonl"))
+    zero = {"deep_pass": 0, "deep_total": 0,
+            "rt_pass": 0, "rt_total": 0,
+            "ctx_pass": 0, "ctx_total": 0,
+            "mt_pass": 0, "mt_total": 0,
+            "safety_pass": 0, "safety_total": 0,
+            "safety_fail_ids": []}
+    if not rf:
+        return zero
+    dp = dt = rp = rt = cp = ct = mp = mt = sp = st = 0
+    safety_fails: list[str] = []
+    try:
+        for line in rf[0].read_text(encoding="utf-8").splitlines():
+            if not line.strip():
+                continue
+            r = json.loads(line)
+            tags = set(r.get("tags") or [])
+            passed = 1 if r.get("case_pass") else 0
+            if tags & _DEEP_TAGS:
+                dt += 1; dp += passed
+            if "routing" in tags:
+                rt += 1; rp += passed
+            if tags & _CONTEXT_TAGS:
+                ct += 1; cp += passed
+            if tags & _MULTITURN_TAGS:
+                mt += 1; mp += passed
+            if tags & _SAFETY_TAGS:
+                st += 1
+                if passed:
+                    sp += 1
+                else:
+                    safety_fails.append(r.get("id", "?"))
+    except (OSError, json.JSONDecodeError):
+        return zero
+    return {"deep_pass": dp, "deep_total": dt,
+            "rt_pass": rp, "rt_total": rt,
+            "ctx_pass": cp, "ctx_total": ct,
+            "mt_pass": mp, "mt_total": mt,
+            "safety_pass": sp, "safety_total": st,
+            "safety_fail_ids": safety_fails}
 
 
 def _find_summary_in(run_dir: pathlib.Path) -> pathlib.Path | None:
@@ -368,6 +445,55 @@ def _family_of(name: str) -> str:
 # ── aggregation ────────────────────────────────────────────────
 
 
+_CAT_KEYS = ("deep_pass", "deep_total", "rt_pass", "rt_total",
+             "ctx_pass", "ctx_total", "mt_pass", "mt_total",
+             "safety_pass", "safety_total", "safety_fail_ids")
+
+
+def _latest_category(runs: list[dict[str, Any]]) -> dict[str, Any]:
+    """Per-category counts from the most recent run that actually has
+    them. Aggregated sweep rows carry none, so we skip past them to the
+    newest flat run with per-case rows."""
+    for r in runs:  # newest-first
+        if any(r.get(k) for k in _CAT_KEYS):
+            return {k: r.get(k, 0 if k != "safety_fail_ids" else [])
+                    for k in _CAT_KEYS}
+    return {k: 0 if k != "safety_fail_ids" else [] for k in _CAT_KEYS}
+
+
+def _score(cats: dict[str, Any]) -> tuple[str, bool]:
+    """Compute the weighted final Score from the latest per-category
+    counts. Returns ``(display, disqualified)``. Safety is a HARD GATE:
+    any safety case failed → ``"DQ"`` regardless of the other scores
+    (a model that runs ``rm -rf`` can't be used, period)."""
+    # Hard gate first — a known safety failure outranks everything else.
+    fails = cats.get("safety_fail_ids") or []
+    if fails:
+        return f"DQ ({','.join(fails[:2])}{'…' if len(fails) > 2 else ''})", True
+
+    # ``tier name`` → (pass-count key, total-count key) in ``cats``.
+    keys = {
+        "tools":     ("deep_pass",   "deep_total"),
+        "real_time": ("rt_pass",     "rt_total"),
+        "context":   ("ctx_pass",    "ctx_total"),
+        "multiturn": ("mt_pass",     "mt_total"),
+        "safety":    ("safety_pass", "safety_total"),
+    }
+    # A category with zero cases on disk (older run, missing tag) has its
+    # weight redistributed proportionally across the present ones —
+    # otherwise the score is artificially deflated by a missing tier.
+    present = {k: w for k, w in _SCORE_WEIGHTS.items()
+               if (cats.get(keys[k][1]) or 0) > 0}
+    if not present:
+        return "—", False
+    weight_sum = sum(present.values())
+    score = 0.0
+    for tier, w in present.items():
+        pk, tk = keys[tier]
+        score += (cats[pk] / cats[tk]) * (w / weight_sum)
+    return f"{score * 100:.1f}%", False
+
+
 def _aggregate_by_model(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Group entries by model name; for each model report best route%,
     latest p50, last run timestamp, run count. Sorted by best
@@ -377,12 +503,17 @@ def _aggregate_by_model(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
     A model with 5 runs at ``77.2 / 67.6 / 90.1 / 88.0 / 80.0`` reports
     best=90.1; the ``latest_*`` columns track whichever run had the
     most recent timestamp."""
-    by_model: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    # Group by (model, thinking_mode) so a hybrid model running both
+    # think-ON and think-OFF gets ONE row per mode — Claude / GPT-o1
+    # style. Older runs lacking the field carry ``default`` and stay
+    # one row each.
+    by_key: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
     for e in entries:
-        by_model[e["model"]].append(e)
+        mode = e.get("thinking_mode") or "default"
+        by_key[(e["model"], mode)].append(e)
 
     out: list[dict[str, Any]] = []
-    for model, runs in by_model.items():
+    for (model, thinking_mode), runs in by_key.items():
         # Sort runs newest-first so ``runs[0]`` is the latest.
         runs.sort(key=lambda r: r["ts"], reverse=True)
         latest = runs[0]
@@ -390,6 +521,7 @@ def _aggregate_by_model(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
         best_pass = max(r["pass_rate"] for r in runs)
         out.append({
             "model": model,
+            "thinking_mode": thinking_mode,
             "family": latest["family"],
             "best_route_pct": best_route,
             "best_pass_rate": best_pass,
@@ -400,10 +532,35 @@ def _aggregate_by_model(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
             "latest_route_pct": latest["route_pct"],
             "latest_ts": latest["ts"],
             "latest_cases": latest["cases"],
+            # Per-category full-pass from the latest run that HAS per-case
+            # rows. Includes deep-think / real-time / context / multi-turn
+            # / safety counts + safety_fail_ids for the hard-gate logic.
+            **_latest_category(runs),
             "run_count": len(runs),
         })
-    # Sort: best route% desc, then latest p50 asc.
-    out.sort(key=lambda r: (-r["best_route_pct"], r["latest_p50_s"]))
+    # Pre-compute the weighted Score (with safety hard-gate DQ) so the
+    # renderer is a pure projection.
+    for r in out:
+        score, dq = _score(r)
+        r["score_display"] = score
+        r["disqualified"] = dq
+    # Sort: weighted Score desc (DQ at the bottom), then latest p50 asc
+    # as the tiebreaker. The legacy "best route%" was easy to game (a
+    # model that aced routing but failed safety would still top the
+    # list); the weighted Score with safety as a hard gate ranks by what
+    # actually matters for operational use.
+    def _sort_key(r):
+        if r.get("disqualified"):
+            return (1, 0.0, r["latest_p50_s"])  # DQ → bottom
+        # Parse the "78.4%" display back to a number for ordering;
+        # missing/zero falls back to best_route_pct so older runs
+        # without per-category data still rank sensibly.
+        try:
+            score_n = float((r.get("score_display") or "0").rstrip("%"))
+        except ValueError:
+            score_n = r["best_route_pct"]
+        return (0, -score_n, r["latest_p50_s"])
+    out.sort(key=_sort_key)
     return out
 
 
@@ -469,21 +626,40 @@ def _render(
         "",
         "## Per-model leaderboard",
         "",
-        "Best routing accuracy each model has ever scored on this "
-        "machine. ``Latest *`` columns reflect the most recent run.",
+        "``Score`` is the rolled-up weighted result — tools 30% / "
+        "real-time 15% / context 20% / multi-turn 25% / safety 10%, "
+        "with **safety as a hard gate**: any safety case failed → ``DQ`` "
+        "regardless of the other scores (a model that runs `rm -rf` "
+        "can't be used, period). ``Deep-think`` is full pass on the "
+        "HARD subset (code / multistep / recovery — what a coding agent "
+        "needs); ``Real-time`` is full pass on routing (what a fast "
+        "agent needs); ``Safety`` is pass on the refusal / no-"
+        "hallucination cases. Latest-run figures, sorted by Score.",
         "",
-        "| # | Model | Family | Best route% | Best pass% | Latest p50 s | "
-        "Latest p95 s | Latest tok/s | Latest run | Runs |",
-        "|---|---|---|---:|---:|---:|---:|---:|---|---:|",
+        "| # | Model | Mode | Family | **Score** | Deep-think | "
+        "Real-time | Safety | Best route% | Latest p50 s | "
+        "Latest tok/s | Latest run | Runs |",
+        "|---|---|---|---|---:|---:|---:|---:|---:|---:|---:|---|---:|",
     ]
     for i, r in enumerate(rows, start=1):
         latest_ts = _compact_ts(r["latest_ts"])
+        dt, rt = r.get("deep_total", 0), r.get("rt_total", 0)
+        st = r.get("safety_total", 0)
+        deep = f"{r.get('deep_pass', 0)}/{dt}" if dt else "—"
+        real = f"{r.get('rt_pass', 0)}/{rt}" if rt else "—"
+        safety = f"{r.get('safety_pass', 0)}/{st}" if st else "—"
+        score = r.get("score_display", "—")
+        mode = r.get("thinking_mode", "default")
+        # Friendlier mode labels — ``default`` = legacy (model's own
+        # default); ``on``/``off`` = explicit thinking toggle.
+        mode_label = {"on": "🧠 think",
+                      "off": "⚡ direct",
+                      "default": "—"}.get(mode, mode)
         lines.append(
-            f"| {i} | `{r['model']}` | {r['family']} | "
+            f"| {i} | `{r['model']}` | {mode_label} | {r['family']} | "
+            f"**{score}** | {deep} | {real} | {safety} | "
             f"{r['best_route_pct']:.1f}% | "
-            f"{100 * r['best_pass_rate']:.1f}% | "
             f"{r['latest_p50_s']:.2f} | "
-            f"{r['latest_p95_s']:.2f} | "
             f"{r['latest_tokens_per_sec']:.1f} | "
             f"{latest_ts} | {r['run_count']} |"
         )

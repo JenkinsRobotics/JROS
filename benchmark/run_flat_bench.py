@@ -114,6 +114,14 @@ def main() -> int:
         pass
     ts = time.strftime("%Y%m%d-%H%M%S")
     summary["run_id"] = ts
+    # Record which thinking mode the model ran in (Phase 2 of the cloud-
+    # style ``thinking`` toggle). The leaderboard groups runs by
+    # (model, thinking_mode) so a hybrid model's think-vs-direct
+    # tradeoff is visible side-by-side. ``auto`` = the model's default
+    # mode (unchanged behaviour, matches all historical runs).
+    summary["thinking_mode"] = (
+        os.environ.get("JAEGER_BENCH_THINKING") or "auto"
+    ).strip().lower() or "auto"
 
     # Per-model nesting under benchmark/flat/<model>/<ts>/. Each
     # artifact ALSO carries ``<model>-<ts>`` in its filename — so a

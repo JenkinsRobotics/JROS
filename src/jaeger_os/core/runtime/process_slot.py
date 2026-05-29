@@ -78,6 +78,24 @@ def existing_slot_pid(run_dir: Path, slot_name: str) -> int | None:
     return None
 
 
+def _make_cleanup(pid_file: Path) -> Callable[[], None]:
+    """Build the atexit cleanup: remove the PID file only if WE still
+    own it (a concurrent reclaim by another process must not be
+    clobbered by our cleanup)."""
+    owner = os.getpid()
+
+    def _cleanup() -> None:
+        try:
+            if pid_file.is_file():
+                recorded = int(pid_file.read_text(encoding="utf-8").strip())
+                if recorded == owner:
+                    pid_file.unlink()
+        except (ValueError, OSError):
+            pass
+
+    return _cleanup
+
+
 def acquire_slot(run_dir: Path, slot_name: str) -> Callable[[], None]:
     """Claim the slot for this process. Writes the PID file and
     registers an ``atexit`` cleanup. Returns the cleanup callable so
@@ -86,9 +104,11 @@ def acquire_slot(run_dir: Path, slot_name: str) -> Callable[[], None]:
     Idempotent: re-calling overwrites the PID with this process's
     own PID, which is fine — the slot is ours either way.
 
-    Caller MUST decide what to do when the slot is already taken —
-    this function just claims it. Use :func:`existing_slot_pid` to
-    check first."""
+    NOTE: this is the non-atomic claim — it always succeeds and just
+    writes our PID. It has a TOCTOU race when paired with a separate
+    :func:`existing_slot_pid` check under CONCURRENT launches (all
+    racers read "free", all write, all run). For a hard "only one
+    wins" guarantee use :func:`acquire_slot_exclusive` instead."""
     run_dir.mkdir(parents=True, exist_ok=True)
     pid_file = _slot_path(run_dir, slot_name)
     try:
@@ -98,19 +118,73 @@ def acquire_slot(run_dir: Path, slot_name: str) -> Callable[[], None]:
             pass
         return _noop
 
-    def _cleanup() -> None:
+    cleanup = _make_cleanup(pid_file)
+    atexit.register(cleanup)
+    return cleanup
+
+
+def acquire_slot_exclusive(
+    run_dir: Path, slot_name: str
+) -> tuple[bool, int | None, Callable[[], None]]:
+    """Atomically claim the slot. Returns ``(acquired, owner_pid, cleanup)``.
+
+    Unlike :func:`acquire_slot`, this folds the check AND the claim into
+    a single atomic operation via ``O_CREAT | O_EXCL`` — the filesystem
+    guarantees exactly ONE creator wins, even when N processes race to
+    launch at the same instant. This is the fix for the menu-bar tray
+    pile-up: a dozen ``jaeger start`` / ``restart`` calls could each
+    fire a tray, all pass a non-atomic check, and all draw an icon.
+
+    Returns:
+      * ``acquired=True``  → we own the slot; ``cleanup`` drops the PID
+        file at exit (already registered via atexit).
+      * ``acquired=False`` → someone else owns it; ``owner_pid`` is the
+        live holder (or ``None`` on a filesystem error). Caller should
+        exit WITHOUT creating its UI.
+
+    A stale PID file (dead owner) is reclaimed transparently; concurrent
+    reclaim attempts are themselves arbitrated by the exclusive create,
+    so the race can't reopen.
+    """
+    run_dir.mkdir(parents=True, exist_ok=True)
+    pid_file = _slot_path(run_dir, slot_name)
+    me = os.getpid()
+
+    def _noop() -> None:
+        pass
+
+    for _ in range(5):  # bounded retries for stale-file reclaim races
         try:
-            # Only remove if we still own it — a concurrent reclaim
-            # by another process shouldn't be clobbered by our cleanup.
-            if pid_file.is_file():
+            fd = os.open(pid_file, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+        except FileExistsError:
+            # Slot file already present — live owner, or a stale leftover?
+            try:
                 recorded = int(pid_file.read_text(encoding="utf-8").strip())
-                if recorded == os.getpid():
-                    pid_file.unlink()
-        except (ValueError, OSError):
-            pass
+            except (ValueError, OSError):
+                recorded = -1
+            if recorded == me:
+                return True, me, _make_cleanup(pid_file)
+            if _pid_alive(recorded):
+                return False, recorded, _noop  # genuinely taken
+            # Stale (owner gone / garbage) → drop it and retry the
+            # exclusive create. If another racer unlinks + recreates
+            # first, our next O_EXCL fails and we read THEIR live pid.
+            try:
+                pid_file.unlink()
+            except OSError:
+                pass
+            continue
+        except OSError:
+            return False, None, _noop  # filesystem error → fail closed
+        else:
+            try:
+                os.write(fd, str(me).encode("utf-8"))
+            finally:
+                os.close(fd)
+            cleanup = _make_cleanup(pid_file)
+            atexit.register(cleanup)
+            return True, me, cleanup
+    return False, None, _noop
 
-    atexit.register(_cleanup)
-    return _cleanup
 
-
-__all__ = ["acquire_slot", "existing_slot_pid"]
+__all__ = ["acquire_slot", "acquire_slot_exclusive", "existing_slot_pid"]

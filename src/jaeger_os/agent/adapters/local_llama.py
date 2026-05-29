@@ -116,6 +116,17 @@ class _LlamaChatFacade:
         # ride OpenAI's HTTP envelope and have no in-process equivalent.
         for hostonly in ("api_key", "base_url", "extra_headers", "timeout"):
             kwargs.pop(hostonly, None)
+        # If the adapter pre-rendered the chat template with an explicit
+        # ``enable_thinking`` (the cloud-style think ON/OFF toggle —
+        # ``create_chat_completion`` won't take that as a kwarg), it
+        # stashes the rendered prompt here. We branch to the lower-level
+        # ``create_completion`` and wrap the raw text back into the
+        # chat-completion shape so :meth:`OpenAIAdapter.parse_response`
+        # is none the wiser. Drift parser still catches text-emitted
+        # tool calls. Falls through to the normal path otherwise.
+        manual_prompt = kwargs.pop("_thinking_prompt", None)
+        if manual_prompt is not None:
+            return self._create_with_rendered_prompt(manual_prompt, kwargs)
         msgs = kwargs.get("messages")
         if isinstance(msgs, list):
             kwargs["messages"] = [
@@ -152,6 +163,59 @@ class _LlamaChatFacade:
                 [_abort_proc]
             )
         return self._llama.create_chat_completion(**kwargs)
+
+    def _create_with_rendered_prompt(self, prompt: str, kwargs: dict) -> Any:
+        """Lower-level path used when the adapter has pre-rendered the
+        chat template (e.g. with ``enable_thinking=False`` to take the
+        model out of its reasoning mode). Forwards only the kwargs that
+        :meth:`Llama.create_completion` accepts, then re-shapes the raw
+        text response into the chat-completion dict the parent's
+        ``parse_response`` expects."""
+        # Re-attach the abort flag's logits_processor (same cooperative-
+        # cancellation contract as the structured path).
+        if self._abort_flag is not None and "logits_processor" not in kwargs:
+            import llama_cpp
+            flag = self._abort_flag
+
+            def _abort_proc(input_ids: Any, scores: Any) -> Any:
+                if flag.is_set():
+                    raise _AbortGeneration()
+                return scores
+
+            kwargs["logits_processor"] = llama_cpp.LogitsProcessorList(
+                [_abort_proc]
+            )
+        gen_keys = {
+            "max_tokens", "temperature", "top_p", "top_k", "min_p",
+            "stop", "seed", "logprobs", "echo", "stream",
+            "logits_processor", "grammar", "repeat_penalty",
+            "presence_penalty", "frequency_penalty", "mirostat_mode",
+            "mirostat_tau", "mirostat_eta",
+        }
+        gen_kwargs = {k: v for k, v in kwargs.items() if k in gen_keys}
+        raw = self._llama.create_completion(prompt=prompt, **gen_kwargs)
+        return _wrap_completion_as_chat(raw)
+
+
+def _wrap_completion_as_chat(raw: dict) -> dict:
+    """Convert a ``create_completion`` response into the
+    ``create_chat_completion`` shape so the parent ``parse_response``
+    can decode it unchanged. Drift parser handles any text-emitted tool
+    calls; no native ``tool_calls`` field is populated by this path."""
+    choices = raw.get("choices") or [{}]
+    text = (choices[0].get("text") or "")
+    finish = choices[0].get("finish_reason")
+    return {
+        "id": raw.get("id", ""),
+        "object": "chat.completion",
+        "model": raw.get("model", ""),
+        "choices": [{
+            "index": 0,
+            "message": {"role": "assistant", "content": text},
+            "finish_reason": finish,
+        }],
+        "usage": raw.get("usage", {}),
+    }
 
 
 class _LlamaModelsStub:
@@ -253,6 +317,7 @@ class LocalLlamaAdapter(OpenAIAdapter):
         max_tokens: int = 4096,
         temperature: float = 0.0,
         top_p: float = 0.95,
+        enable_thinking: bool | None = None,
     ) -> None:
         # Skip OpenAIAdapter's network kwargs entirely — we never talk
         # to an HTTP endpoint. Pass the bits that DO apply via super().
@@ -281,6 +346,17 @@ class LocalLlamaAdapter(OpenAIAdapter):
         self._tool_family: str | None = None
         # Cached reasoning flag (model emits <think> deliberation).
         self._is_reasoning: bool | None = None
+        # Cloud-style ``thinking`` toggle. ``None`` = use the model's
+        # default mode (current behaviour, unchanged). ``True``/``False``
+        # = force ON or OFF — applied only when the model's chat template
+        # actually exposes ``enable_thinking`` (a "hybrid" thinking model
+        # like Qwen3.x or gemma-4). For non-hybrid models this flag is a
+        # no-op; their behaviour is whatever the template defines.
+        self._enable_thinking = enable_thinking
+        # Cached chat template + hybrid flag, lazy on first
+        # ``format_messages`` (when the Llama instance is available).
+        self._chat_template_cache: str | None = None
+        self._hybrid_thinking: bool | None = None
         # Cooperative-abort flag. Polled by the in-process generation via
         # ``stopping_criteria`` so a stalled / interrupted decode stops
         # cleanly at the next token rather than being abandoned mid-flight
@@ -323,6 +399,60 @@ class LocalLlamaAdapter(OpenAIAdapter):
             self._resolve_tool_family()  # populates both
         return bool(self._is_reasoning)
 
+    def _chat_template_str(self) -> str:
+        """Cached chat template from GGUF metadata. ``""`` when the
+        model is injected (test stub with no metadata) or hasn't loaded
+        yet."""
+        if self._chat_template_cache is not None:
+            return self._chat_template_cache
+        try:
+            llama = self._ensure_client()._llama  # type: ignore[attr-defined]
+            meta = getattr(llama, "metadata", None) or {}
+            self._chat_template_cache = meta.get(
+                "tokenizer.chat_template", "") or ""
+        except Exception:  # noqa: BLE001 — never block format_messages
+            self._chat_template_cache = ""
+        return self._chat_template_cache
+
+    def _is_hybrid_thinking(self) -> bool:
+        """A *hybrid* thinking model has a first-class ``enable_thinking``
+        knob in its chat template (Qwen3.x, gemma-4) — the user can
+        toggle reasoning ON or OFF per call, the way Claude / GPT-o1
+        expose thinking. Always-reasoning models (DeepSeek-R1, Ministral-
+        Reasoning) don't; their reasoning isn't disableable."""
+        if self._hybrid_thinking is None:
+            self._hybrid_thinking = "enable_thinking" in self._chat_template_str()
+        return bool(self._hybrid_thinking)
+
+    def _render_with_thinking(
+        self,
+        wire_messages: list[dict[str, Any]],
+        wire_tools: list[dict[str, Any]] | None,
+        enable_thinking: bool,
+    ) -> str | None:
+        """Render the model's own chat template with an explicit
+        ``enable_thinking`` flag. Returns ``None`` if the template can't
+        be loaded or rendering fails (caller falls back to the default
+        path). Same renderer the sanity probe uses, kept in one place."""
+        template_str = self._chat_template_str()
+        if not template_str:
+            return None
+        try:
+            import jinja2
+            env = jinja2.Environment()
+            env.globals["raise_exception"] = (
+                lambda m: (_ for _ in ()).throw(Exception(m))
+            )
+            tmpl = env.from_string(template_str)
+            return tmpl.render(
+                messages=wire_messages,
+                tools=wire_tools or None,
+                add_generation_prompt=True,
+                enable_thinking=enable_thinking,
+            )
+        except Exception:  # noqa: BLE001 — fall back to default rendering
+            return None
+
     def format_messages(
         self,
         messages: list[Message],
@@ -357,11 +487,14 @@ class LocalLlamaAdapter(OpenAIAdapter):
         """
         kwargs = super().format_messages(messages, tools, system)
         if not (self.inject_tools_prose and tools):
-            return kwargs
+            return self._apply_thinking_toggle(kwargs)
         family = self._resolve_tool_family()
         addition = render_tools_for(family, tools)
         if not addition:
-            return kwargs  # gemma/unknown → structured channel only
+            # gemma/unknown → structured channel only — but they're
+            # ALSO hybrid thinking (gemma-4 has ``enable_thinking`` in
+            # its template), so the toggle still applies.
+            return self._apply_thinking_toggle(kwargs)
         wire = kwargs.get("messages") or []
         for entry in wire:
             if entry.get("role") == "system":
@@ -385,6 +518,28 @@ class LocalLlamaAdapter(OpenAIAdapter):
         kwargs["messages"] = textify_tool_history(wire, family)
         kwargs.pop("tools", None)
         kwargs.pop("tool_choice", None)
+        return self._apply_thinking_toggle(kwargs)
+
+    def _apply_thinking_toggle(self, kwargs: dict[str, Any]) -> dict[str, Any]:
+        """Cloud-style think ON/OFF toggle (Claude / GPT-o1 style).
+
+        Only fires when the caller set ``enable_thinking`` AND the model
+        is a hybrid (template exposes the knob — Qwen3.x, gemma-4). For
+        non-hybrid models this is a no-op, so default behaviour is
+        UNCHANGED. A successful manual render stashes the rendered
+        prompt for the facade to pick up via ``create_completion``;
+        a failed render falls through to the default path silently."""
+        if self._enable_thinking is None:
+            return kwargs
+        if not self._is_hybrid_thinking():
+            return kwargs
+        rendered = self._render_with_thinking(
+            kwargs.get("messages") or [],
+            kwargs.get("tools"),
+            bool(self._enable_thinking),
+        )
+        if rendered is not None:
+            kwargs["_thinking_prompt"] = rendered
         return kwargs
 
     # ── client lifecycle ────────────────────────────────────────────

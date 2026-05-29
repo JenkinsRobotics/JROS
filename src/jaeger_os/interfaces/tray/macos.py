@@ -418,44 +418,34 @@ def main(argv: list[str] | None = None) -> int:
     from jaeger_os.core.instance.instance import (
         default_instance_name, resolve_instance_dir,
     )
-    from jaeger_os.interfaces.tray.singleton import (
-        acquire_tray_slot, existing_tray_pid,
-    )
+    from jaeger_os.interfaces.tray.singleton import claim_tray_slot
     name = args.instance or default_instance_name()
     root = Path(resolve_instance_dir(name))
     run_dir = root / "run"
     paths = LifecyclePaths(run_dir=run_dir)
     lifecycle = Lifecycle(paths=paths)
 
-    # Tray singleton — refuse to launch a second menu-bar icon for
-    # this instance. The previous behaviour piled up stale icons on
-    # every ``jaeger start`` / ``restart`` because the launcher
-    # fire-and-forgot a fresh tray every time. The slot file is
-    # cleaned up automatically on a clean exit (rumps Quit Tray
-    # path); a stale PID file from a hard kill auto-clears on the
-    # next launch.
-    existing = existing_tray_pid(run_dir)
-    if existing is not None:
+    # Tray singleton — ATOMIC claim. The previous check-then-acquire
+    # had a TOCTOU race: when several ``jaeger start`` / ``restart``
+    # calls fired trays at the same instant, every racer read "slot
+    # free", every racer claimed it, and every racer drew an icon —
+    # the menu bar filled with duplicates (the user's screenshot:
+    # 24 icons, 8 launches × 3). ``claim_tray_slot`` uses O_CREAT|
+    # O_EXCL so EXACTLY ONE process wins; the losers exit here, BEFORE
+    # importing rumps or drawing anything. The slot file auto-clears
+    # on clean exit, and a stale file from a hard kill is reclaimed.
+    acquired, owner, _cleanup = claim_tray_slot(run_dir)
+    if not acquired:
         print(f"jaeger-tray already running for instance {name!r} "
-              f"(pid={existing}). Quit the existing tray first if you "
-              f"want to relaunch.", file=sys.stderr)
+              f"(pid={owner}). Not launching a duplicate.", file=sys.stderr)
         return 0
-    # Defense-in-depth: sweep any tray processes that DON'T own the
-    # PID-file slot. These shouldn't exist (the slot gate above
-    # would have refused them), but a tray that pre-dated the gate
-    # or escaped a hard kill could still be alive. Killing them now
-    # — BEFORE we register our own slot — prevents the pile-up the
-    # user reported (3+ icons in the menu bar).
+    # We own the only slot. Sweep any OTHER tray processes still alive
+    # from before this gate existed (pre-atomic builds / hard kills) so
+    # their stale icons disappear. This kills others by PID, never us.
     swept = _kill_stray_trays()
     if swept:
         print(f"[jaeger-tray] swept {swept} stale tray process(es)",
               file=sys.stderr)
-        # Tiny pause so the OS reaps the menu-bar slots before
-        # the new icon goes up — otherwise the user briefly sees
-        # both the dying icons AND the new one.
-        import time as _time
-        _time.sleep(0.3)
-    acquire_tray_slot(run_dir)
 
     actions = _make_actions(args.instance)
 

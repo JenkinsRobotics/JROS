@@ -42,6 +42,28 @@ from jaeger_os.agent.loop.jaeger_agent import JaegerAgent
 from jaeger_os.agent.schemas.message_types import Message
 
 
+def _resolve_thinking_env() -> bool | None:
+    """``JAEGER_BENCH_THINKING`` env → ``enable_thinking`` adapter arg.
+
+    Values (case-insensitive):
+      * ``""`` / ``auto`` / ``default`` → ``None`` (model's default mode,
+        unchanged behaviour — this is the baseline)
+      * ``on`` / ``true`` / ``1`` → ``True`` (force thinking ON)
+      * ``off`` / ``false`` / ``0`` → ``False`` (force thinking OFF)
+
+    Lets the benchmark run a hybrid model twice — once each mode — and
+    show the deep-think vs direct-mode tradeoff side-by-side, the way
+    Claude / GPT-o1 expose ``thinking`` per call."""
+    raw = (os.environ.get("JAEGER_BENCH_THINKING") or "").strip().lower()
+    if raw in ("", "auto", "default", "none"):
+        return None
+    if raw in ("on", "true", "1", "yes"):
+        return True
+    if raw in ("off", "false", "0", "no"):
+        return False
+    return None  # unrecognised value → safe default
+
+
 def _adapter_for_client(
     client: Any,
     *,
@@ -62,6 +84,7 @@ def _adapter_for_client(
         return LocalLlamaAdapter(
             model=getattr(client, "model_name", "local"),
             llama=llm,
+            enable_thinking=_resolve_thinking_env(),
         )
 
     ext = getattr(client, "ext", None)

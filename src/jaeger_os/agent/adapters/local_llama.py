@@ -32,6 +32,7 @@ from jaeger_os.agent.dialects import (
     strip_think_blocks,
     textify_tool_history,
 )
+from jaeger_os.agent.loop.interrupt import AgentInterrupted, StaleCallTimeout
 from jaeger_os.agent.schemas.message_types import Message
 from jaeger_os.agent.schemas.tool_schema import ToolDef
 from .openai import OpenAIAdapter
@@ -43,6 +44,22 @@ from .openai import OpenAIAdapter
 # a corrupted KV cache → process crash (the 2026-05-28 ``0/1`` aborts).
 # A reasoning model gets at least this long before the watchdog trips.
 _REASONING_STALL_FLOOR_S = 300.0
+
+# After the stall watchdog signals abort, wait at most this long for the
+# in-flight decode to notice ``stopping_criteria`` and finish, so the
+# shared model is clean before the next call. A real generation stall
+# stops within a token of the flag (sub-second); this short cap keeps a
+# pathological "wedged in prefill" hang from blocking the bail. The abort
+# flag stays SET after we bail, so even a worker that misses this window
+# still self-terminates at its next token before the next case runs.
+_ABORT_JOIN_S = 1.5
+
+
+class _AbortGeneration(Exception):
+    """Raised from the in-process ``logits_processor`` when the adapter's
+    abort flag is set, to stop a stalled / interrupted decode cleanly at
+    a token boundary (the KV cache stays consistent — the in-flight batch
+    has already been decoded; we simply stop before sampling the next)."""
 
 
 # Sensible llama-cpp defaults for Apple Silicon. Match the existing
@@ -68,8 +85,9 @@ class _LlamaChatFacade:
     OpenAI client API. ``models.list`` is stubbed for health checks.
     """
 
-    def __init__(self, llama: Any) -> None:
+    def __init__(self, llama: Any, abort_flag: Any = None) -> None:
         self._llama = llama
+        self._abort_flag = abort_flag
         self.chat = self
         self.completions = self
         # ``models.list`` is what :meth:`OpenAIAdapter.health_check`
@@ -112,6 +130,27 @@ class _LlamaChatFacade:
         if isinstance(tools, list):
             from jaeger_os.agent.parsing import schema_sanitizer
             kwargs["tools"] = schema_sanitizer.sanitize_tool_schemas(tools)
+        # Cooperative cancellation: ``create_chat_completion`` doesn't
+        # accept ``stopping_criteria`` (only the low-level completion
+        # path does), but it DOES accept a ``logits_processor`` that runs
+        # every generated token. Bound to the adapter's abort flag, it
+        # raises :class:`_AbortGeneration` the instant the flag is set, so
+        # a stalled / interrupted decode stops CLEANLY mid-generation
+        # instead of being abandoned — which would leave the shared
+        # model's KV cache corrupted and cascade ``llama_decode -1/-3``
+        # errors into every later call. See :func:`interruptible_call`.
+        if self._abort_flag is not None and "logits_processor" not in kwargs:
+            import llama_cpp
+            flag = self._abort_flag
+
+            def _abort_proc(input_ids: Any, scores: Any) -> Any:
+                if flag.is_set():
+                    raise _AbortGeneration()
+                return scores
+
+            kwargs["logits_processor"] = llama_cpp.LogitsProcessorList(
+                [_abort_proc]
+            )
         return self._llama.create_chat_completion(**kwargs)
 
 
@@ -242,6 +281,11 @@ class LocalLlamaAdapter(OpenAIAdapter):
         self._tool_family: str | None = None
         # Cached reasoning flag (model emits <think> deliberation).
         self._is_reasoning: bool | None = None
+        # Cooperative-abort flag. Polled by the in-process generation via
+        # ``stopping_criteria`` so a stalled / interrupted decode stops
+        # cleanly at the next token rather than being abandoned mid-flight
+        # (which corrupts the shared model's KV cache → cascade failures).
+        self._abort_flag = threading.Event()
 
     # ── tool presentation ───────────────────────────────────────────
 
@@ -369,7 +413,7 @@ class LocalLlamaAdapter(OpenAIAdapter):
                 model_path=str(self.model_path),
                 **self.llama_kwargs,
             )
-        self._client = _LlamaChatFacade(self._llama)
+        self._client = _LlamaChatFacade(self._llama, self._abort_flag)
         return self._client
 
     # ── in-process call (override the inherited HTTP version) ───────
@@ -383,57 +427,84 @@ class LocalLlamaAdapter(OpenAIAdapter):
         on_heartbeat: Any = None,
         **kwargs: Any,
     ) -> Any:
-        """In-process call with a **caller-controlled stall watchdog**.
+        """In-process call with a **caller-controlled stall watchdog**
+        and **cooperative cancellation**.
 
-        Earlier this method force-set ``stale_timeout=None`` and
-        substituted an uncancellable interrupt event, because abandoning
-        the llama-cpp call from a worker thread leaves a half-decoded
-        KV cache that produces ``llama_decode -3`` on the next call.
-        That was correct for the next-call safety angle but it had a
-        nasty side-effect: a Metal prefill stall (which we hit on short
-        + ambiguous prompts) hung the loop forever, with no way for the
-        user to recover except SIGKILL from another terminal.
+        The old posture abandoned the worker thread on a stall: the
+        llama-cpp decode kept running on the shared model, leaving a
+        half-decoded KV cache that produced ``llama_decode -1/-3`` on
+        every subsequent call (the 2026-05-28 Hermes-3 full-corpus
+        cascade — one stalled case poisoned 42 more).
 
-        New posture:
+        New posture — cooperative abort:
 
-          * The interrupt event is STILL ignored for the in-process
-            path. Ctrl-C from the TUI cannot safely tear down a
-            llama-cpp call mid-decode, so we let the model finish (or
-            the watchdog below catch the hang) and the agent loop
-            discards the result at the boundary.
+          * Generation polls ``self._abort_flag`` via llama-cpp's
+            ``stopping_criteria`` (wired in the facade). When the stall
+            watchdog fires, ``interruptible_call`` calls ``on_abandon``
+            → we SET the flag → the decode stops cleanly at the next
+            token, the worker returns, and the shared model is left in a
+            normal post-generation state. ``join_on_abandon`` waits for
+            that to happen before control returns, so the NEXT call
+            starts from a clean instance. No zombie, no cascade.
 
-          * The stale-timeout HOWEVER is now passed through. When
-            ``interruptible_call`` raises ``StaleCallTimeout``, the
-            worker thread keeps running in the background (still
-            unsafe to kill), but the agent loop gets control back and
-            can surface a clean message to the user — "the model
-            stalled; use ``jaeger kill`` to recover". A leaked thread
-            is the lesser evil compared with a hung TUI.
-
-          * The abandoned thread is documented as a known caveat. The
-            next in-process call MAY see KV corruption and need a
-            fresh ``Llama`` instance (the agent loop's adapter chain
-            handles this by re-creating the client on certain
-            error-types — see ``_ensure_client``). For one-shot mode
-            (most common case in dev) the process exits anyway.
+          * The interrupt event is still uncancellable here — Ctrl-C
+            tear-down is handled at the loop boundary — but the abort
+            flag means even an abandoned stall no longer corrupts state.
         """
         # Reasoning models legitimately deliberate for minutes; raise
-        # the watchdog floor so it doesn't fire mid-think (which would
-        # abandon the worker + corrupt the KV cache for the next call).
+        # the watchdog floor so it doesn't fire mid-think.
         if (
             stale_timeout is not None
             and self._resolve_reasoning()
             and stale_timeout < _REASONING_STALL_FLOOR_S
         ):
             stale_timeout = _REASONING_STALL_FLOOR_S
+        # Fresh decode → clear any abort signal left over from a prior
+        # stalled turn so this generation isn't stopped at token 0. We
+        # clear at the START (not in a ``finally``): if a stall abandons
+        # the worker after the join cap, the flag must stay SET so that
+        # worker still stops at its next token instead of running on as
+        # a zombie that corrupts the shared KV cache.
+        self._abort_flag.clear()
         uncancellable_event = threading.Event()
-        return super().call(
-            formatted,
-            uncancellable_event,
-            stale_timeout=stale_timeout,    # PASS THROUGH — the watchdog
-            on_heartbeat=on_heartbeat,
-            **kwargs,
-        )
+        try:
+            return super().call(
+                formatted,
+                uncancellable_event,
+                stale_timeout=stale_timeout,
+                on_heartbeat=on_heartbeat,
+                # Stop generation cleanly on stall; wait briefly for the
+                # worker to finish so the shared model stays usable.
+                on_abandon=self._abort_flag.set,
+                join_on_abandon=_ABORT_JOIN_S,
+                **kwargs,
+            )
+        except (StaleCallTimeout, AgentInterrupted):
+            # The decode was aborted mid-generation. Even after the
+            # worker stops, llama-cpp's internal batch/KV state is left
+            # crash-prone — the NEXT decode segfaults the process (the
+            # 2026-05-28 Hermes-3 full-corpus crash at case 8). Reset the
+            # context so the next case starts from a clean slate.
+            self._reset_after_abort()
+            raise
+
+    def _reset_after_abort(self) -> None:
+        """Bring the shared llama-cpp instance back to a clean state
+        after an aborted decode. Best-effort: ``reset()`` clears the KV
+        cache + token count; if the instance is wedged beyond that, drop
+        it so the next call rebuilds from the GGUF (only possible when a
+        ``model_path`` is known)."""
+        llama = self._llama
+        try:
+            if llama is not None and hasattr(llama, "reset"):
+                llama.reset()
+                return
+        except Exception:  # noqa: BLE001 — fall through to a full reload
+            pass
+        if self.model_path is not None:
+            # Drop the poisoned instance; _ensure_client rebuilds lazily.
+            self._llama = None
+            self._client = None
 
     # ── parse with drift fallback ───────────────────────────────────
 
@@ -449,6 +520,23 @@ class LocalLlamaAdapter(OpenAIAdapter):
         """
         message = super().parse_response(raw)
         text = message.get("content") or ""
+        # gpt-oss harmony: llama-cpp's handler returns the raw 3-channel
+        # text (analysis / commentary / final) without parsing it. Pull
+        # tool calls off the commentary channel and the answer off the
+        # final channel, dropping the analysis (reasoning) channel. The
+        # ``<|channel|>`` marker is harmony-specific, so this never fires
+        # for other dialects.
+        if "<|channel|>" in text:
+            from jaeger_os.agent.dialects import parse_harmony
+            harmony_calls, harmony_answer = parse_harmony(text)
+            if harmony_calls:
+                existing = list(message.get("tool_calls") or [])
+                existing.extend(harmony_calls)
+                message["tool_calls"] = existing
+                message["content"] = harmony_answer or None
+                return message
+            message["content"] = harmony_answer or None
+            return message
         # Reasoning models emit ``<think>…</think>`` deliberation BEFORE
         # the answer / tool call. Strip it first so (a) the drift parser
         # doesn't try to read tool calls out of the reasoning, and (b)
@@ -459,19 +547,15 @@ class LocalLlamaAdapter(OpenAIAdapter):
             message["content"] = stripped or None
             text = stripped
         # Cheap pre-filter: skip the drift parser only when the text
-        # can't possibly hold a tool call. Two shapes qualify:
-        #   * angle-bracket envelopes — ``<tool_call>``, ``<|python_tag|>``
-        #   * bare top-level JSON — ``{"name": …, "arguments": …}`` with
-        #     NO wrapping (DeepSeek-R1, Qwen, Llama emit this natively).
-        # The original guard only checked for ``<`` and so silently
-        # dropped every bare-JSON tool call — the model did the right
-        # thing in its native format but JROS treated the JSON as a
-        # plain-text answer (the 2026-05-28 DeepSeek-R1 0% flatline).
-        _has_envelope = "<" in text
-        _has_bare_json = "{" in text and (
-            '"name"' in text or '"tool_name"' in text
-        )
-        if not (_has_envelope or _has_bare_json):
+        # can't possibly hold a tool call. A tool call always contains
+        # either an angle-bracket envelope (``<tool_call>``,
+        # ``<|python_tag|>``) or a JSON object (bare ``{"name": …}``,
+        # Gemma braces, or Mistral's bare ``name{json}``). So anything
+        # with neither ``<`` nor ``{`` is plain prose — skip it; let
+        # ``extract_tool_calls`` be the single decision point otherwise.
+        # (The old guard required a ``"name"`` key and so silently
+        # dropped DeepSeek-R1's bare JSON and Ministral's ``name{}``.)
+        if "<" not in text and "{" not in text:
             return message
         salvaged = extract_tool_calls(text)
         if not salvaged:

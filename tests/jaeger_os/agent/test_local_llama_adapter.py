@@ -324,6 +324,73 @@ def test_call_dispatches_to_llama_with_strip_http_kwargs():
     assert fake.last_kwargs["model"] == "x"
 
 
+def test_call_wires_logits_processor_for_clean_abort():
+    """``create_chat_completion`` doesn't accept ``stopping_criteria``,
+    so the facade attaches a ``logits_processor`` bound to the abort
+    flag: it raises to stop a stalled decode cleanly instead of letting
+    it be abandoned (which corrupts the shared KV cache)."""
+    from jaeger_os.agent.adapters.local_llama import _AbortGeneration
+    fake = _FakeLlama(_mk_response("ok"))
+    a = LocalLlamaAdapter(llama=fake)
+    a.call({"model": "x", "messages": []}, threading.Event())
+    proc = fake.last_kwargs.get("logits_processor")
+    assert proc, "logits_processor must be passed to llama-cpp"
+    # Flag clear → pass scores through; flag set → raise to stop.
+    scores = [0.1, 0.2]
+    assert proc[0]([1, 2], scores) is scores
+    a._abort_flag.set()
+    with pytest.raises(_AbortGeneration):
+        proc[0]([1, 2], scores)
+
+
+def test_stale_abort_stops_generation_and_keeps_instance_usable():
+    """End-to-end: a decode that would run forever is stopped by the
+    abort flag when the stall watchdog fires, and a SUBSEQUENT call on
+    the same instance still succeeds (no cascade)."""
+    import time as _time
+
+    class _StallingLlama:
+        """First call blocks in a token loop until the abort flag makes
+        the logits_processor raise (simulating a long decode that
+        honours the processor, like real llama-cpp); later calls return
+        normally — proving the instance is still usable."""
+        def __init__(self) -> None:
+            self.calls = 0
+            self.resets = 0
+            self.last_kwargs: dict[str, Any] | None = None
+
+        def reset(self) -> None:
+            self.resets += 1
+
+        def create_chat_completion(self, **kwargs: Any) -> Any:
+            self.last_kwargs = kwargs
+            self.calls += 1
+            if self.calls == 1:
+                proc = kwargs.get("logits_processor") or []
+                for _ in range(2000):
+                    for p in proc:
+                        p([1], [0.0])  # raises _AbortGeneration when flag set
+                    _time.sleep(0.005)
+            return _mk_response("partial")
+
+    llama = _StallingLlama()
+    a = LocalLlamaAdapter(llama=llama)
+    # Tight stale timeout → watchdog fires → on_abandon sets flag →
+    # the spinning "decode" sees it and returns → join completes.
+    with pytest.raises(Exception) as ei:
+        a.call({"model": "x", "messages": []}, threading.Event(),
+               stale_timeout=0.2)
+    assert "StaleCallTimeout" in type(ei.value).__name__ or "stale" in str(ei.value).lower()
+    # The aborted decode triggered a context reset so the next case
+    # starts clean (prevents the post-abort segfault cascade).
+    assert llama.resets >= 1
+    # The instance is NOT poisoned: a fresh call still works.
+    a._abort_flag.clear()
+    out = a.call({"model": "x", "messages": []}, threading.Event())
+    assert out is not None
+    assert llama.calls >= 2
+
+
 def test_parse_response_decodes_native_tool_calls():
     """When llama-cpp's chat handler DOES parse the call structurally,
     the parent's ``parse_response`` handles it — no drift fallback

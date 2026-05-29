@@ -1,52 +1,75 @@
 """gpt-oss harmony dialect.
 
-gpt-oss was trained on OpenAI's *harmony* response format, where tool
-calls travel on a dedicated ``<|channel|>commentary`` channel. A full
-harmony renderer is a follow-up; for now the presentation prose asks the
-model to emit a ChatML-style ``<tool_call>…</tool_call>`` (which the
-drift parser already reads back), so at least the tools surface instead
-of the model answering as a plain chatbot.
+gpt-oss emits the OpenAI *harmony* response format — three channels:
 
-Parsing therefore reuses the ChatML JSON-envelope extractor.
+  * ``<|channel|>analysis<|message|>…<|end|>`` — chain-of-thought
+    (reasoning; stripped before the answer, like ``<think>``).
+  * ``<|channel|>commentary to=functions.NAME …<|message|>{json}`` — a
+    tool call: recipient after ``to=`` (``functions.`` prefix optional),
+    arguments are the JSON object after ``<|message|>``.
+  * ``<|channel|>final<|message|>…`` — the user-facing answer.
+
+llama-cpp's gpt-oss chat handler does NOT parse these channels into the
+structured ``tool_calls`` field in this build — it returns the raw
+harmony text — so we parse it here. gpt-oss is driven through the
+structured ``tools=`` path (it's absent from the package's prose/render
+maps): its handler manages tool presentation and rejects ``<|channel|>``
+text echoed back into message content, so we must NOT text-drive it.
 """
 
 from __future__ import annotations
 
+import json
+import re
 from typing import Any
 
-from . import _shared, chatml
+
+# A channel body runs until the next harmony control token or end-of-text.
+_BODY_END = r"(?=<\|end\|>|<\|call\|>|<\|return\|>|<\|start\|>|<\|channel\|>|$)"
+
+_FINAL = re.compile(
+    r"<\|channel\|>final<\|message\|>(.*?)" + _BODY_END, re.DOTALL
+)
+# Commentary tool call: capture the recipient name; the JSON args are
+# raw_decoded from the first ``{`` after the channel's ``<|message|>``.
+_COMMENTARY = re.compile(
+    r"<\|channel\|>commentary[^\n]*?to=(?:functions\.)?([A-Za-z_][\w.\-]*)"
+    r".*?<\|message\|>",
+    re.DOTALL,
+)
 
 
 def extract_calls(text: str) -> list[dict[str, Any]]:
-    """Until a native harmony-channel parser lands, gpt-oss is steered
-    to the ChatML ``<tool_call>`` envelope — so reuse that extractor."""
-    return chatml.extract_envelope(text)
+    """Salvage gpt-oss tool calls from the harmony ``commentary`` channel.
+    Returns ``[{name, args}]`` (name stripped of the ``functions.``
+    prefix; args raw_decoded so nested JSON survives)."""
+    out: list[dict[str, Any]] = []
+    decoder = json.JSONDecoder()
+    for m in _COMMENTARY.finditer(text):
+        name = m.group(1).strip()
+        if not name:
+            continue
+        brace = text.find("{", m.end())
+        if brace < 0:
+            continue
+        try:
+            obj, _ = decoder.raw_decode(text, brace)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(obj, dict):
+            out.append({"name": name, "args": obj})
+    return out
 
 
-def render_tools(tools: list[Any]) -> str:
-    """Present ``tools`` to gpt-oss. Minimal ChatML-style fallback (a
-    full harmony-channel renderer is a follow-up)."""
-    if not tools:
-        return ""
-    schema_json = _shared.tool_schemas_json(tools)
-    return (
-        "You have tools available. To call one, emit:\n"
-        "<tool_call>\n{\"name\": <tool-name>, \"arguments\": <json>}\n"
-        "</tool_call>\n"
-        f"<tools>\n{schema_json}\n</tools>"
-    )
+def clean_channels(text: str) -> str:
+    """Return the user-facing answer from harmony output.
+
+    In harmony the answer is ALWAYS the ``final`` channel — ``analysis``
+    is private reasoning and ``commentary`` carries tool calls. So a
+    response with no ``final`` channel (a pure tool-call / reasoning
+    turn) has no user answer: return ``""``."""
+    final = _FINAL.search(text)
+    return final.group(1).strip() if final else ""
 
 
-def render_tool_call(name: str, args: dict[str, Any]) -> str:
-    """Echo a prior call in the same ChatML-style form gpt-oss is
-    steered to emit."""
-    return chatml.render_tool_call(name, args)
-
-
-def render_tool_result(content: str) -> str:
-    return chatml.render_tool_result(content)
-
-
-__all__ = [
-    "extract_calls", "render_tools", "render_tool_call", "render_tool_result",
-]
+__all__ = ["extract_calls", "clean_channels"]

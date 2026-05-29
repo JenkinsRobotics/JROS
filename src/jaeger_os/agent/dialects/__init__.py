@@ -51,6 +51,17 @@ def _wrap(calls: list[dict[str, Any]], prefix: str) -> list[ToolCall]:
     ]
 
 
+def parse_harmony(text: str) -> tuple[list[ToolCall], str]:
+    """Parse gpt-oss harmony output into ``(tool_calls, answer)``.
+
+    Tool calls come off the ``commentary`` channel; the answer is the
+    ``final`` channel (analysis is stripped). Returns synthetic-id tool
+    calls + the cleaned user-facing answer. Used by the adapter when the
+    raw response contains ``<|channel|>`` markers."""
+    calls = _wrap(harmony.extract_calls(text), "harmony")
+    return calls, harmony.clean_channels(text)
+
+
 def extract_tool_calls(text: str) -> list[ToolCall]:
     """Extract tool calls from a model's NATIVE textual form.
 
@@ -85,6 +96,14 @@ def extract_tool_calls(text: str) -> list[ToolCall]:
         if calls:
             return _wrap(calls, "llama")
 
+    # 2b. Mistral v11 interleaved WITHOUT the ``[TOOL_CALLS]`` token —
+    #     the whole message is a bare ``name{json}`` (Ministral's native
+    #     emission). No ``<`` and no ``"name"`` key, so it slips past
+    #     both checks above; catch it before the no-``<`` early return.
+    bare_mistral = mistral.extract_bare_calls(text)
+    if bare_mistral:
+        return _wrap(bare_mistral, "mistral")
+
     if "<" not in text:
         return []
 
@@ -104,11 +123,17 @@ def extract_tool_calls(text: str) -> list[ToolCall]:
     return out
 
 
+# NB harmony (gpt-oss) is deliberately ABSENT from every renderer map.
+# gpt-oss's native interface is llama-cpp's structured harmony chat
+# handler — it manages the analysis/commentary/final channels itself and
+# actively REJECTS messages whose content holds ``<|channel|>`` text. So
+# we drive it through the structured ``tools=`` path (like Gemma): no
+# prose injection, no text-history echo. Channel cleanup on the way out
+# lives in :func:`harmony.clean_channels`.
 _RENDERERS = {
     "chatml": chatml.render_tools,
     "mistral": mistral.render_tools,
     "llama3": llama3.render_tools,
-    "harmony": harmony.render_tools,
     "gemma": gemma.render_tools,
 }
 
@@ -116,14 +141,12 @@ _CALL_RENDERERS = {
     "chatml": chatml.render_tool_call,
     "mistral": mistral.render_tool_call,
     "llama3": llama3.render_tool_call,
-    "harmony": harmony.render_tool_call,
 }
 
 _RESULT_RENDERERS = {
     "chatml": chatml.render_tool_result,
     "mistral": mistral.render_tool_result,
     "llama3": llama3.render_tool_result,
-    "harmony": harmony.render_tool_result,
 }
 
 # Families presented + parsed purely as TEXT (we inject a prose tool
@@ -220,6 +243,7 @@ def textify_tool_history(
 __all__ = [
     # extraction
     "extract_tool_calls",
+    "parse_harmony",
     "repair_arguments",
     "normalize_tool_name",
     # presentation

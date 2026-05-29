@@ -300,6 +300,8 @@ class OpenAIAdapter(ProviderAdapter):
         *,
         stale_timeout: float | None = None,
         on_heartbeat: Any = None,
+        on_abandon: Any = None,
+        join_on_abandon: float = 0.0,
         **kwargs: Any,
     ) -> Any:
         """Run one ``chat.completions.create`` request, interrupt-aware.
@@ -321,6 +323,8 @@ class OpenAIAdapter(ProviderAdapter):
             interrupt_event,
             stale_timeout=stale_timeout,
             on_heartbeat=on_heartbeat,
+            on_abandon=on_abandon,
+            join_on_abandon=join_on_abandon,
         )
 
     def parse_response(self, raw: Any) -> Message:

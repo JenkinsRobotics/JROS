@@ -13,12 +13,18 @@ both seen in the wild:
 from __future__ import annotations
 
 import json
+import re
 from typing import Any
 
 from . import _shared
 
 
 _BOT = "[TOOL_CALLS]"
+
+# Bare interleaved form: ``name{json}`` with NO ``[TOOL_CALLS]`` token —
+# Ministral emits exactly this (the inner half of the v11 format). Anchored
+# to the start so it only fires when the whole message IS a tool call.
+_BARE_LEADING = re.compile(r"^\s*([a-zA-Z_][\w]*)\s*\{")
 
 
 def extract_calls(text: str) -> list[dict[str, Any]]:
@@ -73,6 +79,26 @@ def extract_calls(text: str) -> list[dict[str, Any]]:
     return out
 
 
+def extract_bare_calls(text: str) -> list[dict[str, Any]]:
+    """Salvage a bare ``name{json}`` tool call (Mistral v11 interleaved
+    form with the ``[TOOL_CALLS]`` token dropped — Ministral's native
+    emission). Anchored: only fires when the WHOLE message is a single
+    ``name{json}`` with no trailing prose, so it can't false-match a
+    ``word{…}`` buried in ordinary text."""
+    m = _BARE_LEADING.match(text)
+    if not m:
+        return []
+    name = m.group(1)
+    brace = text.index("{", m.start())
+    try:
+        obj, end = json.JSONDecoder().raw_decode(text, brace)
+    except json.JSONDecodeError:
+        return []
+    if not isinstance(obj, dict) or text[end:].strip():
+        return []
+    return [{"name": name, "args": obj}]
+
+
 def render_tools(tools: list[Any]) -> str:
     """Present ``tools`` in the Mistral convention (never forces the
     Hermes ``<tool_call>`` tag)."""
@@ -100,5 +126,6 @@ def render_tool_result(content: str) -> str:
 
 
 __all__ = [
-    "extract_calls", "render_tools", "render_tool_call", "render_tool_result",
+    "extract_calls", "extract_bare_calls", "render_tools",
+    "render_tool_call", "render_tool_result",
 ]

@@ -206,6 +206,55 @@ def test_textify_tool_history_passthrough_for_gemma():
     assert textify_tool_history(wire, "gemma") is wire
 
 
+def test_harmony_extracts_commentary_tool_call():
+    """gpt-oss emits tool calls on the harmony ``commentary`` channel
+    with a ``to=functions.NAME`` recipient — parse name + JSON args."""
+    from jaeger_os.agent.dialects import harmony
+    text = (
+        '<|channel|>analysis<|message|>User asks the time.<|end|>'
+        '<|start|>assistant<|channel|>commentary to=functions.get_time '
+        '<|constrain|>json<|message|>{"timezone": "Asia/Shanghai"}'
+    )
+    calls = harmony.extract_calls(text)
+    assert len(calls) == 1
+    assert calls[0]["name"] == "get_time"
+    assert calls[0]["args"] == {"timezone": "Asia/Shanghai"}
+
+
+def test_harmony_clean_channels_prefers_final():
+    from jaeger_os.agent.dialects import harmony
+    text = (
+        '<|channel|>analysis<|message|>thinking hard<|end|>'
+        '<|channel|>final<|message|>It is 5pm in Shanghai.'
+    )
+    assert harmony.clean_channels(text) == "It is 5pm in Shanghai."
+
+
+def test_harmony_clean_channels_strips_analysis_when_no_final():
+    """A pure tool-call turn has no final channel — the answer should be
+    empty (not the analysis/commentary text)."""
+    from jaeger_os.agent.dialects import harmony
+    text = (
+        '<|channel|>analysis<|message|>need a tool<|end|>'
+        '<|start|>assistant<|channel|>commentary to=functions.get_time '
+        '<|message|>{"timezone": "UTC"}'
+    )
+    assert harmony.clean_channels(text) == ""
+
+
+def test_parse_harmony_dispatcher_wraps_calls():
+    from jaeger_os.agent.dialects import parse_harmony
+    text = (
+        '<|channel|>commentary to=functions.calculate '
+        '<|message|>{"expression": "2+2"}'
+    )
+    calls, answer = parse_harmony(text)
+    assert len(calls) == 1
+    assert calls[0]["name"] == "calculate"
+    assert calls[0]["id"].startswith("harmony_")
+    assert answer == ""
+
+
 def test_render_embeds_valid_json_schema():
     """The embedded schema block must be parseable JSON so the model
     sees a well-formed tool catalogue."""

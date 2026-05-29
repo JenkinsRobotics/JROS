@@ -124,6 +124,33 @@ def test_extract_qwen_loose_function_form_with_parameters():
     }
 
 
+def test_extract_mistral_bare_name_json_form():
+    """Ministral emits a bare ``name{json}`` (Mistral v11 interleaved
+    without the [TOOL_CALLS] token). Must salvage it."""
+    calls = extract_tool_calls('get_time{"timezone": "Asia/Shanghai"}')
+    assert len(calls) == 1
+    assert calls[0]["name"] == "get_time"
+    assert calls[0]["arguments"] == {"timezone": "Asia/Shanghai"}
+    assert calls[0]["id"].startswith("mistral_")
+
+
+def test_extract_mistral_bare_empty_args():
+    calls = extract_tool_calls("get_time{}")
+    assert len(calls) == 1
+    assert calls[0]["name"] == "get_time"
+    assert calls[0]["arguments"] == {}
+
+
+def test_bare_name_json_does_not_match_prose():
+    """The bare form is anchored to the whole message — a ``word{…}``
+    buried in a real answer must NOT be misread as a tool call."""
+    assert extract_tool_calls(
+        "Use the config{} block then call setup{} as shown."
+    ) == []
+    # Trailing prose after the JSON also disqualifies it.
+    assert extract_tool_calls('get_time{"tz": "UTC"} and then relax') == []
+
+
 def test_loose_and_strict_forms_do_not_double_count():
     """If the model emits both — a strict ``<tool_call>...</tool_call>``
     AND another loose ``<function=...>`` outside it — they should be

@@ -42,6 +42,29 @@ from jaeger_os.agent.loop.jaeger_agent import JaegerAgent
 from jaeger_os.agent.schemas.message_types import Message
 
 
+def _resolve_local_max_tokens() -> int:
+    """Read ``model.max_tokens`` off the active pipeline config so the
+    in-process adapter honours it. Falls back to the
+    :class:`LocalLlamaAdapter` default (4096) when there's no config to
+    read — same behaviour as 0.1.0, so a missing pipeline (early boot,
+    unit tests with no config) doesn't surprise anyone.
+
+    This closes a real 0.1.0 hole: the local model adapter accepted
+    ``max_tokens`` in its constructor but no caller actually passed it,
+    so every agent turn was capped at the hardcoded 4096 regardless of
+    what the user put in ``config.yaml:model.max_tokens``. The field
+    didn't even exist on the local ``ModelConfig`` schema — added in
+    0.2.0 alongside this plumbing."""
+    try:
+        from jaeger_os.main import _pipeline  # noqa: PLC0415 — lazy
+        cfg = _pipeline.get("config")
+        if cfg is None:
+            return 4096
+        return int(getattr(cfg.model, "max_tokens", 4096))
+    except Exception:  # noqa: BLE001 — never block adapter construction
+        return 4096
+
+
 def _resolve_thinking_env() -> bool | None:
     """``JAEGER_BENCH_THINKING`` env → ``enable_thinking`` adapter arg.
 
@@ -85,6 +108,7 @@ def _adapter_for_client(
             model=getattr(client, "model_name", "local"),
             llama=llm,
             enable_thinking=_resolve_thinking_env(),
+            max_tokens=_resolve_local_max_tokens(),
         )
 
     ext = getattr(client, "ext", None)

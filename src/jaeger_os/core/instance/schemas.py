@@ -84,6 +84,19 @@ class ModelConfig(BaseModel):
     n_ubatch: int = 512
     flash_attn: bool = True
     threads: int | None = None
+    max_tokens: int = Field(
+        4096, ge=16, le=32_768,
+        description="Per-turn output cap the in-process adapter passes "
+                    "as ``max_tokens`` into ``create_chat_completion``. "
+                    "Default 4096 matches 0.1.0 behaviour — leaves "
+                    "headroom for reasoning models that legitimately "
+                    "spend hundreds of tokens in a single turn. Lower "
+                    "(1024-1536) for routing-heavy use to cut "
+                    "wall-clock when the model would otherwise ramble "
+                    "to the cap; raise only if a specific deep-think "
+                    "model truncates short. Pure speed knob — no "
+                    "effect on per-token rate.",
+    )
     extra_gguf_dirs: list[str] = Field(
         default_factory=list,
         description="Extra directories to scan for local .gguf models, "

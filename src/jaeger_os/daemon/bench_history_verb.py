@@ -532,6 +532,10 @@ def _aggregate_by_model(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
             "latest_route_pct": latest["route_pct"],
             "latest_ts": latest["ts"],
             "latest_cases": latest["cases"],
+            # Path to the latest run dir (relative to repo) — used by
+            # the per-model details renderer to read rows.jsonl for the
+            # case-by-case breakdown.
+            "latest_run_dir": latest.get("run_dir"),
             # Per-category full-pass from the latest run that HAS per-case
             # rows. Includes deep-think / real-time / context / multi-turn
             # / safety counts + safety_fail_ids for the hard-gate logic.
@@ -595,6 +599,111 @@ def _ts_to_date(ts: str) -> str:
     return ""
 
 
+def _load_sanity_raw_tps(repo: pathlib.Path) -> dict[str, float]:
+    """Read the most recent sanity-sweep JSONL and return
+    ``{model_stem: raw_tps}`` where ``raw_tps`` is the best (max
+    across modes) raw decode rate the sanity probe measured.
+
+    ``raw tps`` is the model's per-token GPU rate on a trivial prompt
+    — different from the corpus benchmark's ``tps`` (which folds in
+    prefill cost, multi-turn turns, and reasoning-token waste). Both
+    matter; the bench number measures task efficiency, this measures
+    the model's actual decode speed."""
+    sanity_dir = repo / "benchmark" / "sanity"
+    if not sanity_dir.exists():
+        return {}
+    jsonl_files = sorted(sanity_dir.glob("SANITY_*.jsonl"))
+    if not jsonl_files:
+        return {}
+    out: dict[str, float] = {}
+    try:
+        for line in jsonl_files[-1].read_text(encoding="utf-8").splitlines():
+            if not line.strip():
+                continue
+            r = json.loads(line)
+            if r.get("error"):
+                continue
+            runs = r.get("runs") or []
+            if not runs:
+                continue
+            best = max((run.get("tps", 0.0) for run in runs), default=0.0)
+            if best > 0:
+                out[r["model"]] = best
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return out
+
+
+def _render_per_case_block(model_row: dict[str, Any]) -> str:
+    """Per-case breakdown for one (model, mode) — every test, the
+    pass/fail mark, elapsed seconds, tools dispatched, and the error
+    if any. Wrapped in a ``<details>`` block so GitHub / VS Code render
+    it collapsed by default; click to expand. Returns ``""`` when the
+    model's latest run has no per-case rows on disk (sweep-aggregated
+    entries with no flat dir)."""
+    rundir_rel = model_row.get("latest_run_dir")
+    if not rundir_rel:
+        return ""
+    rundir = pathlib.Path(rundir_rel)
+    if not rundir.is_absolute():
+        rundir = (pathlib.Path(__file__).resolve().parents[3]
+                  / rundir).resolve()
+    rows_paths = sorted(rundir.glob("*rows.jsonl"))
+    if not rows_paths:
+        return ""
+    try:
+        raw = rows_paths[0].read_text(encoding="utf-8").splitlines()
+        cases = [json.loads(ln) for ln in raw if ln.strip()]
+    except (OSError, json.JSONDecodeError):
+        return ""
+    if not cases:
+        return ""
+
+    passed = sum(1 for c in cases if c.get("case_pass"))
+    total = len(cases)
+    ts = _compact_ts(model_row.get("latest_ts", ""))
+    mode = model_row.get("thinking_mode", "default")
+    mode_label = {"on": "🧠 think", "off": "⚡ direct",
+                  "default": "—"}.get(mode, mode)
+    summary = (f"<b>{model_row['model']}</b> &nbsp;·&nbsp; "
+               f"<code>{mode_label}</code> &nbsp;·&nbsp; "
+               f"<b>{passed}/{total}</b> &nbsp;·&nbsp; latest {ts}")
+
+    table = ["| # | Test | Tags | Pass | Time | Tools called | Error |",
+             "|---:|---|---|:--:|---:|---|---|"]
+    for i, c in enumerate(cases, start=1):
+        ok = "✅" if c.get("case_pass") else "❌"
+        elapsed = c.get("elapsed_s") or 0
+        tags = ",".join((c.get("tags") or [])[:3])
+        # Tools list, truncated so a chatty multi-step row doesn't blow
+        # the column. Show count when truncated so the reader still
+        # knows it dispatched several.
+        tools = c.get("tools_called") or []
+        if len(tools) <= 3:
+            tools_disp = ",".join(tools) or "—"
+        else:
+            tools_disp = f"{','.join(tools[:3])}… (+{len(tools)-3})"
+        err = c.get("error") or ""
+        if err:
+            err = err.split(":")[0]  # short error class, not full repr
+            if len(err) > 30:
+                err = err[:30] + "…"
+        # Test id can be long; truncate for the column.
+        case_id = c.get("id", "?")
+        if len(case_id) > 28:
+            case_id = case_id[:27] + "…"
+        table.append(
+            f"| {i} | `{case_id}` | {tags} | {ok} | "
+            f"{elapsed:.1f}s | {tools_disp} | {err or '—'} |"
+        )
+
+    return (
+        f"<details>\n<summary>{summary}</summary>\n\n"
+        + "\n".join(table)
+        + "\n\n</details>\n"
+    )
+
+
 def _render(
     rows: list[dict[str, Any]],
     *,
@@ -638,9 +747,17 @@ def _render(
         "",
         "| # | Model | Mode | Family | **Score** | Deep-think | "
         "Real-time | Safety | Best route% | Latest p50 s | "
-        "Latest tok/s | Latest run | Runs |",
-        "|---|---|---|---|---:|---:|---:|---:|---:|---:|---:|---|---:|",
+        "Raw tok/s | Bench tok/s | Latest run | Runs |",
+        "|---|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---|---:|",
     ]
+    # ``Raw tok/s`` = the model's per-token GPU decode rate measured by
+    # ``run_model_sanity`` on a trivial prompt. ``Bench tok/s`` =
+    # ``answer_tokens / total_wall_time`` over the corpus (folds in
+    # prefill + multi-turn + reasoning-token waste). Both matter:
+    # raw = ceiling on speed; bench = how fast a real agent turn feels.
+    raw_tps_by_model = _load_sanity_raw_tps(
+        pathlib.Path(__file__).resolve().parents[3]
+    )
     for i, r in enumerate(rows, start=1):
         latest_ts = _compact_ts(r["latest_ts"])
         dt, rt = r.get("deep_total", 0), r.get("rt_total", 0)
@@ -655,14 +772,42 @@ def _render(
         mode_label = {"on": "🧠 think",
                       "off": "⚡ direct",
                       "default": "—"}.get(mode, mode)
+        raw_tps = raw_tps_by_model.get(r["model"])
+        raw_disp = f"{raw_tps:.1f}" if raw_tps is not None else "—"
         lines.append(
             f"| {i} | `{r['model']}` | {mode_label} | {r['family']} | "
             f"**{score}** | {deep} | {real} | {safety} | "
             f"{r['best_route_pct']:.1f}% | "
             f"{r['latest_p50_s']:.2f} | "
+            f"{raw_disp} | "
             f"{r['latest_tokens_per_sec']:.1f} | "
             f"{latest_ts} | {r['run_count']} |"
         )
+
+    # ── per-model latest-run details ──────────────────────────
+    # Full per-case breakdown for each (model, mode) — every test,
+    # pass/fail, elapsed, tools dispatched, error if any. Collapsed
+    # under <details> so the leaderboard stays scannable; expand the
+    # block for the model you want to drill into. This is the "I want
+    # the full picture for THIS model" view that aggregate scores hide.
+    detail_blocks = []
+    for r in rows:
+        block = _render_per_case_block(r)
+        if block:
+            detail_blocks.append(block)
+    if detail_blocks:
+        lines += [
+            "",
+            "## Per-model run details (latest)",
+            "",
+            "Each model's most recent run, case-by-case. Click to expand.",
+            "Useful for spotting *which* tests a model fails on (a 24/25 "
+            "routing model that fails the same case across runs has a "
+            "real gap, not noise), and for reading per-case latency to "
+            "decide if a high p95 is one outlier or a pattern.",
+            "",
+        ]
+        lines.extend(detail_blocks)
 
     # ── all-time top runs (top 10 by route%) ──────────────────
     top_runs = sorted(

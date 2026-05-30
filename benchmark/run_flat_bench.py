@@ -122,6 +122,16 @@ def main() -> int:
     summary["thinking_mode"] = (
         os.environ.get("JAEGER_BENCH_THINKING") or "auto"
     ).strip().lower() or "auto"
+    # Stamp the corpus version (cases.BENCHMARK_VERSION). The
+    # leaderboard filters to runs of the current version so a 1.0
+    # (51-case) run isn't visually ranked against a 1.1 (59-case)
+    # run. Legacy summaries without this field get their version
+    # inferred from total case count in the aggregator.
+    try:
+        from jaeger_os.core.bench.cases import BENCHMARK_VERSION
+        summary["benchmark_version"] = BENCHMARK_VERSION
+    except Exception:  # noqa: BLE001 — metadata, never block a bench
+        pass
 
     # Per-model nesting under benchmark/flat/<model>/<ts>/. Each
     # artifact ALSO carries ``<model>-<ts>`` in its filename — so a

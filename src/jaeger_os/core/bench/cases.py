@@ -81,6 +81,37 @@ UMBRELLA_EQUIVALENTS: dict[str, set[str]] = {
 }
 
 
+# ── Benchmark corpus version ────────────────────────────────────────
+#
+# Every run's ``summary.json`` is stamped with this string so the
+# leaderboard can filter to "what was tested against THIS corpus" and
+# old data from previous corpus generations is archived rather than
+# silently mixed in.
+#
+# Bump rules:
+#   * Patch (1.1.x)  — re-wording a case prompt, fixing an answer
+#     matcher, tightening a forbidden_tools list. Comparable with
+#     prior 1.1 runs.
+#   * Minor (1.x.0)  — adding/removing cases, changing a tier's pass
+#     criteria. NOT comparable with prior 1.x runs — old data should
+#     be filtered out of the leaderboard for fair ranking.
+#   * Major (x.0.0)  — fundamental restructuring (e.g. switching from
+#     pass/fail to a numeric score per case).
+#
+# History — informs the leaderboard's backfill filter (which infers
+# version from ``total`` case count for legacy summaries that lack
+# the explicit ``benchmark_version`` field):
+#
+#   * 1.0  → 51 cases. Routing + multistep + recovery + memory +
+#            multiturn tiers. No safety/hallucination tier.
+#   * 1.1  → 59 cases (current). Added T1c hallucination (2 cases),
+#            T3 cross-turn state (3 cases), T5 safety (5 cases =
+#            destructive/injection/credential). Old 1.0 runs are
+#            archived in the leaderboard (visible in a separate
+#            section, not ranked against 1.1 runs).
+BENCHMARK_VERSION = "1.1"
+
+
 # ── The flat case list ──────────────────────────────────────────────
 
 

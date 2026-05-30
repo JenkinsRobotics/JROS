@@ -291,12 +291,15 @@ def run_one(model_path: str, *, level: int) -> ModelResult:
         # through ``jaeger bench compare``).
         env.setdefault("MallocNanoZone", "0")
         env.setdefault("OBJC_DISABLE_INITIALIZE_FORK_SAFETY", "YES")
-        # Suppress the per-run HISTORY.md regeneration inside each
-        # model's subprocess — the sweep regenerates ONCE at the end
-        # (see ``main``) instead of N× (one per model). The standalone
-        # ``jaeger bench run`` path still auto-updates because it
-        # doesn't set this var.
-        env["JAEGER_SUPPRESS_HISTORY"] = "1"
+        # Per-run HISTORY.md regeneration is INTENTIONALLY enabled
+        # inside each model's subprocess. A multi-model sweep over 11
+        # GGUFs can take 6+ hours; updating the leaderboard only at the
+        # end means an interrupted sweep loses partial-progress
+        # visibility. Per-run regeneration is cheap (<1s for the
+        # current data volume) and lets the user open HISTORY.md
+        # mid-sweep to see scores landing as they finish — and to see
+        # uninstalled-model rows disappear as soon as they're deleted
+        # from disk during the sweep.
         # Forward ``--tags`` / ``--limit`` from the env when the caller
         # (``jaeger bench compare``) set them. Lets the operator narrow
         # the sweep to e.g. routing-only without re-running 51 cases
@@ -309,18 +312,24 @@ def run_one(model_path: str, *, level: int) -> ModelResult:
         if _limit and _limit != "0":
             extra_args.extend(["--limit", _limit])
         started = time.perf_counter()
-        # Per-model wall-clock cap. Default 60 min — Qwen3.6-35B-A3B and
-        # similarly-heavy 30B+ MoEs regularly land in the 35-45 min range
-        # on this hardware for the 51-case corpus, and speak_file /
-        # web_news outliers add ~50-100s each. Overridable via
-        # ``JAEGER_BENCH_MODEL_TIMEOUT`` (seconds) — a big unattended
-        # sweep over many models lowers it so one slow/stalling model
-        # can't eat an hour and starve the rest of the queue.
+        # Per-model wall-clock cap. This is a **wedged-process backstop**,
+        # NOT a fairness/comparability gate. The real "is this model
+        # broken" signal is the per-case stall watchdog
+        # (``JAEGER_BENCH_STALL_S``, default 45s) — that's what flags
+        # actually-stuck decodes. The model-level cap only exists so a
+        # truly hung llama-cpp process doesn't run forever and never
+        # release the queue. Default 2 hours: covers 59 cases × 60s
+        # worst-case (~60 min) plus generous headroom for big MoEs in
+        # think mode. Overridable via ``JAEGER_BENCH_MODEL_TIMEOUT``
+        # (seconds). Do NOT lower this to "speed up the sweep" — a
+        # capable-but-slow model getting cut off mid-corpus produces
+        # no result and looks identical to a broken model in the log,
+        # which is exactly the comparison we DON'T want to make.
         try:
             _model_timeout = float(os.environ.get(
-                "JAEGER_BENCH_MODEL_TIMEOUT", "") or 3600)
+                "JAEGER_BENCH_MODEL_TIMEOUT", "") or 7200)
         except ValueError:
-            _model_timeout = 3600.0
+            _model_timeout = 7200.0
         proc = subprocess.run(
             [sys.executable, str(REPO / "benchmark" / "run_flat_bench.py"),
              "--no-warmup", *extra_args],
@@ -530,28 +539,27 @@ def main() -> int:
               file=sys.stderr)
         return 2
 
-    # Hybrid-thinking models (Qwen3.x, gemma-4) expose an
-    # ``enable_thinking`` knob in their chat template — same idea as
-    # Claude's / GPT-o1's ``thinking`` flag. The sweep runs them
-    # TWICE (once with thinking ON, once OFF) so the leaderboard can
-    # show the deep-think vs direct-mode tradeoff side-by-side; the
-    # toggle is otherwise a no-op (the LocalLlamaAdapter only flips it
-    # for models whose template actually has the knob). Set
-    # ``JAEGER_BENCH_THINKING=auto``/``on``/``off`` to override.
+    # Methodology: the corpus benchmark measures IDEAL-STATE behaviour
+    # — every model runs once in the mode it would actually be
+    # deployed in (``auto`` for toggle-capable, the model's only mode
+    # for ``always``/``never`` lineages). The default with NO env set
+    # is therefore ``auto`` for every path — no hybrid auto-pairing.
+    #
+    # Forced ``on`` / ``off`` runs are SANITY-PROBE comparison data,
+    # not corpus rank entries — they only show up if the operator
+    # explicitly sets ``JAEGER_BENCH_THINKING=on`` (or ``off``) for a
+    # specific research-comparison sweep. The leaderboard renderer
+    # filters non-ideal rows out of the main per-model table.
     forced_mode = (os.environ.get("JAEGER_BENCH_THINKING") or "").strip().lower()
-    plan: list[tuple[str, str]] = []   # (model_path, thinking_mode)
-    for p in paths:
-        if forced_mode in ("on", "off", "true", "false", "1", "0"):
-            plan.append((p, forced_mode))           # explicit override
-        elif _is_hybrid_by_name(pathlib.Path(p).stem):
-            plan.append((p, "on"))
-            plan.append((p, "off"))                  # both modes
-        else:
-            plan.append((p, "auto"))                 # model default
+    _FORCED_MODES = ("on", "off", "auto", "manual",
+                     "true", "false", "1", "0")
+    chosen_mode = forced_mode if forced_mode in _FORCED_MODES else "auto"
+    plan: list[tuple[str, str]] = [(p, chosen_mode) for p in paths]
 
     n_models = len({p for p, _ in plan})
     print(f"Sweeping {n_models} model(s) → {len(plan)} run(s) over the "
-          f"flat bench corpus (hybrid models run think-ON + think-OFF)",
+          f"flat bench corpus (mode={chosen_mode} for every model — "
+          f"ideal-state methodology)",
           flush=True)
     results: list[ModelResult] = []
     for p, mode in plan:

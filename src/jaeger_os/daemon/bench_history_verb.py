@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import pathlib
 import sys
 from collections import defaultdict
@@ -45,7 +46,38 @@ from typing import Any, Iterable
 # showing ONLY runs on/after this date so the ranking is
 # apples-to-apples. ``--all`` (or ``--since`` with an earlier date)
 # brings the historical runs back for archaeology.
-_DEFAULT_SINCE = "2026-05-27"
+_DEFAULT_SINCE = "2026-05-29"
+
+# Cutoff for the current corpus version (1.1). Any run on or after
+# this date is considered to have been run against the 1.1 corpus
+# (added T5 safety, T1c hallucination, T3 cross-turn = 59 cases).
+# Anything before is archived as 1.0 (51 cases, no safety tier) and
+# not ranked alongside 1.1 results.
+_CURRENT_BENCH_VERSION = "1.1"
+_BENCH_V11_CUTOFF = "2026-05-29"
+
+
+def _infer_bench_version(summary: dict[str, Any]) -> str:
+    """Return the corpus version for a run.
+
+    Going-forward runs have ``benchmark_version`` stamped explicitly
+    by ``run_flat_bench.py`` (from ``cases.BENCHMARK_VERSION``).
+    Legacy summaries without that field are inferred from
+    ``total`` case count — the definitional difference between
+    versions:
+
+      * 1.1 corpus: 59 cases (added T1c hallucination + T3 cross-turn
+        + T5 safety tiers).
+      * 1.0 corpus: 51 cases (pre-safety-tier).
+
+    Case count beats date as a signal because some 1.0 (51-case)
+    runs happened on the v1.1 cutoff date itself (early-morning runs
+    before the T5 cases landed in the corpus)."""
+    explicit = summary.get("benchmark_version")
+    if explicit:
+        return str(explicit)
+    total = int(summary.get("total", 0) or 0)
+    return _CURRENT_BENCH_VERSION if total >= 59 else "1.0"
 
 # Minimum case count for a run to count toward the leaderboard.
 # Debugging mini-benches (``--limit 3/5/10``) trivially hit 100%
@@ -141,14 +173,51 @@ def render_history_md(
     since: str | None = _DEFAULT_SINCE,
     min_cases: int = _DEFAULT_MIN_CASES,
     include_unknown: bool = False,
+    include_uninstalled: bool = False,
     family: str | None = None,
     top: int = 0,
 ) -> str:
     """Collect → filter → aggregate → render the leaderboard markdown.
     Pure: no printing, no file writes. The CLI verb and the
     auto-update hook both call this so the filtering logic lives in
-    one place."""
+    one place.
+
+    ``include_uninstalled``: by default the leaderboard filters out
+    entries for models that aren't on disk anymore (deleted from the
+    LM Studio cache). The historical data is preserved in
+    ``benchmark/flat/`` and ``sweep_rows.jsonl``; set this true to
+    include it in the rendered report."""
     entries = list(_collect_entries(repo))
+    # ``since=None`` is the CLI's ``--all`` mode: show every run
+    # regardless of corpus version (archaeology). Otherwise the active
+    # leaderboard ranks only current-version runs — a 1.0 51-case
+    # run isn't comparable with a 1.1 59-case run.
+    archived_entries: list[dict[str, Any]] = []
+    if since is not None:
+        archived_entries = [
+            e for e in entries
+            if e.get("benchmark_version", _CURRENT_BENCH_VERSION)
+               != _CURRENT_BENCH_VERSION
+        ]
+        entries = [
+            e for e in entries
+            if e.get("benchmark_version", _CURRENT_BENCH_VERSION)
+               == _CURRENT_BENCH_VERSION
+        ]
+    # Drop forced-baseline runs (``on``/``off`` on toggle-capable
+    # models). The methodology is: the main corpus benchmark measures
+    # IDEAL-STATE behaviour (each model in the mode it would actually
+    # be deployed in). Forced on/off variants are research data for
+    # the sanity probe — same-model decode-rate comparison on a
+    # trivial prompt — not corpus rank entries.
+    sanity_for_filter = _load_sanity_records(repo)
+    def _entry_is_ideal(e: dict[str, Any]) -> bool:
+        rec = sanity_for_filter.get(e["model"]) or {}
+        capability = _reasoning_mode(rec) if rec else None
+        return _is_ideal_state(
+            e.get("thinking_mode", "default"), capability
+        )
+    entries = [e for e in entries if _entry_is_ideal(e)]
     if since:
         entries = [e for e in entries if _ts_to_date(e["ts"]) >= since]
     if min_cases and min_cases > 0:
@@ -159,10 +228,26 @@ def render_history_md(
         needle = family.lower()
         entries = [e for e in entries if needle in e["model"].lower()]
     aggregated = _aggregate_by_model(entries)
+    hidden_orphans: list[str] = []
+    if not include_uninstalled:
+        installed = _installed_model_stems(repo=repo)
+        # Only apply the filter when the installed set OVERLAPS with
+        # the bench data — otherwise we're in a test fixture or a
+        # fresh repo where the real LM Studio dir isn't relevant, and
+        # filtering would wipe the leaderboard.
+        if installed and any(r["model"] in installed for r in aggregated):
+            kept = []
+            for r in aggregated:
+                if r["model"] in installed:
+                    kept.append(r)
+                else:
+                    hidden_orphans.append(r["model"])
+            aggregated = kept
     if top and top > 0:
         aggregated = aggregated[:top]
     return _render(aggregated, all_entries=entries,
-                   total_entries=len(entries), since=since)
+                   total_entries=len(entries), since=since,
+                   hidden_orphans=hidden_orphans)
 
 
 def write_history_md(repo: pathlib.Path | None = None) -> pathlib.Path | None:
@@ -200,9 +285,26 @@ def _collect_entries(repo: pathlib.Path) -> Iterable[dict[str, Any]]:
 
     Missing fields default to 0 / None / empty so the renderer's
     defensive ``.get()`` calls don't have to special-case anything.
-    """
-    yield from _from_sweep_jsonl(repo)
-    yield from _from_flat_summaries(repo)
+
+    Dedup rule: ``sweep_rows.jsonl`` is a per-model log line written by
+    ``run_model_sweep.py`` after each model finishes a sweep. It's a
+    strict subset of the matching ``benchmark/flat/<model>/<ts>/
+    summary.json`` — same scoring numbers, but no ``thinking_mode``
+    field and no per-case detail. Without dedup, the same run shows
+    up twice in the leaderboard: once bucketed as ``(model, default)``
+    (sweep row) and once as ``(model, on/off)`` (flat summary). Skip
+    the sweep row whenever a flat summary exists for the same
+    (model, day) — the flat summary is authoritative."""
+    flat = list(_from_flat_summaries(repo))
+    flat_seen = {
+        (e["model"], _ts_to_date(e.get("ts", "")))
+        for e in flat
+    }
+    for e in _from_sweep_jsonl(repo):
+        if (e["model"], _ts_to_date(e.get("ts", ""))) in flat_seen:
+            continue
+        yield e
+    yield from flat
 
 
 def _from_sweep_jsonl(repo: pathlib.Path) -> Iterable[dict[str, Any]]:
@@ -231,11 +333,16 @@ def _from_sweep_jsonl(repo: pathlib.Path) -> Iterable[dict[str, Any]]:
                 route_pct = (
                     100 * row.get("route_ok", 0) / cases if cases else 0.0
                 )
+                # sweep_rows is metadata-only — infer version from
+                # case count (same rule the flat-summary path uses).
+                bv = _CURRENT_BENCH_VERSION if cases >= 59 else "1.0"
+                ts = row.get("ts") or ""
                 yield {
                     "model": row.get("name") or "unknown",
                     "family": _family_of(row.get("name") or ""),
                     "source": "sweep",
-                    "ts": row.get("ts") or "",
+                    "ts": ts,
+                    "benchmark_version": bv,
                     "pass_rate": route_pct / 100.0,
                     "route_pct": route_pct,
                     "p50_s": float(row.get("p50_turn_s", 0.0) or 0.0),
@@ -318,6 +425,8 @@ def _from_flat_summaries(repo: pathlib.Path) -> Iterable[dict[str, Any]]:
             "route_pct": route_pct,
             "p50_s": float(metrics.get("p50_latency_s", 0.0) or 0.0),
             "p95_s": float(metrics.get("p95_latency_s", 0.0) or 0.0),
+            "wall_s": float(summary.get("wall_s", 0.0) or 0.0),
+            "benchmark_version": _infer_bench_version(summary),
             "avg_latency_s": float(metrics.get("avg_latency_s", 0.0) or 0.0),
             "tokens_per_sec": float(
                 metrics.get("answer_tokens_per_sec", 0.0) or 0.0
@@ -335,8 +444,10 @@ def _from_flat_summaries(repo: pathlib.Path) -> Iterable[dict[str, Any]]:
 
 # Role-category tag groups. ``Deep-think`` is the hard subset (full
 # pass on code|multistep|recovery); ``Real-time`` is the easy routing
-# subset; ``Safety`` is a HARD GATE — any failure disqualifies the
-# model from the rolled-up Score regardless of other category scores.
+# subset; ``Safety`` is a regular weighted tier at 10% of the final
+# score (was a hard-gate DQ pre-2026-05-29 but every model failed at
+# least one safety case in practice, so the DQ collapsed the
+# leaderboard — see _score for the full reasoning).
 _DEEP_TAGS = frozenset({"code", "multistep", "recovery"})
 _CONTEXT_TAGS = frozenset({"memory", "multiturn"})
 _MULTITURN_TAGS = frozenset({"multiturn", "cross_turn"})
@@ -358,7 +469,9 @@ def _category_pass(run_dir: pathlib.Path) -> dict[str, int]:
     """Tally full-pass counts by role-category from the run's per-case
     ``rows.jsonl``. Returns zeros when no rows file is present (e.g. an
     aggregated sweep row, which has no per-case tags). Adds a SAFETY
-    bucket — any failure there hard-gates the model's final Score."""
+    bucket — pass count feeds the weighted score (10% weight); the list
+    of fail IDs surfaces in the per-model detail block so a reader can
+    see which specific safety cases tripped."""
     rf = sorted(run_dir.glob("*rows.jsonl"))
     zero = {"deep_pass": 0, "deep_total": 0,
             "rt_pass": 0, "rt_total": 0,
@@ -463,14 +576,19 @@ def _latest_category(runs: list[dict[str, Any]]) -> dict[str, Any]:
 
 def _score(cats: dict[str, Any]) -> tuple[str, bool]:
     """Compute the weighted final Score from the latest per-category
-    counts. Returns ``(display, disqualified)``. Safety is a HARD GATE:
-    any safety case failed → ``"DQ"`` regardless of the other scores
-    (a model that runs ``rm -rf`` can't be used, period)."""
-    # Hard gate first — a known safety failure outranks everything else.
-    fails = cats.get("safety_fail_ids") or []
-    if fails:
-        return f"DQ ({','.join(fails[:2])}{'…' if len(fails) > 2 else ''})", True
+    counts. Returns ``(display, False)`` — the second element is kept
+    for back-compat with callers that still unpack two values.
 
+    Safety failures DON'T disqualify the model. They show up two ways:
+    (a) the per-tier Safety count column (``4/5`` means one failure),
+    and (b) the weighted score itself — safety is 10% of the total, so
+    a model with safety failures takes a measurable hit. The previous
+    hard-gate "any safety fail → DQ" was unrealistic in practice: every
+    model failed at least one of the safety cases (typically prompt-
+    injection refusal phrasing), which collapsed the leaderboard to
+    'everyone DQ'd' and made the rolled-up Score useless. The score is
+    now always a number so models remain comparable; the Safety column
+    + per-case ``<details>`` block tell you exactly what failed."""
     # ``tier name`` → (pass-count key, total-count key) in ``cats``.
     keys = {
         "tools":     ("deep_pass",   "deep_total"),
@@ -527,6 +645,7 @@ def _aggregate_by_model(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
             "best_pass_rate": best_pass,
             "latest_p50_s": latest["p50_s"],
             "latest_p95_s": latest["p95_s"],
+            "latest_wall_s": latest.get("wall_s", 0.0),
             "latest_tokens_per_sec": latest["tokens_per_sec"],
             "latest_tokens_source": latest["tokens_source"],
             "latest_route_pct": latest["route_pct"],
@@ -538,24 +657,20 @@ def _aggregate_by_model(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
             "latest_run_dir": latest.get("run_dir"),
             # Per-category full-pass from the latest run that HAS per-case
             # rows. Includes deep-think / real-time / context / multi-turn
-            # / safety counts + safety_fail_ids for the hard-gate logic.
+            # / safety counts + safety_fail_ids (surfaced in detail block).
             **_latest_category(runs),
             "run_count": len(runs),
         })
-    # Pre-compute the weighted Score (with safety hard-gate DQ) so the
-    # renderer is a pure projection.
+    # Pre-compute the weighted Score so the renderer is a pure
+    # projection. Safety is part of the weighted score (10%); a model
+    # with safety failures gets a lower number, not a DQ override.
     for r in out:
-        score, dq = _score(r)
+        score, _ = _score(r)
         r["score_display"] = score
-        r["disqualified"] = dq
-    # Sort: weighted Score desc (DQ at the bottom), then latest p50 asc
-    # as the tiebreaker. The legacy "best route%" was easy to game (a
-    # model that aced routing but failed safety would still top the
-    # list); the weighted Score with safety as a hard gate ranks by what
-    # actually matters for operational use.
+    # Sort: weighted Score desc, then latest p50 asc as the tiebreaker.
+    # No DQ branch — every model gets a numeric score, comparable
+    # across the board.
     def _sort_key(r):
-        if r.get("disqualified"):
-            return (1, 0.0, r["latest_p50_s"])  # DQ → bottom
         # Parse the "78.4%" display back to a number for ordering;
         # missing/zero falls back to best_route_pct so older runs
         # without per-category data still rank sensibly.
@@ -563,12 +678,116 @@ def _aggregate_by_model(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
             score_n = float((r.get("score_display") or "0").rstrip("%"))
         except ValueError:
             score_n = r["best_route_pct"]
-        return (0, -score_n, r["latest_p50_s"])
+        return (-score_n, r["latest_p50_s"])
     out.sort(key=_sort_key)
     return out
 
 
 # ── rendering ──────────────────────────────────────────────────
+
+
+def _format_duration(seconds: float) -> str:
+    """Render a wall-clock duration as a compact human string.
+    Examples: ``42s``, ``3m12s``, ``1h08m``. ``—`` when zero/missing."""
+    if not seconds or seconds < 0.5:
+        return "—"
+    s = int(round(seconds))
+    if s < 60:
+        return f"{s}s"
+    if s < 3600:
+        return f"{s // 60}m{s % 60:02d}s"
+    return f"{s // 3600}h{(s % 3600) // 60:02d}m"
+
+
+def _is_ideal_state(thinking_mode: str, capability: str | None) -> bool:
+    """Was this run done in the model's IDEAL operational state?
+
+    Methodology: each model's headline benchmark should be the run
+    that matches how it would actually be deployed — not a forced
+    baseline. Forced on/off runs are useful as *comparison* data but
+    shouldn't masquerade as the model's representative score.
+
+    Ideal state by capability:
+      * ``auto`` (toggle-capable, default deploy) — ideal = run let
+        the model decide (``auto`` or legacy ``default``)
+      * ``manual`` (toggle-capable, user-decide deploy) — ideal =
+        ``manual`` runs
+      * ``always`` (no off switch) — ideal = any run (no choice)
+      * ``never`` (no reasoning) — ideal = any run (no choice)
+
+    A forced ``on`` or ``off`` run on a toggle-capable model is NOT
+    its ideal state; it's a research/baseline variant."""
+    if capability in ("always", "never"):
+        return True   # no choice → every run is ideal-by-default
+    if capability == "auto":
+        return thinking_mode in ("auto", "default")
+    if capability == "manual":
+        return thinking_mode == "manual"
+    # Unknown capability (no sanity record yet) — assume ideal so we
+    # don't decorate every row in the leaderboard as a baseline.
+    return thinking_mode in ("auto", "default", "manual")
+
+
+def _mode_label(thinking_mode: str, capability: str | None = None) -> str:
+    """Human label for the leaderboard's Mode column.
+
+    Joins two facts:
+      * **capability** — what reasoning options the MODEL supports
+        (``auto``/``manual``/``always``/``never``), from the sanity
+        record via ``_reasoning_mode``.
+      * **thinking_mode** — what was configured for THIS specific run
+        (``on``/``off``/``auto``/``manual``/``default``), from the
+        run's summary.
+
+    For ``always`` and ``never`` capabilities the run-time mode is
+    meaningless (there's no choice) so we surface the capability
+    directly — saves the reader from misreading "🧠 on" on a Hermes
+    model as a deliberate config decision when actually that model
+    can't NOT be off.
+
+    For ``auto``/``manual`` capabilities (toggle-capable models) we
+    surface the per-run mode. Legacy ``default`` thinking_mode for
+    a toggle-capable model is rendered as the capability label
+    (``🧠 auto`` or ``🧠 manual``) — those runs predate the explicit
+    toggle but ran in the model's natural decide-per-turn behaviour,
+    which IS the ideal state for an ``auto`` deployment.
+
+    Capability is optional so the helper still works in older call
+    sites or tests that don't have a sanity record on hand."""
+    if capability == "always":
+        return "🧠 always"
+    if capability == "never":
+        return "never"
+    if capability == "auto":
+        # Auto-capable model: ``default`` (legacy, no explicit flag)
+        # AND ``auto`` both mean "model decides" — the ideal state.
+        if thinking_mode in ("default", "auto"):
+            return "🧠 auto"
+        if thinking_mode == "on":
+            return "🧠 on"
+        if thinking_mode == "off":
+            return "off"
+        if thinking_mode == "manual":
+            return "🧠 manual"
+    if capability == "manual":
+        if thinking_mode in ("default", "manual"):
+            return "🧠 manual"
+        if thinking_mode == "on":
+            return "🧠 on"
+        if thinking_mode == "off":
+            return "off"
+        if thinking_mode == "auto":
+            return "🧠 auto"
+    # Unknown capability (no sanity record) — best-effort literal map.
+    if thinking_mode in ("on", "default"):
+        return "🧠 on"
+    if thinking_mode == "off":
+        return "off"
+    if thinking_mode == "auto":
+        return "🧠 auto"
+    if thinking_mode == "manual":
+        return "🧠 manual"
+    return thinking_mode or "—"
 
 
 def _compact_ts(ts: str) -> str:
@@ -584,6 +803,62 @@ def _compact_ts(ts: str) -> str:
     return ts
 
 
+def _installed_model_stems(repo: pathlib.Path | None = None) -> set[str]:
+    """Return the set of model file stems currently present on disk.
+
+    Scans all the places a Jaeger user typically keeps GGUFs:
+
+      * ``~/.lmstudio/models/``  — LM Studio's cache (most users)
+      * ``~/.jaeger/models/``    — Jaeger's own models dir, populated
+        by the wizard's download flow
+      * ``<repo>/models/``       — the repo's models folder, which
+        usually holds symlinks back to one of the above
+      * any path in ``JAEGER_MODEL_DIRS`` (colon-separated env var)
+
+    Symlinks are followed so a repo-level symlink to a file in
+    ``~/.lmstudio/models/`` counts as present even if the LM Studio
+    dir itself isn't scanned. Returns just the ``.gguf`` stems
+    (filename minus extension), skipping ``mmproj-*`` projector files
+    — those are multimodal sidecars, not chat models.
+
+    Used by ``render_history_md`` to filter out entries for models
+    the user has deleted: keeps the leaderboard reflective of "what
+    can I actually run right now" rather than "every model I've ever
+    benched on this machine"."""
+    roots: list[pathlib.Path] = []
+    home = pathlib.Path.home()
+    for candidate in (home / ".lmstudio" / "models",
+                      home / ".jaeger" / "models"):
+        if candidate.exists():
+            roots.append(candidate)
+    if repo is not None:
+        repo_models = repo / "models"
+        if repo_models.exists():
+            roots.append(repo_models)
+    for path in os.environ.get("JAEGER_MODEL_DIRS", "").split(":"):
+        if path and pathlib.Path(path).exists():
+            roots.append(pathlib.Path(path))
+    stems: set[str] = set()
+    seen_real: set[str] = set()
+    for root in roots:
+        for gguf in root.rglob("*.gguf"):
+            # Dedup by resolved real path — a symlink in the repo's
+            # ``models/`` folder pointing at the LM Studio cache
+            # shouldn't double-count.
+            try:
+                real = str(gguf.resolve())
+            except OSError:
+                real = str(gguf)
+            if real in seen_real:
+                continue
+            seen_real.add(real)
+            stem = gguf.stem
+            if stem.startswith("mmproj-"):
+                continue
+            stems.add(stem)
+    return stems
+
+
 def _ts_to_date(ts: str) -> str:
     """Extract a sortable ``YYYY-MM-DD`` from either timestamp shape.
     ISO ``2026-05-24T17:27:00`` → ``2026-05-24``; bench-stamp
@@ -597,6 +872,33 @@ def _ts_to_date(ts: str) -> str:
     if len(ts) >= 8 and ts[:8].isdigit():
         return f"{ts[0:4]}-{ts[4:6]}-{ts[6:8]}"
     return ""
+
+
+def _load_sanity_records(repo: pathlib.Path) -> dict[str, dict[str, Any]]:
+    """Read the most recent sanity-sweep JSONL and return
+    ``{model_stem: full_record}``. Full record carries size, load_s,
+    gpu_layers, metal/cpu buffer split, hybrid flag, and per-mode raw
+    tps. This is the source for both the leaderboard's ``Raw tok/s``
+    column and the standalone Hardware-health table — pulling once and
+    sharing avoids re-reading the same JSONL twice per render."""
+    sanity_dir = repo / "benchmark" / "sanity"
+    if not sanity_dir.exists():
+        return {}
+    jsonl_files = sorted(sanity_dir.glob("SANITY_*.jsonl"))
+    if not jsonl_files:
+        return {}
+    out: dict[str, dict[str, Any]] = {}
+    try:
+        for line in jsonl_files[-1].read_text(encoding="utf-8").splitlines():
+            if not line.strip():
+                continue
+            r = json.loads(line)
+            if not r.get("model"):
+                continue
+            out[r["model"]] = r
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return out
 
 
 def _load_sanity_raw_tps(repo: pathlib.Path) -> dict[str, float]:
@@ -634,6 +936,157 @@ def _load_sanity_raw_tps(repo: pathlib.Path) -> dict[str, float]:
     return out
 
 
+# Substrings in a model's stem that flag an "always-on" reasoning
+# variant — the model reasons every turn, no toggle to disable it.
+# Distinguished from "never-reasons" (plain chat model) and from
+# "toggle" (chat-template-supported on/off switch).
+_ALWAYS_REASONING_TOKENS = ("-r1-", "_r1_", "-r1.", "/r1",
+                            "r-zero", "rzero",
+                            "reasoning", "qwq")
+
+
+def _reasoning_mode(rec: dict[str, Any]) -> str:
+    """Four-way classification of how reasoning works on this model:
+
+      * ``auto``   — chat template supports thinking on/off AND the
+        wizard's default deployment lets the model decide per turn
+        (current default for any toggle-capable model)
+      * ``manual`` — chat template supports thinking on/off AND it's
+        deployed as user-opt-in per turn (alternative for toggle
+        models; surfaces here if/when the wizard config flips a model
+        to manual)
+      * ``always`` — model always reasons, no off switch (DeepSeek-R1,
+        ``*-Reasoning-*`` fine-tunes, QwQ — name-detected lineage)
+      * ``never``  — model has no reasoning capability at all — plain
+        chat model (Hermes, gpt-oss, Mistral-Nemo, gemma-3)
+
+    The sanity probe only knows the capability (toggle vs always vs
+    never); ``auto`` vs ``manual`` is a deployment choice. We default
+    toggle-capable models to ``auto`` here because that's what the
+    wizard configures."""
+    if rec.get("hybrid_thinking"):
+        # If the record explicitly carries a deployment hint, honour
+        # it; otherwise default to "auto" (the wizard's pick).
+        deploy = (rec.get("deploy_mode") or "auto").lower()
+        return "manual" if deploy == "manual" else "auto"
+    name = (rec.get("model") or "").lower()
+    if any(tok in name for tok in _ALWAYS_REASONING_TOKENS):
+        return "always"
+    return "never"
+
+
+def _render_sanity_table(
+    leaderboard_rows: list[dict[str, Any]],
+    sanity: dict[str, dict[str, Any]],
+) -> str:
+    """Per-model hardware-health table from the sanity probe.
+
+    Different question from the corpus leaderboard: did the model fit
+    on the GPU, how fast can it decode at the ceiling, does the
+    hybrid-thinking toggle work? Sorted in the same order as the
+    leaderboard so a reader scrolling down can cross-reference scores
+    to hardware health row-for-row.
+
+    Returns ``""`` when no sanity data exists yet (clean repo / never
+    ran ``run_model_sanity``) — keeps the report from showing an empty
+    table headed by a section title with nothing under it."""
+    if not sanity:
+        return ""
+
+    # Walk the leaderboard in display order, picking up sanity by model
+    # stem. Models in sanity but NOT in the leaderboard are appended
+    # afterwards so the section still surfaces hardware data for things
+    # that haven't been corpus-benched yet.
+    seen: set[str] = set()
+    ordered: list[dict[str, Any]] = []
+    for r in leaderboard_rows:
+        rec = sanity.get(r["model"])
+        if rec is not None and r["model"] not in seen:
+            ordered.append(rec)
+            seen.add(r["model"])
+    for model_name, rec in sorted(sanity.items()):
+        if model_name not in seen:
+            ordered.append(rec)
+            seen.add(model_name)
+
+    lines = [
+        "## Hardware health (sanity probe)",
+        "",
+        "Did each model fit on the GPU + what's its **ceiling decode "
+        "rate** (raw tok/s on a trivial single-prompt — no agent loop, "
+        "no tools, no multi-turn)? Different question from the "
+        "leaderboard above: that's *task* throughput, this is *decode* "
+        "throughput. The gap between them = prefill + tool dispatch + "
+        "multi-turn overhead. ``GPU layers`` = how many model layers "
+        "got Metal-offloaded (``33/33`` = full); a partial offload "
+        "means part of the model is running on CPU and you'll see it "
+        "in the Bench tok/s column above. ``VRAM`` / ``CPU buf`` = "
+        "buffer sizes after load (CPU buf > 1 GB often means KV cache "
+        "spilled). ``Reasoning mode`` is one of four:",
+        "",
+        "  * ``auto`` — chat template supports thinking on/off, "
+        "deployed so the **model** decides per turn (default for "
+        "toggle-capable models — gemma-4, Qwen3.x).",
+        "  * ``manual`` — same toggle capability, deployed so the "
+        "**user** opts in per turn.",
+        "  * ``always`` — model always reasons, no off switch "
+        "(DeepSeek-R1, ``*-Reasoning`` fine-tunes, QwQ).",
+        "  * ``never`` — plain chat model, no reasoning capability "
+        "(Hermes, gpt-oss, Mistral-Nemo, gemma-3).",
+        "",
+        "For ``auto``/``manual`` models both raw rates are shown so "
+        "you can see whether the toggle changes anything on a clean "
+        "prompt. ``always``/``never`` models have a single rate in "
+        "the ``Raw tps (off)`` column. The leaderboard above uses the "
+        "same vocabulary in the Mode column to describe how that "
+        "specific run was configured (``on`` = forced on for this "
+        "run, ``off`` = forced off, ``auto`` = model decided, "
+        "``manual`` = user opted in).",
+        "",
+        "| Model | Size GB | Load | GPU layers | VRAM | CPU buf | "
+        "Reasoning mode | Raw tps (on) | Raw tps (off) |",
+        "|---|---:|---:|:---:|---:|---:|:---:|---:|---:|",
+    ]
+    for rec in ordered:
+        if rec.get("error"):
+            lines.append(
+                f"| `{rec['model']}` | — | — | — | — | — | — | — | — |"
+            )
+            continue
+        size = rec.get("size_gb") or 0.0
+        load_s = rec.get("load_s") or 0.0
+        gpu = rec.get("gpu_layers") or "—"
+        full = rec.get("full_offload")
+        gpu_disp = f"{gpu} ✅" if full else (f"{gpu} ⚠️" if gpu != "—" else "—")
+        vram_mb = rec.get("metal_mb") or 0
+        cpu_mb = rec.get("cpu_mb") or 0
+        vram = f"{vram_mb / 1024:.1f} GB" if vram_mb else "—"
+        # CPU buffer < 100 MB is just scratch — only flag when meaningful.
+        cpu = f"{cpu_mb / 1024:.1f} GB" if cpu_mb >= 1024 else (
+            f"{cpu_mb} MB" if cpu_mb >= 100 else "—"
+        )
+        reasoning_disp = _reasoning_mode(rec)
+        runs = {run.get("mode"): run for run in (rec.get("runs") or [])}
+        # Sanity probe mode labels: ``think`` / ``direct`` for models
+        # with reasoning mode, ``default`` for models without (single
+        # run — no toggle exists). For no-reasoning-mode models, the
+        # single value goes in the "thinking disabled" column (semantic
+        # equivalent: no thinking is happening either way) and the
+        # "thinking enabled" column shows ``—``.
+        think_tps = runs.get("think", {}).get("tps")
+        direct_tps = (runs.get("direct")
+                      or runs.get("default") or {}).get("tps")
+        think_disp = f"{think_tps:.1f}" if think_tps else "—"
+        direct_disp = f"{direct_tps:.1f}" if direct_tps else "—"
+        lines.append(
+            f"| `{rec['model']}` | {size:.1f} | {load_s:.1f}s | "
+            f"{gpu_disp} | {vram} | {cpu} | {reasoning_disp} | "
+            f"{think_disp} | {direct_disp} |"
+        )
+    lines.append("")
+    return "\n".join(lines)
+
+
 def _render_per_case_block(model_row: dict[str, Any]) -> str:
     """Per-case breakdown for one (model, mode) — every test, the
     pass/fail mark, elapsed seconds, tools dispatched, and the error
@@ -663,8 +1116,13 @@ def _render_per_case_block(model_row: dict[str, Any]) -> str:
     total = len(cases)
     ts = _compact_ts(model_row.get("latest_ts", ""))
     mode = model_row.get("thinking_mode", "default")
-    mode_label = {"on": "🧠 think", "off": "⚡ direct",
-                  "default": "—"}.get(mode, mode)
+    # The per-case block uses the same capability-aware label as the
+    # leaderboard so an "always" model doesn't appear as "🧠 on" in its
+    # collapsible header. Pulled lazily from the latest sanity sweep.
+    repo_root = pathlib.Path(__file__).resolve().parents[3]
+    sanity_rec = _load_sanity_records(repo_root).get(model_row["model"])
+    capability = _reasoning_mode(sanity_rec) if sanity_rec else None
+    mode_label = _mode_label(mode, capability)
     summary = (f"<b>{model_row['model']}</b> &nbsp;·&nbsp; "
                f"<code>{mode_label}</code> &nbsp;·&nbsp; "
                f"<b>{passed}/{total}</b> &nbsp;·&nbsp; latest {ts}")
@@ -710,6 +1168,7 @@ def _render(
     all_entries: list[dict[str, Any]],
     total_entries: int,
     since: str | None = None,
+    hidden_orphans: list[str] | None = None,
 ) -> str:
     """Three-section report: per-model summary, all-time top runs,
     and the full chronological run log. Together they answer
@@ -727,26 +1186,72 @@ def _render(
         f"runs on/after **{since}** (current benchmark generation)"
         if since else "ALL runs (every benchmark generation)"
     )
+    orphan_note = ""
+    if hidden_orphans:
+        orphan_note = (
+            f" Filtered out **{len(hidden_orphans)}** entr"
+            f"{'y' if len(hidden_orphans) == 1 else 'ies'} for "
+            "models no longer on disk — historical data preserved in "
+            "``benchmark/flat/``."
+        )
     lines = [
         "# Jaeger-OS bench history",
         "",
         f"_Generated {now_iso} from {total_entries} run(s) across "
-        f"`benchmark/sweep/` and `benchmark/flat/` — showing {window}._",
+        f"`benchmark/sweep/` and `benchmark/flat/` — showing "
+        f"{window}.{orphan_note}_",
+        "",
+        f"**Bench corpus version: {_CURRENT_BENCH_VERSION}** (cutoff "
+        f"{_BENCH_V11_CUTOFF}). The leaderboard ranks only runs of "
+        f"this version so the comparison stays apples-to-apples; "
+        f"older 1.0 (51-case) runs are archived and shown separately "
+        f"at the bottom of the report.",
         "",
         "## Per-model leaderboard",
-        "",
+        "",]
+    if hidden_orphans:
+        lines += [
+            f"<details><summary>"
+            f"<i>{len(hidden_orphans)} hidden uninstalled model"
+            f"{'' if len(hidden_orphans) == 1 else 's'}</i></summary>",
+            "",
+            "These models have bench history but their ``.gguf`` files "
+            "are no longer in ``~/.lmstudio/models``. Run "
+            "``jaeger bench history --write --include-uninstalled`` "
+            "to surface them again.",
+            "",
+            *[f"- `{m}`" for m in sorted(hidden_orphans)],
+            "",
+            "</details>",
+            "",
+        ]
+    lines += [
         "``Score`` is the rolled-up weighted result — tools 30% / "
-        "real-time 15% / context 20% / multi-turn 25% / safety 10%, "
-        "with **safety as a hard gate**: any safety case failed → ``DQ`` "
-        "regardless of the other scores (a model that runs `rm -rf` "
-        "can't be used, period). ``Deep-think`` is full pass on the "
-        "HARD subset (code / multistep / recovery — what a coding agent "
-        "needs); ``Real-time`` is full pass on routing (what a fast "
-        "agent needs); ``Safety`` is pass on the refusal / no-"
-        "hallucination cases. Latest-run figures, sorted by Score.",
+        "real-time 15% / context 20% / multi-turn 25% / safety 10%. "
+        "Safety failures are folded into the score via the 10% safety "
+        "weight (a model with safety failures gets a lower number, not "
+        "a DQ) and itemised in the ``Safety`` column + the per-model "
+        "``<details>`` block so you can see exactly what failed. "
+        "``Deep-think`` is full pass on the HARD subset (code / "
+        "multistep / recovery — what a coding agent needs); "
+        "``Real-time`` is full pass on routing (what a fast agent "
+        "needs); ``Safety`` is pass on the refusal / no-hallucination "
+        "cases. Latest-run figures, sorted by Score.",
+        "",
+        "**Methodology — ideal state vs baseline.** Each model is "
+        "primarily benched in its **ideal operational state**: "
+        "toggle-capable models run with thinking on ``auto`` (the "
+        "model decides per turn — what a real user gets); "
+        "``always``-reasoning models run as-is (no choice); ``never``-"
+        "reasoning models run as-is. Rows tagged ``(baseline)`` are "
+        "the **comparison variants** — same model, forced into a "
+        "non-ideal state (e.g. an ``auto`` model forced to ``off`` "
+        "for direct-mode benchmarking). Use ideal-state rows for "
+        "real-world rank, baseline rows for understanding *why* the "
+        "ideal works.",
         "",
         "| # | Model | Mode | Family | **Score** | Deep-think | "
-        "Real-time | Safety | Best route% | Latest p50 s | "
+        "Real-time | Safety | Best route% | Latest elapsed | "
         "Raw tok/s | Bench tok/s | Latest run | Runs |",
         "|---|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---|---:|",
     ]
@@ -755,9 +1260,10 @@ def _render(
     # ``answer_tokens / total_wall_time`` over the corpus (folds in
     # prefill + multi-turn + reasoning-token waste). Both matter:
     # raw = ceiling on speed; bench = how fast a real agent turn feels.
-    raw_tps_by_model = _load_sanity_raw_tps(
-        pathlib.Path(__file__).resolve().parents[3]
-    )
+    # The full sanity records also feed the Hardware-health table below
+    # — load once, share both.
+    repo_root = pathlib.Path(__file__).resolve().parents[3]
+    sanity_records = _load_sanity_records(repo_root)
     for i, r in enumerate(rows, start=1):
         latest_ts = _compact_ts(r["latest_ts"])
         dt, rt = r.get("deep_total", 0), r.get("rt_total", 0)
@@ -766,23 +1272,36 @@ def _render(
         real = f"{r.get('rt_pass', 0)}/{rt}" if rt else "—"
         safety = f"{r.get('safety_pass', 0)}/{st}" if st else "—"
         score = r.get("score_display", "—")
-        mode = r.get("thinking_mode", "default")
-        # Friendlier mode labels — ``default`` = legacy (model's own
-        # default); ``on``/``off`` = explicit thinking toggle.
-        mode_label = {"on": "🧠 think",
-                      "off": "⚡ direct",
-                      "default": "—"}.get(mode, mode)
-        raw_tps = raw_tps_by_model.get(r["model"])
-        raw_disp = f"{raw_tps:.1f}" if raw_tps is not None else "—"
+        rec = sanity_records.get(r["model"]) or {}
+        capability = _reasoning_mode(rec) if rec else None
+        thinking_mode = r.get("thinking_mode", "default")
+        mode_label = _mode_label(thinking_mode, capability)
+        # NOTE: non-ideal rows are filtered out upstream in
+        # ``render_history_md``, so every row here represents the
+        # model's IDEAL-state run. Forced on/off variants live in the
+        # sanity-probe section instead — different question, different
+        # data set.
+        rec_runs = rec.get("runs") or []
+        raw_tps = max((rn.get("tps", 0.0) for rn in rec_runs), default=0.0) or None
+        raw_disp = f"{raw_tps:.1f}" if raw_tps else "—"
         lines.append(
             f"| {i} | `{r['model']}` | {mode_label} | {r['family']} | "
             f"**{score}** | {deep} | {real} | {safety} | "
             f"{r['best_route_pct']:.1f}% | "
-            f"{r['latest_p50_s']:.2f} | "
+            f"{_format_duration(r.get('latest_wall_s', 0.0))} | "
             f"{raw_disp} | "
             f"{r['latest_tokens_per_sec']:.1f} | "
             f"{latest_ts} | {r['run_count']} |"
         )
+
+    # ── hardware health (sanity probe) ────────────────────────
+    # Per-model GPU fit + ceiling decode rate from the sanity sweep.
+    # Sits between the leaderboard and the per-case details so a reader
+    # can answer "is this model healthy on my hardware?" before drilling
+    # into specific test failures. Empty when no sanity data exists.
+    sanity_section = _render_sanity_table(rows, sanity_records)
+    if sanity_section:
+        lines += ["", sanity_section]
 
     # ── per-model latest-run details ──────────────────────────
     # Full per-case breakdown for each (model, mode) — every test,

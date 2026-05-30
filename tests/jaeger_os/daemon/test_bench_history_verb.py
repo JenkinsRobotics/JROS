@@ -565,34 +565,37 @@ def test_history_write_persists_history_md(fake_repo, capsys):
 
 
 def test_since_filter_excludes_old_runs(fake_repo, capsys):
-    """Default --since drops pre-cutoff runs; --all brings them back.
-    Old runs used a different corpus/pipeline and aren't comparable."""
+    """Default --since + bench-version filter drops pre-cutoff (1.0)
+    runs; --all + --include-uninstalled bring them back. Old corpus
+    (51-case 1.0) isn't apples-to-apples with current (59-case 1.1)."""
     bench = fake_repo / "benchmark"
-    _write_sweep_row(bench, name="may24-model", cases=51, route_ok=40,
-                     ts="2026-05-24T10:00:00")
-    _write_sweep_row(bench, name="may27-model", cases=51, route_ok=48,
-                     ts="2026-05-27T10:00:00")
-    # Default cutoff is 2026-05-27 → only may27 shows.
+    _write_sweep_row(bench, name="may28-model", cases=51, route_ok=40,
+                     ts="2026-05-28T10:00:00")
+    _write_sweep_row(bench, name="may30-model", cases=59, route_ok=48,
+                     ts="2026-05-30T10:00:00")
+    # Default cutoff is 2026-05-29 (v1.1 corpus) → only may30 shows.
     rc = bhv._cmd_bench_history_argv([])
     out = capsys.readouterr().out
     assert rc == 0
-    assert "may27-model" in out
-    assert "may24-model" not in out
+    assert "may30-model" in out
+    assert "may28-model" not in out
     # --all includes both.
     rc = bhv._cmd_bench_history_argv(["--all"])
     out = capsys.readouterr().out
-    assert "may24-model" in out
-    assert "may27-model" in out
+    assert "may28-model" in out
+    assert "may30-model" in out
 
 
 def test_since_explicit_date(fake_repo, capsys):
-    """An explicit --since overrides the default cutoff."""
+    """An explicit --since overrides the default cutoff.
+    Both rows are post-cutoff (v1.1) so the bench-version filter
+    keeps them; --since is the relevant filter under test."""
     bench = fake_repo / "benchmark"
-    _write_sweep_row(bench, name="m1", cases=51, route_ok=40,
-                     ts="2026-05-20T10:00:00")
-    _write_sweep_row(bench, name="m2", cases=51, route_ok=48,
-                     ts="2026-05-22T10:00:00")
-    rc = bhv._cmd_bench_history_argv(["--since", "2026-05-21"])
+    _write_sweep_row(bench, name="m1", cases=59, route_ok=40,
+                     ts="2026-05-30T10:00:00")
+    _write_sweep_row(bench, name="m2", cases=59, route_ok=48,
+                     ts="2026-06-01T10:00:00")
+    rc = bhv._cmd_bench_history_argv(["--since", "2026-05-31"])
     out = capsys.readouterr().out
     assert rc == 0
     assert "m2" in out
@@ -604,24 +607,29 @@ def test_min_cases_excludes_mini_benches(fake_repo, capsys):
     trivial 100%s. Default --min-cases 50 drops them; the full run
     stays."""
     bench = fake_repo / "benchmark"
+    # Both runs explicitly tagged 1.1 so the bench-version filter
+    # doesn't pre-drop the mini-bench — this test is about the
+    # min-cases filter specifically.
     _write_flat_summary(
-        bench, "20260527-100000", nested_under="real-model",
-        model_name="real-model", run_id="20260527-100000",
-        total=51, passed=45, pass_rate=0.88,
+        bench, "20260530-100000", nested_under="real-model",
+        model_name="real-model", run_id="20260530-100000",
+        total=59, passed=45, pass_rate=0.76,
         routing_total=49, routing_passed=45,
         metrics={"p50_latency_s": 2.0},
+        benchmark_version="1.1",
     )
     _write_flat_summary(
-        bench, "20260527-110000", nested_under="real-model",
-        model_name="real-model", run_id="20260527-110000",
+        bench, "20260530-110000", nested_under="real-model",
+        model_name="real-model", run_id="20260530-110000",
         total=3, passed=3, pass_rate=1.0,
         routing_total=3, routing_passed=3,  # mini-bench, trivial 100%
         metrics={"p50_latency_s": 1.0},
+        benchmark_version="1.1",
     )
     rc = bhv._cmd_bench_history_argv([])  # default min-cases 50
     out = capsys.readouterr().out
     assert rc == 0
-    # Best route% should reflect the 51-case run (45/49≈91.8%), NOT
+    # Best route% should reflect the 59-case run (45/49≈91.8%), NOT
     # the mini-bench's trivial 100%.
     leaderboard = out.split("## Per-model leaderboard")[1].split("##")[0]
     assert "100.0%" not in leaderboard, (
@@ -683,16 +691,16 @@ def test_unknown_bucket_excluded_by_default(fake_repo, capsys):
     bench = fake_repo / "benchmark"
     # An attributed run + an unattributed one, both today + full corpus.
     _write_flat_summary(
-        bench, "20260527-100000", nested_under="real-model",
-        model_name="real-model", run_id="20260527-100000",
-        total=51, passed=45, pass_rate=0.88,
+        bench, "20260530-100000", nested_under="real-model",
+        model_name="real-model", run_id="20260530-100000",
+        total=59, passed=45, pass_rate=0.76,
         routing_total=49, routing_passed=45,
         metrics={"p50_latency_s": 2.0},
     )
     _write_flat_summary(
-        bench, "20260527-110000",   # no nested_under → 'unknown'
-        run_id="20260527-110000",
-        total=51, passed=40, pass_rate=0.78,
+        bench, "20260530-110000",   # no nested_under → 'unknown'
+        run_id="20260530-110000",
+        total=59, passed=40, pass_rate=0.68,
         routing_total=49, routing_passed=40,
         metrics={"p50_latency_s": 3.0},
     )

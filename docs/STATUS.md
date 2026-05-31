@@ -1,6 +1,6 @@
 # Jaeger-OS — Pipeline Runtime-Verification Status
 
-**Date:** 2026-05-24 *(baselined for `0.1.0`)*
+**Date:** 2026-05-31 *(baselined for `0.2.0`)*
 **Why this doc:** the two hermes-parity audits
 (`hermes_tool_skill_audit.md`, `hermes_internals_audit.md`) compare
 *features and architecture* — "does JROS have a 6-tier permission

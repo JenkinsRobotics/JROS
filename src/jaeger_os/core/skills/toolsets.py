@@ -87,6 +87,15 @@ CORE: frozenset[str] = frozenset({
     # Meta — always visible so the model can grow its toolbox
     # mid-session without needing a category-wide load_toolset.
     "load_toolset", "describe_tool",
+    # NB: ``system_health`` is intentionally NOT exposed to the agent
+    # at any visibility tier. The probe lives behind the operator-
+    # side ``jaeger health`` CLI verb. Adding it to the agent surface
+    # caused prompts like "do a self check" to stall in prefill on
+    # local Gemma checkpoints — the model dithered between
+    # ``system_health`` and ``system_status`` and the llama.cpp /
+    # Metal sampler hit a slow path under that entropy. Matches
+    # Hermes Agent's design (their ``hermes doctor`` is operator-
+    # only; the agent loop has no self-test tool).
 })
 
 
@@ -179,7 +188,9 @@ TOOLSETS: dict[str, frozenset[str]] = {
     "plugins": frozenset({"list_plugins", "setup_plugin", "send_message"}),
     "models": frozenset({"list_models", "download_model", "model_location"}),
     "bench": frozenset({"run_benchmark"}),
-    "diagnostics": frozenset({"system_health", "system_status"}),
+    # NB: ``system_health`` not listed here — operator-only via
+    # ``jaeger health`` CLI verb (see toolsets CORE comment above).
+    "diagnostics": frozenset({"system_status"}),
 }
 
 # One-line description per built-in class — for the load_toolset catalog.

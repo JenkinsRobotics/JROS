@@ -94,14 +94,22 @@ def _check_file_sandbox() -> tuple[bool, str]:
 
 def _check_memory() -> tuple[bool, str]:
     """Memory remember/recall/forget round-trip. Catches schema drift
-    on facts.json or a broken InstanceLayout binding (the memory
-    store reads layout.memory_dir at every call)."""
-    from jaeger_os.core.tools import memory as mem
+    on the SQLite ``facts`` table or a broken InstanceLayout binding
+    (the memory store reads layout.memory_dir at every call).
+
+    NB on the import shape: ``from jaeger_os.core.tools import memory``
+    resolves to the ``memory()`` umbrella *function* (re-exported from
+    ``core.tools.__init__``) rather than the submodule of the same
+    name — Python's name resolution picks the function attribute over
+    the submodule because both live on the package. Importing the
+    individual verbs explicitly avoids the shadowing.
+    """
+    from jaeger_os.core.tools.memory import remember, recall, forget
     key = f"_health_probe_{uuid.uuid4().hex[:8]}"
     sentinel = "alive"
     try:
-        mem.remember(key=key, value=sentinel)
-        out = mem.recall(key=key)
+        remember(key=key, value=sentinel)
+        out = recall(key=key)
         recalled = out.get("value") if isinstance(out, dict) else None
         if recalled != sentinel:
             return False, f"recall returned {recalled!r}, expected {sentinel!r}"
@@ -109,7 +117,7 @@ def _check_memory() -> tuple[bool, str]:
         return False, f"{type(exc).__name__}: {exc}"
     finally:
         try:
-            mem.forget(key=key)
+            forget(key=key)
         except Exception:  # noqa: BLE001
             pass
     return True, "remember+recall+forget round trip ok"
@@ -142,30 +150,57 @@ def _check_tool_registry() -> tuple[bool, str]:
     """Every name in CORE resolves to a registered tool. Catches a
     rename that left the toolset config dangling against a tool that
     no longer exists (the lean-surface filter would silently hide it
-    without this check)."""
+    without this check).
+
+    Source-of-truth precedence:
+      1. **Phase-9 JaegerAgent** — ``agent._dispatch_by_name``
+         (the live dispatch map; cached in ``_jaeger_agents_by_session``).
+      2. **Legacy pydantic-ai agent** — ``agent._function_toolset.tools``
+         (still in the codebase but no longer the active loop).
+      3. **No agent booted** — return ok with a "not checked" message
+         rather than scan ``dir(jaeger_os.core.tools)``: the Python
+         function names there don't match the agent-facing names
+         CORE uses (e.g. ``read_file`` vs ``file_read``), so a naive
+         scan would always false-negative.
+    """
     from jaeger_os.core.skills.toolsets import CORE
+
+    registered: set[str] = set()
+    source = "none"
+
+    # 1) Phase-9 JaegerAgent — pick any session (they share the
+    # registered tool set; ``_dispatch_by_name`` is keyed on
+    # ``ToolDef.name``, the agent-facing name).
     try:
-        from jaeger_os.main import _pipeline
-        agent = _pipeline.get("agent")
+        from jaeger_os.main import _jaeger_agents_by_session
+        for jaeger_agent in _jaeger_agents_by_session.values():
+            dispatch_map = getattr(jaeger_agent, "_dispatch_by_name", None)
+            if dispatch_map:
+                registered = set(dispatch_map.keys())
+                source = "jaeger_agent"
+                break
     except Exception:  # noqa: BLE001
-        agent = None
-    if agent is None or not hasattr(agent, "_function_toolset"):
-        # Pre-agent boot or non-pydantic-ai agent — fall back to
-        # checking the tool registry module directly.
+        pass
+
+    # 2) Legacy pydantic-ai agent.
+    if not registered:
         try:
-            import jaeger_os.core.tools as tools_mod
-            registered = {n for n in dir(tools_mod) if not n.startswith("_")}
-        except Exception as exc:  # noqa: BLE001
-            return False, f"could not load tool registry: {exc}"
-    else:
-        try:
-            registered = set(agent._function_toolset.tools.keys())
+            from jaeger_os.main import _pipeline
+            agent = _pipeline.get("agent")
+            if agent is not None and hasattr(agent, "_function_toolset"):
+                registered = set(agent._function_toolset.tools.keys())
+                source = "pydantic_ai"
         except Exception:  # noqa: BLE001
-            registered = set()
+            pass
+
+    # 3) No agent booted.
+    if not registered:
+        return True, "not checked (no booted agent)"
+
     missing = sorted(n for n in CORE if n not in registered)
     if missing:
-        return False, f"CORE tools missing from registry: {missing}"
-    return True, f"{len(CORE)} CORE tools resolve"
+        return False, f"CORE tools missing from {source} registry: {missing}"
+    return True, f"{len(CORE)} CORE tools resolve ({source})"
 
 
 def _check_skills_loaded() -> tuple[bool, str]:
@@ -190,9 +225,16 @@ def _check_drift_parser() -> tuple[bool, str]:
     calls as raw text instead of structured calls. A regression here
     would silently degrade routing for every model that drifts — this
     check pins a canonical Gemma-style emission and confirms it
-    survives parsing."""
-    from jaeger_os.agent.parsing.drift_parser import extract_tool_calls
-    sample = '[get_time(timezone="UTC")]'
+    survives parsing.
+
+    The sample uses Gemma 4's paren-kwarg dialect wrapped in
+    ``<|tool_call>…<tool_call|>`` — the form ``boot_for_tui``'s
+    Gemma adapter actually emits. A bare bracketed call like
+    ``[get_time(...)]`` is not a recognised dialect (Gemma never
+    produces that) and would give a false negative.
+    """
+    from jaeger_os.agent.dialects import extract_tool_calls
+    sample = '<|tool_call>call:get_time(timezone="UTC")<tool_call|>'
     try:
         calls = extract_tool_calls(sample)
     except Exception as exc:  # noqa: BLE001

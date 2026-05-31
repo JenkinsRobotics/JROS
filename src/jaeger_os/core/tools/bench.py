@@ -162,22 +162,45 @@ def run_benchmark(
     if save and rows:
         try:
             layout = _require_layout()
-            out_dir = Path(layout.logs_dir) / "bench" / \
-                time.strftime("%Y%m%d-%H%M%S")
+            # Stamp the model identity into the summary so the
+            # history aggregator can attribute the run. Then nest the
+            # output under ``<logs>/bench/<model>/<ts>/`` so a
+            # "list every run of this model" browse is a single
+            # ``ls``, not a parse-summary-jsons exercise.
+            model_name = "unknown"
+            try:
+                from jaeger_os.main import _pipeline as _pl
+                _cfg = _pl.get("config")
+                _mp = getattr(getattr(_cfg, "model", None), "model_path", None)
+                if _mp:
+                    summary["model_path"] = str(_mp)
+                    model_name = Path(str(_mp)).stem
+                    summary["model_name"] = model_name
+            except Exception:  # noqa: BLE001
+                pass
+            ts = time.strftime("%Y%m%d-%H%M%S")
+            summary["run_id"] = ts
+            out_dir = Path(layout.logs_dir) / "bench" / model_name / ts
             out_dir.mkdir(parents=True, exist_ok=True)
-            (out_dir / "rows.jsonl").write_text(
+            # Match the flat-bench naming convention: every artifact
+            # carries ``<model>-<ts>`` so a file copied out of its
+            # folder still self-identifies. The generic
+            # ``summary.json`` / ``rows.jsonl`` filenames the original
+            # layout used were impossible to attribute once moved.
+            prefix = f"{model_name}-{ts}"
+            (out_dir / f"{prefix}-rows.jsonl").write_text(
                 "\n".join(json.dumps(r, default=str, ensure_ascii=False)
                           for r in summary["rows"]) + "\n",
                 encoding="utf-8",
             )
-            (out_dir / "summary.json").write_text(
+            (out_dir / f"{prefix}-summary.json").write_text(
                 json.dumps(
                     {k: v for k, v in summary.items() if k != "rows"},
                     indent=2, default=str, ensure_ascii=False,
                 ),
                 encoding="utf-8",
             )
-            (out_dir / "summary.md").write_text(
+            (out_dir / f"{prefix}-summary.md").write_text(
                 _render_markdown(summary), encoding="utf-8",
             )
             summary["report_dir"] = str(out_dir)
@@ -196,6 +219,7 @@ def _render_markdown(summary: dict[str, Any]) -> str:
     """One-page summary suitable for ``logs/bench/<ts>/summary.md``."""
     total = summary.get("total", 0) or 1
     pass_pct = 100 * summary.get("passed", 0) / total
+    metrics = summary.get("metrics") or {}
     lines = [
         "# Jaeger-OS — system benchmark",
         "",
@@ -209,14 +233,36 @@ def _render_markdown(summary: dict[str, Any]) -> str:
         f"- elapsed: {summary.get('elapsed_s', 0)}s "
         f"(wall: {summary.get('wall_s', 0)}s)",
         "",
+        "## Performance metrics",
+        "",
+        "| Metric | Value |",
+        "|---|---:|",
+        f"| avg latency / case | {metrics.get('avg_latency_s', 0):.2f}s |",
+        f"| p50 latency | {metrics.get('p50_latency_s', 0):.2f}s |",
+        f"| p95 latency | {metrics.get('p95_latency_s', 0):.2f}s |",
+        f"| min / max latency | {metrics.get('min_latency_s', 0):.2f}s / "
+        f"{metrics.get('max_latency_s', 0):.2f}s |",
+        f"| tool dispatches (total) | {metrics.get('total_tool_dispatches', 0)} |",
+        f"| avg tools / turn | {metrics.get('avg_tools_per_turn', 0):.2f} |",
+        f"| answer tokens (total) | {metrics.get('answer_tokens_total', 0)} |",
+        f"| answer tokens / case (avg) | {metrics.get('answer_tokens_avg', 0):.1f} |",
+        f"| answer tokens / sec (corpus) | {metrics.get('answer_tokens_per_sec', 0):.1f} |",
+        f"| prompt tokens (total) | {metrics.get('prompt_tokens_total', 0)} |",
+        f"| dispatch errors | {metrics.get('cases_with_errors', 0)} |",
+        "",
+        f"_Token source: **{metrics.get('answer_tokens_source', 'whitespace_estimate')}**. "
+        f"{metrics.get('tokens_note', '')}_",
+        "",
         "## By suite (graded against advisory thresholds)",
         "",
-        "| Suite | Passed | Total | Rate | Threshold | OK |",
-        "|---|---:|---:|---:|---:|:---:|",
+        "| Suite | Passed | Total | Rate | Threshold | OK | Avg s | p95 s |",
+        "|---|---:|---:|---:|---:|:---:|---:|---:|",
     ]
     # Suites are the operator-facing roll-up — "routing 22/25" reads
     # straight; "routing 88% (threshold 85% ✓)" tells them whether to
-    # cut a release without staring at the per-case table.
+    # cut a release without staring at the per-case table. Per-suite
+    # avg + p95 timing exposes a regression that slows a category
+    # without changing its pass rate.
     suites = summary.get("suites") or {}
     for name, s in suites.items():
         rate_pct = 100 * s.get("pass_rate", 0.0)
@@ -224,16 +270,20 @@ def _render_markdown(summary: dict[str, Any]) -> str:
         ok = "✓" if s.get("meets_threshold") else "✗"
         lines.append(
             f"| {name} | {s.get('passed', 0)} | {s.get('total', 0)} | "
-            f"{rate_pct:.0f}% | {thresh_pct:.0f}% | {ok} |"
+            f"{rate_pct:.0f}% | {thresh_pct:.0f}% | {ok} | "
+            f"{s.get('avg_latency_s', 0):.2f} | "
+            f"{s.get('p95_latency_s', 0):.2f} |"
         )
     lines.append("")
     lines.append("## By tag (every tag the corpus uses)")
     lines.append("")
-    lines.append("| Tag | Passed | Total |")
-    lines.append("|---|---:|---:|")
+    lines.append("| Tag | Passed | Total | Avg s |")
+    lines.append("|---|---:|---:|---:|")
     for tag, counts in sorted((summary.get("by_tag") or {}).items()):
         lines.append(
-            f"| {tag} | {counts.get('passed', 0)} | {counts.get('total', 0)} |"
+            f"| {tag} | {counts.get('passed', 0)} | "
+            f"{counts.get('total', 0)} | "
+            f"{counts.get('avg_latency_s', 0):.2f} |"
         )
     failures = summary.get("failures") or []
     if failures:

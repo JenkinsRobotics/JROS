@@ -26,11 +26,25 @@ from jaeger_os.interfaces.tui.voice_session import (
 # ── VoiceConfig defaults ─────────────────────────────────────────────
 
 
-def test_voice_config_defaults_everything_on() -> None:
-    # A Jaeger is embodied — voice + wake + follow-up + barge-in all on.
+def test_voice_config_default_is_off_with_other_toggles_on() -> None:
+    """VOICE-1 (docs/ROADMAP_0.2.0.md): ``enabled`` defaults OFF so
+    a fresh install doesn't surprise the user with an open mic that
+    feeds nearby podcast audio into the agent without ``speexdsp``
+    AEC. The other voice toggles (wake_word / follow_up / barge_in)
+    stay ON so that when ``enabled`` IS flipped, the safe defaults
+    are still in place."""
     vc = VoiceConfig()
-    assert vc.enabled and vc.wake_word and vc.follow_up and vc.barge_in
+    assert vc.enabled is False
+    assert vc.wake_word and vc.follow_up and vc.barge_in
     assert vc.follow_up_seconds == 15.0
+
+
+def test_voice_config_enabled_can_be_turned_on_explicitly() -> None:
+    """The wizard sets ``enabled=True`` only when the user explicitly
+    picks voice as the default interaction mode AND opts in to the
+    always-on mic. Confirm the field still accepts the truthy value."""
+    vc = VoiceConfig(enabled=True)
+    assert vc.enabled is True
 
 
 # ── wake-phrase derivation ───────────────────────────────────────────

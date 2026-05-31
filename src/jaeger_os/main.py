@@ -66,68 +66,35 @@ from jaeger_os.core.instance.setup_wizard import run_wizard
 
 
 # ---------------------------------------------------------------------------
-# Tools whose dict result IS the answer (skip the final-LLM round-trip).
+# Skip-final tools — DISABLED 2026-05-26.
+#
+# Historical context: this set listed tools whose dict result was
+# treated as "the answer", short-circuiting the agent loop after the
+# first tool call. A bounded 120-token finalize pass formatted the
+# result into a brief user-facing sentence. Saved ~1-3s per turn on
+# simple queries.
+#
+# Why removed: skip-final bypasses the agent's actual reasoning. The
+# model never gets a chance to:
+#   - decide whether the result fully answers the question
+#   - catch + retry a wrong tool call
+#   - chain into a follow-up step
+#   - shape the answer to the user's conversational tone
+#
+# In practice this produced robotic-feeling answers ("workspace/haiku.txt",
+# "2026-05-26 10:13:19 PM PDT") instead of natural ones. It also
+# created brittle coupling between this list and the system prompt
+# rules — e.g. the rule "call get_time before schedule_prompt" was
+# silently broken by get_time being in skip-final, which exited the
+# loop before schedule_prompt could fire.
+#
+# Empty set = every turn runs the full agent loop, every time. The
+# ~1-3s latency cost on pure single-tool queries (calculate, recall,
+# get_time, etc.) is the price of a coherent reasoning surface. If
+# we ever want this back, do it as an opt-in per-turn signal from
+# the model rather than a static list.
 # ---------------------------------------------------------------------------
-SKIP_FINAL_TOOLS = frozenset({
-    # NB historical name. These tools are "FAST_FINALIZE" — the agent.iter
-    # loop is short-circuited after the FIRST tool call returns, then a
-    # single bounded ``client.chat`` finalize pass (max_tokens=120,
-    # temp=0.2) turns the tool result into a one-sentence user answer.
-    # The LLM stays IN the pipeline (so the answer is conversational and
-    # follow-up context is consistent), but the second-pass cost is
-    # capped so latency stays close to the prior bypass model.
-    "get_time", "calculate", "system_status",
-    "list_facts", "recall", "remember", "forget",
-    # NB: read_file is INTENTIONALLY not skip-final. A read is almost
-    # never a terminal action — it's usually step 1 of "read then act"
-    # (read a file, then finish/fix/rewrite it). Skip-final cut the loop
-    # off after the read, so "finish the code" turns never reached
-    # write_file. Reads now run the full agent.iter loop so the model
-    # can chain into the write.
-    #
-    # Mutating file writers — ``write_file``, ``append_file``, ``patch``,
-    # ``delete_file`` — were ALSO skip-final in 0.1.0. Removed per
-    # review finding #13: a single user request ("fix the typo in
-    # README") often needs read → patch → verify → explain even if
-    # the model's first call is a write. The lexical multistep guard
-    # helped some, but the safer default is "writers run the full
-    # loop", letting the model self-confirm + answer.
-    "list_skill_dir",
-    "clarify",
-    # Scheduling read-only ops (list/cancel) skip-final fine; creation
-    # ``schedule_prompt`` is tier-gated and runs the full loop so its
-    # confirmation prompt isn't truncated.
-    "list_schedules",
-    "help_me",
-    "list_credentials",
-    "reload_skills",
-    # Parity ports from pydantic_ai — same skip-final rationale: their
-    # dict result IS the user-facing answer.
-    "text_to_speech",
-    "open_on_host",
-    "delegate_task",
-    "send_message",
-    # get_weather: the result IS a single ready-to-show sentence
-    # ("Sunny, 83°F in Downey, CA") — fast-finalize still adds a
-    # conversational shape ("It's currently sunny and 83 in Downey").
-    # NOTE: web_search is INTENTIONALLY not skip-final — its result is
-    # a list of 5+ sources the model digests through the FULL agent
-    # iter loop (not the bounded fast-finalize) so it can pick the most
-    # relevant fact + cite.
-    "get_weather",
-    # Plugin awareness — output is structured/listy, the formatter
-    # renders a clean per-plugin status report; no value in a second
-    # LLM round paraphrasing it.
-    "list_plugins",
-    "setup_plugin",
-    # Audio input — the transcript IS the user's spoken answer; the
-    # model surfaces it directly so the user sees what was heard.
-    "listen",
-    # Kanban board mutations — quick local bookkeeping; the dict result
-    # IS the answer. board_view is NOT skip-final — its card list is
-    # digested through the full loop so the model can act on the board.
-    "board_add", "board_move", "board_update",
-})
+SKIP_FINAL_TOOLS: frozenset[str] = frozenset()
 
 
 def _format_tool_result_as_answer(name: str, result: Any) -> str:
@@ -430,6 +397,11 @@ _pipeline: dict[str, Any] = {
         "detail": "",              # short human label (tool name, queue size, …)
         "since_ts": 0.0,           # time.time() when this state started
     },
+    # Phase-9 JaegerAgent currently executing a foreground turn. The
+    # TUI's process-wide cancel event is not the same object as the
+    # agent-loop interrupt event, so request_turn_cancel fans out to
+    # this handle too.
+    "active_jaeger_agent": None,
 }
 
 
@@ -1322,13 +1294,14 @@ def _register_builtins(client: Any) -> None:
         finished. Faster than polling ``check_background`` in a loop."""
         return t.pending_background()
 
-    @register_tool_from_function
-    def system_health(deep: bool = False) -> dict:
-        """Fast runtime health probe — 8 substrate checks (<3s).
-        ``deep=True`` adds three live-agent turns (free-text, read,
-        sandbox write). Call when the user asks "are you healthy?".
-        See ``describe_tool("system_health")`` for the full list."""
-        return t.system_health(deep=deep)
+    # ``system_health`` is intentionally NOT registered as an agent
+    # tool — operator-only access via ``jaeger health`` CLI verb.
+    # Hiding it from the model surface fixed a prefill stall: prompts
+    # like "do a self check" routed across ``system_health`` /
+    # ``system_status`` and llama.cpp's Metal sampler hung at high
+    # first-token entropy. The underlying function is still imported
+    # by the CLI verb (``daemon/health_verb.py``) and by boot
+    # preflight; only the agent-facing registration is gone.
 
     @register_tool_from_function
     def run_benchmark(tags: str = "", limit: int = 0,
@@ -1788,7 +1761,7 @@ def _strip_drift_markup(text: str) -> str:
     # Use the agent layer's drift parser to strip tool-call envelopes
     # from text we'd otherwise show to the user (TUI banner, finalize
     # fallback). The parser knows the same patterns as the adapters.
-    from jaeger_os.agent.parsing.drift_parser import _DRIFT_PATTERNS  # noqa: PLC2701
+    from jaeger_os.agent.dialects import _DRIFT_PATTERNS  # noqa: PLC2701
     cleaned = text
     for pattern in _DRIFT_PATTERNS:
         cleaned = pattern.sub("", cleaned)
@@ -1871,6 +1844,12 @@ def request_turn_cancel() -> None:
     ev = _pipeline.get("cancel_event")
     if ev is not None:
         ev.set()
+    agent = _pipeline.get("active_jaeger_agent")
+    if agent is not None and hasattr(agent, "interrupt"):
+        try:
+            agent.interrupt()
+        except Exception:  # noqa: BLE001 — cancel must be best-effort
+            pass
 
 
 # Per-(client, system_prompt, mcp_specs) cache so a single set of skill
@@ -2087,10 +2066,70 @@ def _run_turn_via_jaeger_agent(
                         )
                     except (TypeError, ValueError):
                         pass
+            # Daemon-mode: forward to any chat.subscribe subscribers
+            # so a remote TUI / attach client shows live tool activity.
+            # In-process boot (no daemon) leaves the bus unset and
+            # this is a no-op.
+            bus = _pipeline.get("daemon_event_bus")
+            if bus is not None:
+                try:
+                    payload: dict[str, Any] = {"name": name, "phase": phase}
+                    if isinstance(data, dict):
+                        # Only ship JSON-able scalars; the full data
+                        # dict can hold non-serializable references.
+                        for k in ("elapsed_s", "args_preview", "result_preview"):
+                            if k in data:
+                                payload[k] = data[k]
+                    bus.publish("tool.progress", **payload)
+                except Exception:  # noqa: BLE001 — never let pub break the agent
+                    pass
+
+        # DB-6: persist a tool_calls audit row per dispatch. Best-effort
+        # — record_tool_call swallows DB failures so a SQL hiccup never
+        # crashes a turn. Session key is captured by closure from the
+        # outer ``key`` binding.
+        def _tool_done(
+            name: str,
+            args: dict[str, Any],
+            result: Any,
+            ok: bool,
+            error: str | None,
+            elapsed_s: float,
+        ) -> None:
+            try:
+                mem.record_tool_call(
+                    session_key=key,
+                    tool_name=name,
+                    args=args,
+                    result=result,
+                    ok=ok,
+                    error=error,
+                    elapsed_s=elapsed_s,
+                )
+            except Exception:  # noqa: BLE001 — observer must never break the turn
+                pass
+
+        def _heartbeat(elapsed_s: float) -> None:
+            # Keep the status line honest while the first model call is
+            # still pre-filling/decoding and no tool has fired yet.
+            # Preserve since_ts so the visible elapsed timer reflects
+            # the whole model wait, not the most recent heartbeat.
+            snap = get_agent_status()
+            since_ts = (
+                float(snap.get("since_ts") or 0.0)
+                if snap.get("state") == "thinking"
+                else 0.0
+            )
+            set_agent_status(
+                "thinking",
+                detail=f"waiting on model {elapsed_s:.1f}s",
+                since_ts=since_ts or time.time(),
+            )
 
         _status_cb = AgentCallbacks(
             tool_progress=_tool_progress,
-            heartbeat=lambda elapsed_s: None,  # ``since_ts`` carries elapsed
+            tool_done=_tool_done,
+            heartbeat=_heartbeat,
         )
         # Pipe the configured ctx window into the agent's pre-flight
         # ContextGuard so an oversized prompt is trimmed (or refused)
@@ -2105,6 +2144,10 @@ def _run_turn_via_jaeger_agent(
         _artifact_dir = (
             (_layout.logs_dir / "tool_results") if _layout is not None else None
         )
+        # Stall watchdog — caller-controlled via ``model.stall_timeout_s``
+        # in config.yaml. ``None`` lets ``build_jaeger_agent`` pick a
+        # backend-appropriate default (120s for in-process, 30s for HTTP).
+        _stall_s = getattr(getattr(_cfg, "model", None), "stall_timeout_s", None)
         _jaeger_agents_by_session[key] = build_jaeger_agent(
             client,
             system_prompt=_pipeline["system_prompt"],
@@ -2113,6 +2156,7 @@ def _run_turn_via_jaeger_agent(
             callbacks=_status_cb,
             ctx_window=_ctx,
             artifact_dir=_artifact_dir,
+            stale_call_timeout_s=_stall_s,
         )
     jaeger_agent = _jaeger_agents_by_session[key]
 
@@ -2123,6 +2167,7 @@ def _run_turn_via_jaeger_agent(
     # cross-turn leakage doesn't inflate this turn's report.
     _pipeline["turn_tool_time"] = 0.0
     try:
+        _pipeline["active_jaeger_agent"] = jaeger_agent
         if lock is not None:
             with lock:
                 result = drive_one_turn(jaeger_agent, user_text)
@@ -2139,6 +2184,9 @@ def _run_turn_via_jaeger_agent(
         return {"text": "", "error": str(exc), "tool_activity": [],
                 "first_decision": None, "skipped_final": False,
                 "spoke_via_tool": False, "elapsed_s": elapsed, "report": report}
+    finally:
+        if _pipeline.get("active_jaeger_agent") is jaeger_agent:
+            _pipeline["active_jaeger_agent"] = None
 
     answer = (result["answer"] or "").strip()
     tool_activity = result["tool_activity"]
@@ -2654,7 +2702,7 @@ def _cli_list_instances() -> int:
     root = _instance_root()
     print(f"Instances under {root}:")
     if not instances:
-        print("  (none yet — run --setup or --create-instance to create one)")
+        print("  (none yet — run `jaeger setup` to create one)")
         return 0
     current = default_instance_name()
     for name, path, has_manifest in instances:
@@ -2815,8 +2863,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("prompt", nargs="*", help="Optional one-shot command.")
     p.add_argument("--instance", type=str, default=None,
                    help="Instance name (default: JAEGER_INSTANCE_NAME or 'default').")
-    p.add_argument("--setup", action="store_true",
-                   help="Run (or re-run) the setup wizard, then exit.")
+    # ``--setup`` removed in 0.2.0 — use ``jaeger setup`` (INST-2).
     p.add_argument("--self-test", action="store_true",
                    help="Run the sandbox/memory/skill smoke tests without loading the LLM.")
     p.add_argument("--doctor", action="store_true",
@@ -2835,18 +2882,17 @@ def parse_args() -> argparse.Namespace:
                    help="List stored credential names (values never printed) and exit.")
     p.add_argument("--delete-credential", metavar="NAME",
                    help="Delete a stored credential by name and exit.")
-    p.add_argument("--migrate", action="store_true",
-                   help="Run any pending core migrations against this instance and exit.")
-    p.add_argument("--list-instances", action="store_true",
-                   help="List every instance under the root and exit.")
-    p.add_argument("--create-instance", metavar="NAME",
-                   help="Non-interactively create a new instance with default identity + config, then exit.")
-    p.add_argument("--delete-instance", metavar="NAME",
-                   help="Delete an instance directory and exit. Prompts for confirmation unless --force.")
-    p.add_argument("--clear-instance", metavar="NAME",
-                   help="Clear memory + logs for an instance (preserves identity / config / credentials / skills). Prompts unless --force.")
+    # ``--migrate``, ``--list-instances``, ``--create-instance``,
+    # ``--delete-instance``, ``--clear-instance`` removed in 0.2.0
+    # — use ``jaeger migrate`` and ``jaeger instance {list,delete,clear}``
+    # (INST-2). The wizard creates new instances directly via
+    # ``jaeger setup --name NAME``; the explicit ``--create-instance``
+    # noninteractive shortcut is no longer the recommended path.
+    # ``--force`` stays — still used by deprecated paths inside
+    # main.py that haven't been routed to the verb subsystem yet
+    # (kept narrow during the cutover).
     p.add_argument("--force", action="store_true",
-                   help="Skip confirmation prompts on destructive commands (delete-instance / clear-instance / create-instance overwrite).")
+                   help="Skip confirmation prompts on destructive operations.")
     p.add_argument("--with-memory", action="store_true",
                    help=("Carry conversation history across turns (load last 5 "
                          "episodic turns + accumulate within session). Auto-on "
@@ -2924,6 +2970,11 @@ def boot_for_tui(
         touch_manifest_started(layout, manifest)
 
         config: Config = load_yaml(layout.config_path, Config)
+        # INST-11: honour the user's optional workspace override
+        # (config.yaml: workspace.location). Re-bind with the path so
+        # ``file_write("workspace/...")`` lands wherever the user wants.
+        if getattr(config.workspace, "location", None):
+            jaeger_tools.bind(layout, workspace_override=config.workspace.location)
         _pipeline["layout"] = layout
         _pipeline["config"] = config
         _pipeline["show_latency"] = config.display.show_latency
@@ -2986,6 +3037,34 @@ def boot_for_tui(
             pass
 
     return TUIBootResult(client=client, layout=layout, cleanup=cleanup)
+
+
+def boot_for_daemon(
+    *,
+    instance_name: str | None = None,
+    with_memory: bool = True,
+    warmup: bool = True,
+) -> TUIBootResult:
+    """Boot the jaeger pipeline for the daemon's child process.
+
+    The daemon's boot is **the same** as the TUI's — instance resolve →
+    manifest gate → lock → bind tools → load model → build agent →
+    prewarm. The only difference is the caller: the daemon owns the
+    instance lock for its whole lifetime; clients (TUI / attach / GUI)
+    just open the socket. This function exists as a named entry point
+    so the lifecycle factory in ``daemon/cli.py`` doesn't have to
+    import ``boot_for_tui`` (and so we can swap the daemon's boot
+    without touching the TUI's path if they diverge later).
+
+    Returns the same :class:`TUIBootResult`; the daemon doesn't need
+    a separate result type — it just keeps ``client`` + ``layout``
+    alive and calls ``cleanup()`` on shutdown.
+    """
+    return boot_for_tui(
+        instance_name=instance_name,
+        with_memory=with_memory,
+        warmup=warmup,
+    )
 
 
 def switch_model(new_model: str, *, warmup: bool = True) -> Any:
@@ -3168,6 +3247,15 @@ def main() -> int:
     # peel off BEFORE argparse so they don't collide with the positional
     # ``prompt`` argument the legacy CLI takes. Standalone ``jaeger``
     # (no subcommand) falls through to the existing TUI path unchanged.
+    # INST-8 (0.2.0): move any 0.1.0-style ``~/.jaeger/<name>/`` dirs
+    # into the new ``~/.jaeger/instances/<name>/`` nesting BEFORE
+    # anything tries to resolve an instance path. Idempotent — no-op
+    # when nothing is legacy. Runs unconditionally so every entry
+    # path (daemon subcommand, TUI, voice, one-shot CLI) sees the
+    # post-migration layout.
+    from jaeger_os.core.instance.legacy_migrations import migrate_legacy_layout
+    migrate_legacy_layout()
+
     from jaeger_os.daemon.cli import dispatch as _daemon_dispatch, is_daemon_subcommand as _is_daemon
     if _is_daemon(sys.argv[1:]):
         return _daemon_dispatch(sys.argv[1:])
@@ -3242,16 +3330,13 @@ def main() -> int:
     root = resolve_instance_dir(instance_name)
     layout = InstanceLayout(root=root)
 
-    # Instance management commands — run BEFORE the wizard / manifest check,
-    # since they're admin ops that don't require an active instance.
-    if args.list_instances:
-        return _cli_list_instances()
-    if args.create_instance:
-        return _cli_create_instance(args.create_instance, force=args.force)
-    if args.delete_instance:
-        return _cli_delete_instance(args.delete_instance, force=args.force)
-    if args.clear_instance:
-        return _cli_clear_instance(args.clear_instance, force=args.force)
+    # Instance-management commands now live under ``jaeger setup`` /
+    # ``jaeger instance {list,use,inspect,delete,clear}`` / ``jaeger
+    # migrate`` — see ``daemon/instance_verbs.py`` (INST-2). The old
+    # ``--list-instances`` / ``--create-instance`` / ``--delete-
+    # instance`` / ``--clear-instance`` / ``--migrate`` flags were
+    # removed in 0.2.0; legacy callers get an argparse error and
+    # should switch to the new verb form.
 
     # Self-test runs without identity/config/manifest — it only exercises
     # the framework code paths (sandbox, memory, skill loader, credentials,
@@ -3261,8 +3346,11 @@ def main() -> int:
         layout.ensure_dirs()
         return self_test(layout)
 
-    if args.setup or not layout.exists():
-        layout = run_wizard(force=args.setup, instance_name=instance_name)
+    # First-run / missing-instance: auto-fire the wizard. Explicit
+    # ``jaeger setup`` runs through the daemon-cli dispatcher and
+    # never reaches this branch.
+    if not layout.exists():
+        layout = run_wizard(force=False, instance_name=instance_name)
 
     # Manifest gate. On version mismatch try the migration runner; only
     # refuse-to-start if migrations don't bring us to parity.
@@ -3300,6 +3388,19 @@ def main() -> int:
         jaeger_tools.bind(layout)
         touch_manifest_started(layout, manifest)
 
+        # INST-11: re-bind with workspace override if the user set
+        # ``workspace.location`` in config.yaml. Read config eagerly
+        # so the agent's writes route correctly from the first turn.
+        try:
+            _cfg_for_workspace = load_yaml(layout.config_path, Config)
+            if getattr(_cfg_for_workspace.workspace, "location", None):
+                jaeger_tools.bind(
+                    layout,
+                    workspace_override=_cfg_for_workspace.workspace.location,
+                )
+        except Exception:  # noqa: BLE001 — config load happens again below
+            pass
+
         # Credential management — these subcommands skip model load.
         if args.set_credential:
             return _cli_set_credential(layout, args.set_credential)
@@ -3307,8 +3408,7 @@ def main() -> int:
             return _cli_list_credentials(layout)
         if args.delete_credential:
             return _cli_delete_credential(layout, args.delete_credential)
-        if args.migrate:
-            return _cli_migrate(layout)
+        # ``--migrate`` removed in 0.2.0 — use ``jaeger migrate``.
 
         # NB: --self-test runs earlier in main() (before wizard / manifest / lock)
         # so it works against a brand-new install with no identity yet.

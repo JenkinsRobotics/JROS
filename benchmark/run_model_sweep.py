@@ -45,9 +45,42 @@ from dataclasses import dataclass, field, asdict
 
 REPO = pathlib.Path(__file__).resolve().parents[1]
 SRC = REPO / "src"
-DEFAULT_INSTANCE_CFG = (
-    REPO / "src" / "jaeger_os" / "instance" / "default" / "config.yaml"
-)
+
+
+def _resolve_active_config_path() -> pathlib.Path:
+    """Locate the config.yaml the bench subprocess will actually load.
+
+    INST-10 (0.2.0) moved per-instance state out of the bundled
+    ``src/jaeger_os/instance/default/`` directory and into
+    ``~/.jaeger/instances/<name>/``. The old hard-coded path in this
+    script (``DEFAULT_INSTANCE_CFG``) edited the WRONG file after the
+    move — the sweep's config-swap silently no-op'd and every model
+    ran against whatever the live instance's config already pointed
+    at (so e.g. a 3-model compare actually benched the same model 3×
+    and showed only statistical noise as the "difference").
+
+    Resolution order (matches ``core/instance/instance.py:resolve_instance_dir``):
+
+      1. ``JAEGER_INSTANCE_DIR`` env var — explicit path. Used for
+         the dev sandbox (``sandbox/jros-dev/``) and for one-off
+         runs against a non-default instance.
+      2. ``~/.jaeger/instances/<JAEGER_INSTANCE_NAME or 'default'>/``.
+      3. Fall back to the legacy bundled-skeleton path so the script
+         still works on a pre-INST-10 checkout if anyone digs one up.
+    """
+    env_dir = os.environ.get("JAEGER_INSTANCE_DIR")
+    if env_dir:
+        return pathlib.Path(env_dir).expanduser() / "config.yaml"
+    name = os.environ.get("JAEGER_INSTANCE_NAME") or "default"
+    home_cfg = pathlib.Path.home() / ".jaeger" / "instances" / name / "config.yaml"
+    if home_cfg.exists():
+        return home_cfg
+    return REPO / "src" / "jaeger_os" / "instance" / "default" / "config.yaml"
+
+
+# Resolved once at module load — the subprocess inherits this script's
+# env, so the path it reads from is the same one we edit here.
+DEFAULT_INSTANCE_CFG = _resolve_active_config_path()
 SWEEP_DIR = REPO / "benchmark" / "sweep"
 
 
@@ -63,6 +96,14 @@ class ModelResult:
     elapsed_s: float = 0.0
     load_s: float = 0.0
     p50_turn_s: float = 0.0
+    p95_turn_s: float = 0.0
+    avg_turn_s: float = 0.0
+    # Tokens-per-second — real tokenizer count from the adapter's
+    # ``usage`` field when reported, whitespace-split estimate
+    # otherwise. ``tokens_source`` carries which one it is so the
+    # comparison table can label the column honestly.
+    tokens_per_sec: float = 0.0
+    tokens_source: str = "n/a"
     failures: list[str] = field(default_factory=list)
     return_code: int = -1
     error: str | None = None
@@ -134,6 +175,31 @@ def _write_model_path(text: str, new_model_path: str) -> str:
 
 
 # ── run one model ──────────────────────────────────────────────────
+
+
+_HYBRID_FAMILY_TOKENS = ("qwen3", "gemma-4", "gemma4")
+# Names that LOOK like the hybrid families but aren't (the sanity sweep
+# verified these emit no ``enable_thinking`` toggle in their template):
+#   * ``deepseek`` — DeepSeek-R1 is *distilled from* Qwen3 but always
+#     reasons; no toggle.
+#   * ``coder`` — Qwen3-Coder is a coder fine-tune; no toggle.
+#   * ``reasoning`` / ``deephermes`` — explicit always-reasoning models.
+_HYBRID_FALSE_POSITIVES = ("deepseek", "coder", "reasoning", "deephermes")
+
+
+def _is_hybrid_by_name(stem: str) -> bool:
+    """Best-effort 'is this a hybrid thinking model' check from the
+    filename stem. Qwen3.x and gemma-4 expose ``enable_thinking`` in
+    their chat templates; everything else doesn't. Used to decide
+    whether the sweep runs one mode (default) or two (think + direct).
+    If the heuristic gets it wrong (declares hybrid when not), the
+    runtime check in :class:`LocalLlamaAdapter` makes the toggle a
+    no-op anyway — worst case is a duplicated subprocess, never a
+    behaviour change."""
+    low = stem.lower()
+    if any(bad in low for bad in _HYBRID_FALSE_POSITIVES):
+        return False
+    return any(tok in low for tok in _HYBRID_FAMILY_TOKENS)
 
 
 def _human_name(path: str) -> str:
@@ -214,16 +280,65 @@ def run_one(model_path: str, *, level: int) -> ModelResult:
 
         env = os.environ.copy()
         env["PYTHONPATH"] = (str(SRC) + os.pathsep + env.get("PYTHONPATH", ""))
+        # macOS fork-safety — see bench_compare_verb for the full why.
+        # On macOS 26's xzone allocator, fork()ing this bench
+        # subprocess after the sweep driver imported numpy/jaeger
+        # crashes the child in ``_malloc_fork_child``. Force the
+        # legacy allocator + disable the Obj-C fork guard so the
+        # spawn survives. Redundant with the parent setting it, but
+        # safe to assert here too (covers a direct
+        # ``python run_model_sweep.py`` invocation that didn't go
+        # through ``jaeger bench compare``).
+        env.setdefault("MallocNanoZone", "0")
+        env.setdefault("OBJC_DISABLE_INITIALIZE_FORK_SAFETY", "YES")
+        # Per-run HISTORY.md regeneration is INTENTIONALLY enabled
+        # inside each model's subprocess. A multi-model sweep over 11
+        # GGUFs can take 6+ hours; updating the leaderboard only at the
+        # end means an interrupted sweep loses partial-progress
+        # visibility. Per-run regeneration is cheap (<1s for the
+        # current data volume) and lets the user open HISTORY.md
+        # mid-sweep to see scores landing as they finish — and to see
+        # uninstalled-model rows disappear as soon as they're deleted
+        # from disk during the sweep.
+        # Forward ``--tags`` / ``--limit`` from the env when the caller
+        # (``jaeger bench compare``) set them. Lets the operator narrow
+        # the sweep to e.g. routing-only without re-running 51 cases
+        # per model.
+        extra_args: list[str] = []
+        _tags = env.get("JAEGER_BENCH_TAGS", "").strip()
+        if _tags:
+            extra_args.extend(["--tags", _tags])
+        _limit = env.get("JAEGER_BENCH_LIMIT", "").strip()
+        if _limit and _limit != "0":
+            extra_args.extend(["--limit", _limit])
         started = time.perf_counter()
+        # Per-model wall-clock cap. This is a **wedged-process backstop**,
+        # NOT a fairness/comparability gate. The real "is this model
+        # broken" signal is the per-case stall watchdog
+        # (``JAEGER_BENCH_STALL_S``, default 45s) — that's what flags
+        # actually-stuck decodes. The model-level cap only exists so a
+        # truly hung llama-cpp process doesn't run forever and never
+        # release the queue. Default 2 hours: covers 59 cases × 60s
+        # worst-case (~60 min) plus generous headroom for big MoEs in
+        # think mode. Overridable via ``JAEGER_BENCH_MODEL_TIMEOUT``
+        # (seconds). Do NOT lower this to "speed up the sweep" — a
+        # capable-but-slow model getting cut off mid-corpus produces
+        # no result and looks identical to a broken model in the log,
+        # which is exactly the comparison we DON'T want to make.
+        try:
+            _model_timeout = float(os.environ.get(
+                "JAEGER_BENCH_MODEL_TIMEOUT", "") or 7200)
+        except ValueError:
+            _model_timeout = 7200.0
         proc = subprocess.run(
             [sys.executable, str(REPO / "benchmark" / "run_flat_bench.py"),
-             "--no-warmup"],
+             "--no-warmup", *extra_args],
             cwd=str(REPO),
             env=env,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
-            timeout=2400,   # 40 min cap per model — biggest realistic run
+            timeout=_model_timeout,
         )
         wall = time.perf_counter() - started
     except subprocess.TimeoutExpired as exc:
@@ -242,6 +357,43 @@ def run_one(model_path: str, *, level: int) -> ModelResult:
     cases, route_ok, ans_ok, lats, fails, load_s = _parse_bench_output(proc.stdout)
     lats.sort()
     p50 = lats[len(lats) // 2] if lats else 0.0
+    p95_idx = max(0, int(round(0.95 * (len(lats) - 1)))) if lats else 0
+    p95 = lats[p95_idx] if lats else 0.0
+    avg = (sum(lats) / len(lats)) if lats else 0.0
+
+    # Tokens-per-second + tokens_source come from the per-subprocess
+    # summary the inner ``run_flat_bench.py`` writes into
+    # ``benchmark/flat/<model>/<ts>/``. Find the newest run dir for
+    # THIS model, then look for the summary file — the filename
+    # convention changed 2026-05-27 from ``summary.json`` to
+    # ``<model>-<ts>-summary.json``; try both so a sweep run mid-
+    # transition still finds it.
+    tps = 0.0
+    tps_source = "n/a"
+    try:
+        flat_root = REPO / "benchmark" / "flat" / name
+        if flat_root.is_dir():
+            run_dirs = sorted(
+                (d for d in flat_root.iterdir() if d.is_dir()),
+                key=lambda d: d.name, reverse=True,
+            )
+            if run_dirs:
+                run_dir = run_dirs[0]
+                # New naming: <model>-<ts>-summary.json
+                candidates = list(run_dir.glob("*-summary.json"))
+                summary_path = candidates[0] if candidates else (
+                    run_dir / "summary.json"  # legacy fallback
+                )
+                if summary_path.exists():
+                    s = json.loads(summary_path.read_text(encoding="utf-8"))
+                    m = s.get("metrics") or {}
+                    tps = float(m.get("answer_tokens_per_sec", 0.0) or 0.0)
+                    tps_source = m.get(
+                        "answer_tokens_source", "whitespace_estimate"
+                    )
+    except Exception:  # noqa: BLE001 — TPS is metadata; never fail the row
+        pass
+
     result = ModelResult(
         name=name,
         path=model_path,
@@ -253,6 +405,10 @@ def run_one(model_path: str, *, level: int) -> ModelResult:
         elapsed_s=wall,
         load_s=load_s,
         p50_turn_s=p50,
+        p95_turn_s=p95,
+        avg_turn_s=avg,
+        tokens_per_sec=tps,
+        tokens_source=tps_source,
         failures=fails,
         return_code=proc.returncode,
     )
@@ -266,7 +422,9 @@ def run_one(model_path: str, *, level: int) -> ModelResult:
         f"({result.route_pct:.1f}%)  "
         f"answer {result.answer_ok:>2}/{result.cases:>2} "
         f"({result.answer_pct:.1f}%)  "
-        f"p50 {result.p50_turn_s:.1f}s  total {result.elapsed_s:.0f}s",
+        f"p50 {result.p50_turn_s:.1f}s  "
+        f"tps {result.tokens_per_sec:.1f}  "
+        f"total {result.elapsed_s:.0f}s",
         flush=True,
     )
     return result
@@ -300,15 +458,23 @@ def _write_report(results: list[ModelResult], *, level: int, out_dir: pathlib.Pa
         "",
         "## Ranking (routing% desc, p50 latency asc)",
         "",
-        "| # | Model | Size GB | Route % | Answer % | p50 turn s | Load s |",
-        "|---|---|---|---|---|---|---|",
+        "TPS = output tokens-per-second sustained across the corpus. "
+        "Real tokenizer counts when the adapter reports ``usage`` "
+        "(local llama-cpp, OpenAI, Anthropic); whitespace-split estimate "
+        "otherwise — see the `tokens_source` column.",
+        "",
+        "| # | Model | Size GB | Route % | Answer % | p50 s | p95 s | "
+        "TPS | tokens_source | Load s |",
+        "|---|---|---|---|---|---|---|---|---|---|",
     ]
     for i, r in enumerate(ranked, 1):
         lines.append(
             f"| {i} | `{r.name}` | {r.size_gb:.1f} | "
             f"{r.route_pct:.1f}% ({r.route_ok}/{r.cases}) | "
             f"{r.answer_pct:.1f}% ({r.answer_ok}/{r.cases}) | "
-            f"{r.p50_turn_s:.1f} | {r.load_s:.1f} |"
+            f"{r.p50_turn_s:.1f} | {r.p95_turn_s:.1f} | "
+            f"{r.tokens_per_sec:.1f} | {r.tokens_source} | "
+            f"{r.load_s:.1f} |"
         )
 
     errored = [r for r in results if r.cases == 0]
@@ -373,16 +539,56 @@ def main() -> int:
               file=sys.stderr)
         return 2
 
-    print(f"Sweeping {len(paths)} model(s) over the flat bench corpus",
+    # Methodology: the corpus benchmark measures IDEAL-STATE behaviour
+    # — every model runs once in the mode it would actually be
+    # deployed in (``auto`` for toggle-capable, the model's only mode
+    # for ``always``/``never`` lineages). The default with NO env set
+    # is therefore ``auto`` for every path — no hybrid auto-pairing.
+    #
+    # Forced ``on`` / ``off`` runs are SANITY-PROBE comparison data,
+    # not corpus rank entries — they only show up if the operator
+    # explicitly sets ``JAEGER_BENCH_THINKING=on`` (or ``off``) for a
+    # specific research-comparison sweep. The leaderboard renderer
+    # filters non-ideal rows out of the main per-model table.
+    forced_mode = (os.environ.get("JAEGER_BENCH_THINKING") or "").strip().lower()
+    _FORCED_MODES = ("on", "off", "auto", "manual",
+                     "true", "false", "1", "0")
+    chosen_mode = forced_mode if forced_mode in _FORCED_MODES else "auto"
+    plan: list[tuple[str, str]] = [(p, chosen_mode) for p in paths]
+
+    n_models = len({p for p, _ in plan})
+    print(f"Sweeping {n_models} model(s) → {len(plan)} run(s) over the "
+          f"flat bench corpus (mode={chosen_mode} for every model — "
+          f"ideal-state methodology)",
           flush=True)
     results: list[ModelResult] = []
-    for p in paths:
+    for p, mode in plan:
+        # Set the per-run env for this subprocess only — JAEGER_BENCH_THINKING
+        # is read by run_flat_bench's adapter wiring + stamped into the
+        # summary so the leaderboard groups by (model, mode).
+        if mode == "auto":
+            os.environ.pop("JAEGER_BENCH_THINKING", None)
+        else:
+            os.environ["JAEGER_BENCH_THINKING"] = mode
         results.append(run_one(p, level=args.level))
         # Write incremental progress so a crash mid-sweep doesn't lose
         # the partial results.
         _write_jsonl([results[-1]], out_dir=SWEEP_DIR)
+    os.environ.pop("JAEGER_BENCH_THINKING", None)
 
     _write_report(results, level=args.level, out_dir=SWEEP_DIR)
+
+    # Auto-refresh the rolling leaderboard once, now that every model's
+    # summary.json is on disk. Per-model subprocesses skipped this
+    # (JAEGER_SUPPRESS_HISTORY=1) so it fires exactly once per sweep.
+    try:
+        sys.path.insert(0, str(SRC))
+        from jaeger_os.daemon.bench_history_verb import write_history_md
+        written = write_history_md(REPO)
+        if written:
+            print(f"Updated {written}", flush=True)
+    except Exception:  # noqa: BLE001 — never fail a sweep over bookkeeping
+        pass
     return 0
 
 

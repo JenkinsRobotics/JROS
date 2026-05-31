@@ -57,6 +57,8 @@ def interruptible_call(
     poll_interval: float = 0.1,
     stale_timeout: float | None = None,
     on_heartbeat: Callable[[float], None] | None = None,
+    on_abandon: Callable[[], None] | None = None,
+    join_on_abandon: float = 0.0,
 ) -> T:
     """Run ``fn()`` on a daemon thread while the main thread polls the
     interrupt event + heartbeat + stale timer.
@@ -70,12 +72,23 @@ def interruptible_call(
     call is in flight — useful for surfacing "still waiting" status
     to the TUI / gateway. Pass ``None`` to disable.
 
-    The HTTP / SDK call is not cancellable, but abandoning its thread
-    is safe: the underlying socket eventually closes, the request is
-    discarded, and the operator's interrupt takes effect immediately
-    from their point of view. That's good enough for the robot E-stop
-    case — the agent stops *acting* on the response, even though one
-    last byte may still be in flight.
+    **Cancellation contract.** For an HTTP / SDK call, abandoning the
+    thread is safe — the socket eventually closes and the request is
+    discarded. But an *in-process* call (llama-cpp ``create_chat_completion``)
+    keeps running on a SHARED model instance after we abandon it: that
+    zombie decode corrupts the KV cache and every subsequent call fails
+    with ``llama_decode returned -1/-3`` (the 2026-05-28 Hermes-3
+    full-corpus cascade — one stalled case poisoned 42 more). So a
+    cancellable in-process adapter passes:
+
+      * ``on_abandon`` — fired the instant we decide to bail (stale OR
+        interrupt). The adapter sets an abort flag its generation polls
+        (llama-cpp ``stopping_criteria``), so the decode stops cleanly
+        at the next token instead of running to completion.
+      * ``join_on_abandon`` — after signalling, wait up to this many
+        seconds for the worker to actually finish, so the shared model
+        is in a clean state before we return and the next call starts.
+        ``0`` (default) keeps the pure abandon behaviour for HTTP.
     """
 
     box: dict[str, Any] = {}
@@ -90,20 +103,27 @@ def interruptible_call(
     started = time.perf_counter()
     thread.start()
 
+    def _abandon(exc: BaseException) -> None:
+        """Signal the worker to stop, optionally wait for it to finish,
+        then raise ``exc`` in the caller."""
+        if on_abandon is not None:
+            try:
+                on_abandon()
+            except Exception:  # noqa: BLE001 — abort-signal bugs never mask the raise
+                pass
+            if join_on_abandon > 0:
+                thread.join(timeout=join_on_abandon)
+        raise exc
+
     while thread.is_alive():
         if interrupt_event.is_set():
-            # Abandon the thread; it will exit on its own when the
-            # socket / SDK call completes.
-            raise AgentInterrupted("agent loop was interrupted")
+            _abandon(AgentInterrupted("agent loop was interrupted"))
         elapsed = time.perf_counter() - started
         if stale_timeout is not None and elapsed > stale_timeout:
-            # Don't kill the thread (we can't safely) — just bail and
-            # let the caller pick a different adapter / retry / surface
-            # the hang to the user.
-            raise StaleCallTimeout(
+            _abandon(StaleCallTimeout(
                 f"no response after {elapsed:.1f}s "
                 f"(stale_timeout={stale_timeout:.0f}s)"
-            )
+            ))
         if on_heartbeat is not None:
             try:
                 on_heartbeat(elapsed)

@@ -38,8 +38,18 @@ from jaeger_os.daemon.server import Server
 
 
 # Subcommands that route to this module instead of the main TUI path.
+# ``rich-tui`` is a daemon-attached client — distinct from the 0.1.0
+# ``jaeger tui`` which boots in-process and stays untouched.
+#
+# INST-2 (0.2.0) adds the instance-lifecycle verbs alongside daemon
+# lifecycle: ``setup``, ``instance``, ``migrate`` (and the
+# upcoming ``backup``, ``restore``, ``update``).
 SUBCOMMANDS: frozenset[str] = frozenset({
     "start", "stop", "status", "restart", "tray", "bench",
+    "attach", "rich-tui",
+    "setup", "instance", "migrate",
+    "backup", "restore", "update",
+    "skill", "memory", "kill", "health",
 })
 
 
@@ -68,6 +78,53 @@ def dispatch(argv: Sequence[str]) -> int:
     # flag we add to it later shouldn't have to be re-declared here.
     if argv[0] == "tray":
         return _cmd_tray_argv(list(argv[1:]))
+    # ``attach`` is a streaming client — peel it off here so its
+    # ``--instance`` / ``--session`` flags don't have to be re-declared
+    # in the lifecycle parser below.
+    if argv[0] == "attach":
+        from jaeger_os.daemon.attach import _cmd_attach_argv
+        return _cmd_attach_argv(list(argv[1:]))
+    # ``rich-tui`` — daemon-attached Rich UI. Its own argparse lives
+    # in ``interfaces.rich_tui.__main__`` so this dispatcher doesn't
+    # have to know about its flags. The existing ``jaeger tui`` (the
+    # 0.1.0 in-process surface) is NOT in SUBCOMMANDS — it falls
+    # through to ``main.py``'s legacy path, unchanged.
+    if argv[0] == "rich-tui":
+        from jaeger_os.interfaces.rich_tui.__main__ import main as _rich_main
+        return _rich_main(list(argv[1:]))
+    # INST-2 verbs — instance lifecycle. Each has its own argparse
+    # in ``daemon.instance_verbs`` so flags don't fight the
+    # lifecycle parser.
+    if argv[0] == "setup":
+        from jaeger_os.daemon.instance_verbs import _cmd_setup_argv
+        return _cmd_setup_argv(list(argv[1:]))
+    if argv[0] == "instance":
+        from jaeger_os.daemon.instance_verbs import _cmd_instance_argv
+        return _cmd_instance_argv(list(argv[1:]))
+    if argv[0] == "migrate":
+        from jaeger_os.daemon.instance_verbs import _cmd_migrate_argv
+        return _cmd_migrate_argv(list(argv[1:]))
+    if argv[0] == "backup":
+        from jaeger_os.daemon.backup_restore import _cmd_backup_argv
+        return _cmd_backup_argv(list(argv[1:]))
+    if argv[0] == "restore":
+        from jaeger_os.daemon.backup_restore import _cmd_restore_argv
+        return _cmd_restore_argv(list(argv[1:]))
+    if argv[0] == "update":
+        from jaeger_os.daemon.update_verb import _cmd_update_argv
+        return _cmd_update_argv(list(argv[1:]))
+    if argv[0] == "skill":
+        from jaeger_os.daemon.skill_verbs import _cmd_skill_argv
+        return _cmd_skill_argv(list(argv[1:]))
+    if argv[0] == "memory":
+        from jaeger_os.daemon.memory_verbs import _cmd_memory_argv
+        return _cmd_memory_argv(list(argv[1:]))
+    if argv[0] == "kill":
+        from jaeger_os.daemon.kill_verb import _cmd_kill_argv
+        return _cmd_kill_argv(list(argv[1:]))
+    if argv[0] == "health":
+        from jaeger_os.daemon.health_verb import _cmd_health_argv
+        return _cmd_health_argv(list(argv[1:]))
     parser = argparse.ArgumentParser(
         prog="jaeger", add_help=False,
         description="Jaeger daemon lifecycle commands.",
@@ -154,6 +211,14 @@ def _cmd_bench(argv: list[str]) -> int:
             return 1
         return subprocess.call([sys.executable, str(script), *rest])
 
+    if verb == "compare":
+        from jaeger_os.daemon.bench_compare_verb import _cmd_bench_compare_argv
+        return _cmd_bench_compare_argv(rest)
+
+    if verb == "history":
+        from jaeger_os.daemon.bench_history_verb import _cmd_bench_history_argv
+        return _cmd_bench_history_argv(rest)
+
     print(f"unknown bench verb: {verb!r}", file=sys.stderr)
     _print_bench_usage()
     return 2
@@ -161,10 +226,15 @@ def _cmd_bench(argv: list[str]) -> int:
 
 def _print_bench_usage() -> None:
     print(
-        "usage: jaeger bench {run | timing} [bench-specific args]\n"
+        "usage: jaeger bench {run | timing | compare | history} "
+        "[bench-specific args]\n"
         "\n"
         "  run     — flat routing/multistep/multiturn/recovery corpus\n"
         "  timing  — wall-clock per-prompt timing suite\n"
+        "  compare — pick multiple models from a list, bench each,\n"
+        "            write a comparison report (operator-driven)\n"
+        "  history — rolling leaderboard across every model ever\n"
+        "            benched on this machine (sweep + flat artifacts)\n"
         "\n"
         "  jaeger bench run --tags routing --limit 5\n"
         "  jaeger bench run --ids time_now,calc_sqrt\n"
@@ -249,15 +319,22 @@ def _cmd_start(lifecycle: Lifecycle, *,
                want_tray: bool = False) -> int:
     """``jaeger start`` — fork the daemon into the background.
 
-    The Phase-1 daemon just runs the server with its three builtin ops.
-    Phase 2 swaps in a serve() that calls boot_for_daemon first.
+    The daemon's child branch loads the model + builds the agent
+    (``boot_for_daemon``) before the socket starts accepting. From
+    that point ``chat.send`` / ``chat.history`` / ``status.snapshot``
+    are live and any client (TUI / attach / GUI) can drive the agent
+    that just booted.
 
     When ``want_tray`` is True we also fire-and-forget a menu-bar
     tray process so the user gets a visible 🤖 indicator. The tray
     is dumb — it just polls ``Lifecycle.status()`` and shells out to
     ``jaeger`` for click handlers; a crash there can't take the
-    daemon down."""
-    forker = real_forker(paths=lifecycle.paths, serve=_phase1_serve_factory(lifecycle.paths))
+    daemon down.
+    """
+    # ``real_forker`` is a subprocess-based spawner now (see the
+    # function's docstring for why). It takes the instance name
+    # directly so the spawned child knows which one to boot.
+    forker = real_forker(paths=lifecycle.paths, instance_name=instance)
     result = lifecycle.start(forker=forker)
     if not result.ok:
         print(result.message, file=sys.stderr)
@@ -329,33 +406,126 @@ def _spawn_tray(instance: str | None) -> None:
         print(f"[jaeger] tray failed to launch: {exc}", file=sys.stderr)
 
 
-def _phase1_serve_factory(paths: LifecyclePaths):
+def _agent_serve_factory(paths: LifecyclePaths, *, instance_name: str | None = None):
     """Build the ``serve`` callable the forker hands to the child.
 
-    Wrapped in a factory so the closure captures ``paths`` without us
-    having to keep references to mutable state. The serve callable
-    blocks forever — ``serve_forever`` inside the Server's accept
-    thread, with the main thread waiting on a SIGTERM-driven event.
+    Wrapped in a factory so the closure captures ``paths`` +
+    ``instance_name`` without us having to keep references to mutable
+    state. The serve callable blocks forever — ``serve_forever`` inside
+    the Server's accept thread, with the main thread waiting on a
+    SIGTERM-driven event.
+
+    Child branch sequence:
+      1. Bind the NDJSON socket immediately (with stub chat ops that
+         answer "still booting"). This lets ``jaeger start`` return
+         within its 5s readiness window even for slow model loads.
+      2. Boot the agent on a background thread — ``boot_for_daemon``
+         takes the instance lock, binds tools, loads the model,
+         builds the agent.
+      3. Once boot finishes, swap the stubs for the production
+         chat / history / snapshot handlers.
+      4. Block on SIGTERM/SIGINT; on shutdown stop the server and
+         release the instance lock + extension subsystems.
+
+    If boot raises (model file missing, instance corrupt, etc.), the
+    failure is logged AND surfaced via ``status.snapshot``'s
+    ``boot_error`` field so clients can read what happened. The daemon
+    keeps the socket up so ``jaeger stop`` works cleanly.
     """
     def serve() -> None:
+        import faulthandler
+        import signal as _signal
+        import sys as _sys
         import threading
+        import time as _time
+        import traceback
+
+        # Native-level crash dumps go to the log instead of dying
+        # silently. Catches the llama-cpp/Metal ``ggml_abort`` paths
+        # and friends that bypass Python's exception machinery.
+        faulthandler.enable(file=_sys.stderr, all_threads=True)
+
+        # Imports inside the closure so the import cost is paid by the
+        # child branch only.
+        from jaeger_os.daemon.chat_ops import (
+            register_booting_stubs,
+            register_chat_ops,
+        )
+
+        progress: dict[str, Any] = {
+            "started_at": _time.time(),
+            "ready": False,
+            "error": None,
+        }
+
         server = Server(socket_path=paths.socket_path)
+        register_booting_stubs(server, progress)
+        # ``Server.start()`` spawns its own accept thread for the socket
+        # — it does NOT block the caller — so we can do the model load
+        # right here on the main thread. That matters on macOS: llama-
+        # cpp-python's Metal backend can only safely initialize from
+        # the main thread of the process. Booting on a worker thread
+        # (what we tried first) dies inside ``ggml_metal_device_init``
+        # with no Python traceback. ``register_booting_stubs`` keeps
+        # the socket usable for ``status.snapshot`` / ``ping`` during
+        # the boot window so clients see "still booting", not a refused
+        # connection.
         server.start()
-        # Block the main thread on a shutdown event; SIGTERM flips it.
+        print(f"[jaeger-daemon] listening on {paths.socket_path}; "
+              "loading agent on main thread…", flush=True)
+
+        boot: Any = None
+        try:
+            from jaeger_os.main import boot_for_daemon
+            print(f"[jaeger-daemon] booting agent for instance "
+                  f"{instance_name or 'default'}…", flush=True)
+            boot = boot_for_daemon(
+                instance_name=instance_name,
+                with_memory=True,
+                warmup=True,
+            )
+            register_chat_ops(server, boot)
+            progress["ready"] = True
+            print(f"[jaeger-daemon] agent ready (instance "
+                  f"{boot.layout.root}).", flush=True)
+        except Exception as exc:  # noqa: BLE001
+            progress["error"] = f"{type(exc).__name__}: {exc}"
+            traceback.print_exc()
+            print(f"[jaeger-daemon] BOOT FAILED: {exc}", flush=True)
+            # Don't return — keep the socket alive so a client can
+            # call ``status.snapshot`` and read ``boot_error``, and so
+            # ``jaeger stop`` works cleanly to clean up. The stubs
+            # still answer "agent is still booting" for chat.send.
+            # Don't return — keep the socket alive so a client can
+            # call ``status.snapshot`` and read ``boot_error``, and so
+            # ``jaeger stop`` works cleanly to clean up. The stubs
+            # still answer "agent is still booting" for chat.send.
+
         shutdown = threading.Event()
 
         def _on_signal(signum, _frame):  # noqa: ANN001 — signal handler shape
+            print(f"[jaeger-daemon] signal {signum} — shutting down…",
+                  flush=True)
             shutdown.set()
 
-        import signal as _signal
         _signal.signal(_signal.SIGTERM, _on_signal)
         _signal.signal(_signal.SIGINT, _on_signal)
 
         try:
             shutdown.wait()
         finally:
-            server.stop()
+            try:
+                server.stop()
+            finally:
+                if boot is not None:
+                    try:
+                        boot.cleanup()
+                    except Exception:  # noqa: BLE001
+                        pass
+            print("[jaeger-daemon] stopped.", flush=True)
     return serve
+
+
 
 
 def _cmd_stop(lifecycle: Lifecycle) -> int:
@@ -412,13 +582,19 @@ def _live_status(lifecycle: Lifecycle) -> dict | None:
 
 def _print_usage() -> None:
     print(
-        "Usage: jaeger {start|stop|status|restart|tray|bench} "
+        "Usage: jaeger {start|stop|status|restart|kill|health|tray|bench} "
         "[--instance NAME]\n"
         "\n"
         "  start    Bring the daemon up in the background.\n"
         "  stop     Send SIGTERM to the running daemon and clean up.\n"
+        "  kill     Force-stop every jaeger process + sweep stale\n"
+        "           lock files. Use when the TUI is hung on a Metal\n"
+        "           stall and Ctrl-C won't break out. Idempotent.\n"
         "  status   Show whether the daemon is running.\n"
         "  restart  Stop the running daemon and start a fresh one.\n"
+        "  health   Runtime substrate probe (post-boot diagnostics).\n"
+        "           Pairs with ``--doctor`` which checks deps BEFORE\n"
+        "           boot. ``--deep`` adds live agent-loop turns.\n"
         "  tray     Run the macOS menu-bar tray (foreground).\n"
         "  bench    Run a JROS benchmark — `jaeger bench run|timing`.\n"
         "\n"

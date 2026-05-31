@@ -192,6 +192,25 @@ def skill(action: str, name: str = "", query: str = "",
             result["requires_tools"] = s.requires_tools
         if s.requires_toolsets:
             result["requires_toolsets"] = s.requires_toolsets
+            # POLISH-4: auto-load the toolsets the skill declares it
+            # needs. Without this the model has to round-trip a
+            # ``load_toolset`` call after every ``skill(view)`` —
+            # one wasted turn per skill. Auto-load is a no-op when
+            # JAEGER_TOOLSET_SCOPING is off; when on, the tools are
+            # visible on the agent's very next step.
+            try:
+                from jaeger_os.core.skills.toolsets import (
+                    active_toolset_names, enable_toolset,
+                )
+                loaded_now: list[str] = []
+                for ts in s.requires_toolsets:
+                    if enable_toolset(ts):
+                        loaded_now.append(ts)
+                if loaded_now:
+                    result["auto_loaded_toolsets"] = loaded_now
+                    result["active_toolsets"] = sorted(active_toolset_names())
+            except Exception:  # noqa: BLE001 — never let auto-load break view
+                pass
         if s.fallback_for_tools:
             result["fallback_for_tools"] = s.fallback_for_tools
         # Safety scan — a playbook is markdown the model is told to run.

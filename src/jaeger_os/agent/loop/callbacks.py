@@ -66,6 +66,18 @@ class AgentCallbacks:
     # leave the result untouched.
     after_tool_call: Callable[[str, dict[str, Any], Any], Any] | None = None
 
+    # Observer hook — fired once per tool call after dispatch + any
+    # after_tool_call rewrites have settled, with the data needed to
+    # persist a tool-call audit row. Distinct from ``tool_progress``
+    # (which carries only the elapsed_s preview) and ``after_tool_call``
+    # (which can mutate the result): this one is a passive observer
+    # used by the memory layer to write the ``tool_calls`` table.
+    # ``ok`` reflects the final content (False if the result is a
+    # ``{"ok": False, ...}`` dict OR the dispatch raised).
+    tool_done: (
+        Callable[[str, dict[str, Any], Any, bool, str | None, float], None] | None
+    ) = None
+
     # Phase-8 liveness: fired on every ``interruptible_call`` poll tick
     # (~10 Hz by default) while a model call is in flight. ``elapsed_s``
     # is wall-clock seconds since the call started. TUI status bars
@@ -152,6 +164,24 @@ class AgentCallbacks:
             return
         try:
             self.heartbeat(elapsed_s)
+        except Exception:  # noqa: BLE001
+            pass
+
+    def on_tool_done(
+        self,
+        name: str,
+        args: dict[str, Any],
+        result: Any,
+        ok: bool,
+        error: str | None,
+        elapsed_s: float,
+    ) -> None:
+        """Passive observer — fires after dispatch settles. The memory
+        layer uses this to persist a ``tool_calls`` row."""
+        if self.tool_done is None:
+            return
+        try:
+            self.tool_done(name, args, result, ok, error, elapsed_s)
         except Exception:  # noqa: BLE001
             pass
 

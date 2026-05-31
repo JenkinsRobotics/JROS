@@ -70,6 +70,55 @@ def test_local_client_resolves_to_local_llama_adapter():
     assert adapter.model == "test-local.gguf"
 
 
+def test_local_adapter_falls_back_to_default_max_tokens_with_no_pipeline():
+    """No active pipeline (early boot / unit-test context with no config)
+    must keep the 0.1.0-default 4096 — closing the configurability hole
+    can't change unsuspecting callers' behaviour."""
+    from jaeger_os.agent.loop.runtime_bridge import _resolve_local_max_tokens
+    # Force the lazy import to find no pipeline: clear any cached config.
+    import jaeger_os.main as _main
+    saved = _main._pipeline.get("config")
+    _main._pipeline["config"] = None
+    try:
+        assert _resolve_local_max_tokens() == 4096
+    finally:
+        _main._pipeline["config"] = saved
+
+
+def test_local_adapter_honours_config_max_tokens(monkeypatch):
+    """When ``config.model.max_tokens`` is set, the adapter must receive
+    it — that's the whole point of plumbing it through. 0.1.0 silently
+    ignored it because the bridge always constructed the adapter with
+    the hardcoded default."""
+    from jaeger_os.agent.loop import runtime_bridge as rb
+    import types
+    fake_cfg = types.SimpleNamespace(
+        model=types.SimpleNamespace(max_tokens=1536))
+    monkeypatch.setitem(
+        __import__("jaeger_os.main", fromlist=["_pipeline"])._pipeline,
+        "config", fake_cfg,
+    )
+    assert rb._resolve_local_max_tokens() == 1536
+    # And the wired adapter actually carries it.
+    client = _FakeLocalClient()
+    adapter = rb._adapter_for_client(client)
+    assert adapter.max_tokens == 1536
+
+
+def test_local_adapter_max_tokens_resolver_swallows_bad_config():
+    """A malformed / missing-attribute config must not crash adapter
+    construction — fall back to 4096 silently."""
+    from jaeger_os.agent.loop import runtime_bridge as rb
+    import jaeger_os.main as _main
+    import types
+    saved = _main._pipeline.get("config")
+    _main._pipeline["config"] = types.SimpleNamespace()  # no .model
+    try:
+        assert rb._resolve_local_max_tokens() == 4096
+    finally:
+        _main._pipeline["config"] = saved
+
+
 def test_anthropic_provider_resolves_to_anthropic_adapter():
     client = _FakeExternalClient(provider="anthropic")
     adapter = _adapter_for_client(client)
@@ -109,6 +158,26 @@ def test_build_jaeger_agent_wires_skip_final_tools():
     assert agent.system_prompt == "be brief"
     # The legacy ceiling — keeps backstop comparable across the A/B.
     assert agent.max_iterations == 24
+
+
+def test_build_jaeger_agent_picks_120s_stall_for_local_backend():
+    """In-process llama-cpp can have legitimately slow cold-prefill
+    plus a long decode on a 30B Q4. The default stall watchdog must
+    leave headroom (120s) so legitimate work doesn't false-positive
+    while still catching the multi-minute Metal hangs."""
+    agent = build_jaeger_agent(_FakeLocalClient())
+    assert agent.stale_call_timeout_s == 120.0
+
+
+def test_build_jaeger_agent_honors_explicit_stall_timeout():
+    """The caller (main.py reading config) can override the default —
+    e.g. a power user who wants to surface stalls in 60s instead of
+    120s. Pin the override path."""
+    agent = build_jaeger_agent(
+        _FakeLocalClient(),
+        stale_call_timeout_s=42.0,
+    )
+    assert agent.stale_call_timeout_s == 42.0
 
 
 def test_build_jaeger_agent_finalizer_delegates_to_legacy():

@@ -25,7 +25,7 @@ from typing import Callable
 
 from jaeger_os.agent.adapters.base import ProviderAdapter
 from jaeger_os.agent.loop.callbacks import AgentCallbacks
-from jaeger_os.agent.loop.interrupt import AgentInterrupted
+from jaeger_os.agent.loop.interrupt import AgentInterrupted, StaleCallTimeout
 from jaeger_os.agent.loop.loop_backstop import (
     call_signature,
     loop_halt_reason,
@@ -150,6 +150,17 @@ class JaegerAgent:
         # multi-iteration turns.
         self.last_skip_final: bool = False
 
+        # Token usage accumulator — refreshed on every successful
+        # adapter call within a turn. The bench reads
+        # ``last_prompt_tokens`` + ``last_completion_tokens`` to
+        # compute real tokens/sec (vs the whitespace-split estimate
+        # in summarise()). Each adapter that exposes ``usage`` on
+        # its raw response (OpenAI-shape, llama-cpp, Anthropic)
+        # contributes; adapters without usage info just don't add to
+        # the totals. Reset to 0 at the start of every ``run_turn``.
+        self.last_prompt_tokens: int = 0
+        self.last_completion_tokens: int = 0
+
     # ── tool visibility ─────────────────────────────────────────────
 
     @property
@@ -207,6 +218,8 @@ class JaegerAgent:
         self.last_halt_reason = None
         self.last_iteration_count = 0
         self.last_skip_final = False
+        self.last_prompt_tokens = 0
+        self.last_completion_tokens = 0
 
         # Per-turn dedupe trackers in tool modules (file_read's
         # "unchanged since last read" suppression in particular). The
@@ -235,6 +248,10 @@ class JaegerAgent:
             # nudges. ``_one_model_step_with_length_retry`` returns the
             # final assistant message after the retry chain settles.
             assistant_msg = self._one_model_step_with_length_retry()
+
+            if self._interrupt_event.is_set():
+                self.last_halt_reason = "interrupted"
+                return self._final_text_or_halt()
 
             # 4: append. The model can hold both text and tool_calls in
             # the same message (e.g. "I'll check that — call X"), so we
@@ -456,6 +473,41 @@ class JaegerAgent:
         self.last_activity_ts = time.time()
         self.last_activity_desc = desc
 
+    def _accumulate_usage(self, raw: Any) -> None:
+        """Extract token usage from an adapter's raw response and add
+        to the per-turn counters. Best-effort: adapters that don't
+        report usage just contribute zero. Three known shapes:
+
+          * OpenAI / llama-cpp:
+              ``raw["usage"] = {"prompt_tokens": N, "completion_tokens": N}``
+          * Anthropic:
+              ``raw["usage"] = {"input_tokens": N, "output_tokens": N}``
+          * Local-llama umbrella + others: no usage field → no-op
+
+        Never raises — token-counting is observability, not control
+        flow, so a malformed response must not break the turn.
+        """
+        if not isinstance(raw, dict):
+            return
+        usage = raw.get("usage")
+        if not isinstance(usage, dict):
+            return
+        # OpenAI / llama-cpp style.
+        p = usage.get("prompt_tokens")
+        c = usage.get("completion_tokens")
+        # Anthropic style.
+        if p is None:
+            p = usage.get("input_tokens")
+        if c is None:
+            c = usage.get("output_tokens")
+        try:
+            if p is not None:
+                self.last_prompt_tokens += int(p)
+            if c is not None:
+                self.last_completion_tokens += int(c)
+        except (TypeError, ValueError):
+            return
+
     # ── stale-call timeout (Phase-8) ───────────────────────────────
     # When a provider's HTTP socket is open but no bytes are flowing,
     # the SDK can sit on the request for the full ``timeout`` (often
@@ -506,6 +558,7 @@ class JaegerAgent:
                     stale_timeout=self.stale_call_timeout_s,
                     on_heartbeat=self._on_call_heartbeat,
                 )
+                self._accumulate_usage(raw)
                 return adapter.parse_response(raw)
             except AgentInterrupted:
                 # Interrupt propagates — handled by ``run_turn`` via the
@@ -517,6 +570,26 @@ class JaegerAgent:
                 self._interrupt_event.set()
                 self.last_halt_reason = "interrupted"
                 return {"role": "assistant", "content": None}
+            except StaleCallTimeout as exc:
+                # Model stalled past the wall-clock budget. For
+                # in-process backends the worker thread is still
+                # running (we cannot safely cancel llama.cpp mid-decode
+                # — see LocalLlamaAdapter.call), so the next adapter in
+                # the fallback chain will inherit a degraded Llama
+                # instance. We still propagate via the fallback chain
+                # so an HTTP fallback (if configured) can pick up; if
+                # this was the last adapter the message reaches the
+                # caller with a clean ``stalled`` halt reason rather
+                # than a generic exception.
+                last_exc = exc
+                self.last_halt_reason = "stalled"
+                self.callbacks.on_thinking(
+                    f"[adapter {adapter.describe()} stalled after "
+                    f"{self.stale_call_timeout_s:.0f}s; "
+                    f"try ``jaeger kill`` from another terminal "
+                    f"if the TUI feels stuck]"
+                )
+                continue
             except Exception as exc:  # noqa: BLE001 — adapter chain absorbs
                 last_exc = exc
                 self.callbacks.on_thinking(
@@ -560,7 +633,7 @@ class JaegerAgent:
         # self-correct, rather than silently dispatching a guess.
         if name and name not in dispatch_map:
             try:
-                from jaeger_os.agent.parsing.drift_parser import normalize_tool_name
+                from jaeger_os.agent.dialects import normalize_tool_name
                 valid = frozenset(dispatch_map.keys())
                 normalised = normalize_tool_name(name, valid)
                 if normalised != name and normalised in dispatch_map:
@@ -655,6 +728,20 @@ class JaegerAgent:
         elapsed = time.perf_counter() - started
         self.callbacks.on_tool_progress(
             name, "done", {"elapsed_s": round(elapsed, 3)},
+        )
+
+        # Passive observer for the tool_calls audit table. Determine
+        # ok/error from the final content shape: dispatch-raised paths
+        # built a ``{"ok": False, "error": ...}`` dict above; a tool
+        # returning a successful payload won't carry ``"ok": False``.
+        _ok = True
+        _err: str | None = None
+        if isinstance(content, dict) and content.get("ok") is False:
+            _ok = False
+            _err = str(content.get("error") or "") or None
+        self.callbacks.on_tool_done(
+            name, dict(args) if isinstance(args, dict) else {},
+            content, _ok, _err, round(elapsed, 6),
         )
 
         # Failure-signature tracking — only meaningful when the tool

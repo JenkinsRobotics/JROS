@@ -689,7 +689,6 @@ class JaegerTUI:
                 pass
         except Exception:  # noqa: BLE001
             return
-        chars = 0
         import json as _json
         for msg in history:
             # ── Phase-9 dict-shape Message ─────────────────────────
@@ -1171,14 +1170,23 @@ class JaegerTUI:
         frags.append((f"fg:{ACCENT_PTK} bold", f"✦ {self.model_name}"))
         frags.append(SEP)
 
+        # Context-usage gauge — NOT turn progress. We label it ``ctx``
+        # explicitly because users (and at least one AI auditor) read
+        # the unlabelled ``10/32.8K [░░░░░░░░░░] 0%`` shape as
+        # "the agent has generated 10/32.8K tokens; turn is 0% done."
+        # In reality the count is system_prompt + tool_schemas +
+        # history + (when the turn completes) the assistant's reply.
+        # It only changes at the END of a turn. Mid-turn this bar
+        # stays static even while the model is generating — which
+        # made stalls look indistinguishable from active work.
         mx = max(1, self._current_ctx_max())
         pct = min(100, int(self._context_tokens / mx * 100))
         fill = pct // 10
         bar = "█" * fill + "░" * (10 - fill)
         frags.append(("fg:ansibrightblack",
-                      f"{_kfmt(self._context_tokens)}/{_kfmt(mx)}"))
+                      f"ctx {_kfmt(self._context_tokens)}/{_kfmt(mx)}"))
         frags.append(SEP)
-        frags.append((_pct_color(pct), f"[{bar}] {pct}%"))
+        frags.append((_pct_color(pct), f"[{bar}] {pct}% ctx"))
         frags.append(SEP)
 
         frags.append(("fg:ansibrightblack",

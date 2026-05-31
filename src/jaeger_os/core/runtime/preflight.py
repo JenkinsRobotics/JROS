@@ -120,7 +120,51 @@ def _check_binaries() -> list[Check]:
 def check_environment() -> list[Check]:
     """Probe every optional Python dependency plus the system libraries
     and binaries. Returns one :class:`Check` per item."""
-    return _check_python_deps() + [_check_portaudio()] + _check_binaries()
+    return (_check_python_deps()
+            + [_check_portaudio()]
+            + _check_binaries()
+            + [_check_install_method()])
+
+
+def _check_install_method() -> Check:
+    """Advisory: flag a plain ``pip install`` on system Python and
+    suggest pipx (INST-9). Editable installs and pipx installs both
+    pass clean.
+    """
+    from jaeger_os.core.instance.instance import detect_install_method
+    method = detect_install_method()
+    if method == "pipx":
+        return Check(
+            name="install method",
+            category="system",
+            ok=True,
+            detail="installed via pipx (isolated venv).",
+        )
+    if method == "dev-checkout":
+        return Check(
+            name="install method",
+            category="system",
+            ok=True,
+            detail="dev checkout (editable / source install).",
+        )
+    if method == "pip":
+        return Check(
+            name="install method",
+            category="system",
+            ok=True,
+            detail=(
+                "installed via pip. Consider `pipx install jaeger-os` "
+                "for an isolated venv — protects your global Python "
+                "from JROS's heavy native deps (llama-cpp, kokoro, …) "
+                "and gives `pipx upgrade jaeger-os` for clean upgrades."
+            ),
+        )
+    return Check(
+        name="install method",
+        category="system",
+        ok=True,
+        detail="install method could not be detected.",
+    )
 
 
 # ── instance-aware checks ──────────────────────────────────────────
@@ -146,7 +190,7 @@ def _check_instance_config(layout: object) -> list[Check]:
         return [Check(
             "config.yaml", "instance", False,
             f"missing — expected at {config_path}",
-            "run `jaeger-os --setup` to create the instance scaffold",
+            "run `jaeger setup` to create the instance scaffold",
         )]
 
     # YAML parse — config.yaml is the agent's contract. If it doesn't

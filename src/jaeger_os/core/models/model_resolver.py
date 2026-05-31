@@ -77,10 +77,27 @@ MODEL_REGISTRY: dict[str, dict[str, Any]] = {
 }
 
 
+# The awake-mode model: loaded when the user is actively conversing.
+# Optimised for low Tokens/task + snappy per-turn latency. gemma-4-26B-A4B
+# Q4 wins on the current bench corpus (1.1) with 91.5% score, 65 tok/task,
+# 4m bench, 7.1 peak load.
 DEFAULT_MODEL = "gemma-4-26b-a4b-it-q4_k_m"
-# The model Deep Think swaps in for skill authoring. Overridable per
-# instance via config (deep_think.coder_model) once Phase D lands.
-DEFAULT_CODER_MODEL = "qwen3-coder-30b-a3b-q4_k_m"
+DEFAULT_AWAKE_MODEL = DEFAULT_MODEL   # explicit alias for sleep-cycle code
+
+# The asleep-mode model: loaded when the agent goes into deep-think mode
+# (1 hour user inactivity + kanban queue not empty). Optimised for ACCURACY
+# and LOW SYSTEM IMPACT — runs in the background while user is away.
+#
+# Default: Qwen3.5-9B Q4 — current data-validated best (93.2% score, 5.2 GB
+# VRAM, peak load 2.4 = gentlest model measured). Override per instance via
+# config (``sleep_cycle.asleep_model``) when the kanban workload is heavily
+# code-specialised — in that case ``qwen3-coder-30b-a3b-instruct-q3_k_l``
+# (88.1% / 78 tok/task / never reasoning mode) is the appropriate swap.
+#
+# ``DEFAULT_CODER_MODEL`` kept as a back-compat alias — older daemon code
+# uses that name; new code should prefer ``DEFAULT_ASLEEP_MODEL``.
+DEFAULT_ASLEEP_MODEL = "qwen3.5-9b-q4_k_m"
+DEFAULT_CODER_MODEL = DEFAULT_ASLEEP_MODEL
 
 
 # ── Filesystem locations ────────────────────────────────────────────

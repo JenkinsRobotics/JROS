@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import json
 
-from jaeger_os.agent.parsing.drift_parser import (
+from jaeger_os.agent.dialects import (
     extract_tool_calls,
     normalize_tool_name,
     repair_arguments,
@@ -122,6 +122,33 @@ def test_extract_qwen_loose_function_form_with_parameters():
         "query": "weather in tokyo",
         "max_results": "3",
     }
+
+
+def test_extract_mistral_bare_name_json_form():
+    """Ministral emits a bare ``name{json}`` (Mistral v11 interleaved
+    without the [TOOL_CALLS] token). Must salvage it."""
+    calls = extract_tool_calls('get_time{"timezone": "Asia/Shanghai"}')
+    assert len(calls) == 1
+    assert calls[0]["name"] == "get_time"
+    assert calls[0]["arguments"] == {"timezone": "Asia/Shanghai"}
+    assert calls[0]["id"].startswith("mistral_")
+
+
+def test_extract_mistral_bare_empty_args():
+    calls = extract_tool_calls("get_time{}")
+    assert len(calls) == 1
+    assert calls[0]["name"] == "get_time"
+    assert calls[0]["arguments"] == {}
+
+
+def test_bare_name_json_does_not_match_prose():
+    """The bare form is anchored to the whole message — a ``word{…}``
+    buried in a real answer must NOT be misread as a tool call."""
+    assert extract_tool_calls(
+        "Use the config{} block then call setup{} as shown."
+    ) == []
+    # Trailing prose after the JSON also disqualifies it.
+    assert extract_tool_calls('get_time{"tz": "UTC"} and then relax') == []
 
 
 def test_loose_and_strict_forms_do_not_double_count():
@@ -277,6 +304,23 @@ def test_normalize_returns_unchanged_when_no_alias_matches():
 def test_normalize_empty_input_returns_empty():
     assert normalize_tool_name("", frozenset({"x"})) == ""
     assert normalize_tool_name("anything", frozenset()) == "anything"
+
+
+def test_normalize_does_not_route_to_system_health():
+    """``system_health`` is intentionally NOT an agent tool any more
+    (operator-only via ``jaeger health`` CLI). Verify the drift
+    parser does NOT have stale ``self_check`` → ``system_health``
+    aliases — those would silently route the model to a tool that
+    isn't registered, producing a confusing "unknown tool" error."""
+    valid = frozenset({"system_status", "get_time"})  # NB no system_health
+    for alias in ("self_check", "selfcheck", "health_check",
+                  "healthcheck", "check_health", "diagnose"):
+        result = normalize_tool_name(alias, valid)
+        assert result != "system_health", (
+            f"{alias!r} normalized to system_health — the alias "
+            f"map should not have stale entries pointing at a tool "
+            f"that no longer exists on the agent surface"
+        )
 
 
 # ── Llama 3.x / 4 raw-JSON form ──────────────────────────────────────

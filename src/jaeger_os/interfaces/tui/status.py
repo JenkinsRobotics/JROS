@@ -68,6 +68,37 @@ def _format_tool_group(name: str, tools: list[str]) -> Text:
     return line
 
 
+def _visible_tool_groups() -> tuple[dict[str, list[str]], int, int]:
+    """Return the tool groups the model ACTUALLY sees this boot,
+    plus (visible_count, total_count) for a header annotation.
+
+    With ``JAEGER_TOOLSET_SCOPING`` off (the 0.1.0 default), every
+    group renders in full — same as before. With scoping on, each
+    group is filtered to its CORE intersection (umbrella tools
+    only); empty groups drop out. The hidden bulk is still
+    REGISTERED and reachable via ``load_toolset``; the panel just
+    matches what the model's schema view contains.
+
+    POLISH-2 in docs/ROADMAP_0.2.0.md.
+    """
+    # Lazy import — the boot panel renders before the agent is built
+    # and we don't want a top-level import dragging in the skill
+    # loader at status-module import time.
+    from jaeger_os.core.skills.toolsets import CORE, _scoping_enabled
+
+    total = sum(len(v) for v in TOOL_GROUPS.values())
+    if not _scoping_enabled():
+        return TOOL_GROUPS, total, total
+
+    visible: dict[str, list[str]] = {}
+    for group, tools in TOOL_GROUPS.items():
+        kept = [t for t in tools if t in CORE]
+        if kept:
+            visible[group] = kept
+    visible_count = sum(len(v) for v in visible.values())
+    return visible, visible_count, total
+
+
 # ── Boot status panel ──────────────────────────────────────────────
 
 
@@ -88,9 +119,20 @@ def boot_panel(
     header.append(f"  ·  instance: {instance_name}", style="dim")
     header.append(f"  ·  model: {model_name}", style="dim")
 
+    visible_groups, visible_count, total_count = _visible_tool_groups()
+    tools_header = Text("▼ Available Tools", style=ACCENT_BOLD)
+    if visible_count < total_count:
+        # Lean surface is on — note that the model sees a subset, and
+        # the remaining tools auto-load via ``load_toolset(name)``.
+        tools_header.append(
+            f"  ({visible_count}/{total_count}  ·  lean surface ON  ·  "
+            f"others load on demand)",
+            style="dim",
+        )
     tools_block = Group(
-        Text("▼ Available Tools", style=ACCENT_BOLD),
-        *(_format_tool_group(name, tools) for name, tools in TOOL_GROUPS.items()),
+        tools_header,
+        *(_format_tool_group(name, tools)
+          for name, tools in visible_groups.items()),
     )
 
     session_block = Text()

@@ -103,3 +103,96 @@ def test_prompt_unscoped_when_toolset_scoping_env_disabled(tmp_path, monkeypatch
     monkeypatch.delenv("JAEGER_FULL_TOOLS", raising=False)
     sp = build_system_prompt(InstanceLayout(root=tmp_path))
     assert "full built-in tool surface is visible" in sp
+
+
+# ── regression pins for tool-usage rules (2026-05-26) ─────────────
+# Surfaced from live user testing: agent set ``*/5 * * * *`` for
+# "schedule X 5 minutes from now" (cron fires on clock 5-minute
+# marks, not five minutes after the request); skipped ``get_time``
+# before computing the schedule; muddled one-shot vs recurring. The
+# system prompt now teaches the right pattern. Pin the directives
+# so a future cleanup of TOOL_USAGE_RULES doesn't silently drop them.
+
+
+def test_schedule_rule_requires_get_time_first(tmp_path) -> None:
+    """The system prompt must direct the agent to call ``get_time``
+    before building a cron expression from a relative or absolute
+    time. Without this, the model guesses the clock and the schedule
+    lands at the wrong wall time."""
+    sp = build_system_prompt(InstanceLayout(root=tmp_path))
+    assert "schedule_prompt" in sp
+    assert "get_time" in sp
+    # Must explicitly call out that the call comes FIRST.
+    schedule_block = sp[sp.index("schedule_prompt"):]
+    assert "FIRST" in schedule_block[:600], (
+        "TOOL_USAGE_RULES should tell the model to call get_time FIRST "
+        "when scheduling a relative/absolute time"
+    )
+
+
+def test_schedule_rule_disambiguates_oneshot_vs_recurring(tmp_path) -> None:
+    """The agent must distinguish 'in 5 minutes' (one-shot) from
+    'every 5 minutes' (recurring) — these have completely different
+    cron expressions and the agent conflated them in live testing."""
+    sp = build_system_prompt(InstanceLayout(root=tmp_path))
+    # Both patterns called out explicitly.
+    assert "one-shot" in sp.lower() or "ONE-SHOT" in sp
+    assert "recurring" in sp.lower() or "RECURRING" in sp
+    # Must warn about the */5 trap specifically.
+    assert "*/5 * * * *" in sp
+    assert "clock" in sp.lower()  # "clock 5-minute marks"
+
+
+def test_system_health_is_NOT_in_agent_surface() -> None:
+    """``system_health`` is INTENTIONALLY hidden from the model.
+
+    The original design exposed it as an agent tool so the user
+    could say "do a self check" and have the agent run the probe.
+    In live testing this caused multi-minute prefill stalls on
+    local Gemma checkpoints — the model dithered over
+    ``system_health`` vs ``system_status`` and llama.cpp's Metal
+    sampler hung at high first-token entropy. Both 4B and 26B
+    Gemmas reproduced the hang identically.
+
+    Fix: removed from CORE, removed from the ``diagnostics``
+    toolset, and removed the ``@register_tool_from_function``
+    registration in ``main.py``. Operators access the probe via
+    ``jaeger health`` (CLI verb) — the same shape Hermes Agent
+    uses for its self-test.
+
+    Pin all three surfaces here so a future "let's just put it back"
+    refactor gets caught by this test."""
+    from jaeger_os.core.skills.toolsets import CORE, TOOLSETS
+    assert "system_health" not in CORE, (
+        "system_health must NOT be in CORE — re-adding it brings back "
+        "the prefill stall. Use ``jaeger health`` CLI verb instead."
+    )
+    diagnostics = TOOLSETS.get("diagnostics", frozenset())
+    assert "system_health" not in diagnostics, (
+        "system_health must NOT be in any agent-visible toolset — "
+        "operator-only via ``jaeger health`` CLI."
+    )
+
+
+def test_skip_final_tools_is_empty() -> None:
+    """Skip-final is DISABLED — the set must stay empty so every
+    turn runs the full agent loop. Re-adding any tool here means:
+
+      (a) the model's reasoning is bypassed for that tool — the
+          120-token bounded formatter produces robotic answers
+          ("workspace/haiku.txt", "2026-05-26 10:13:19 PM PDT")
+          instead of conversational ones
+      (b) any rule that uses the tool as a PREPARATION step (e.g.
+          "call get_time before schedule_prompt") silently breaks,
+          because skip-final exits the loop after the first tool
+          call
+
+    We removed the mechanism 2026-05-26 after live testing showed
+    both failure modes. If you want fast-paths back, do it as an
+    opt-in per-turn signal from the model, NOT a static list."""
+    from jaeger_os.main import SKIP_FINAL_TOOLS
+    assert SKIP_FINAL_TOOLS == frozenset(), (
+        "SKIP_FINAL_TOOLS must stay empty. Adding tools back here "
+        "produces robotic answers AND silently breaks any rule "
+        "that uses the tool as a preparation step. Don't re-add."
+    )

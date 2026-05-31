@@ -42,6 +42,51 @@ from jaeger_os.agent.loop.jaeger_agent import JaegerAgent
 from jaeger_os.agent.schemas.message_types import Message
 
 
+def _resolve_local_max_tokens() -> int:
+    """Read ``model.max_tokens`` off the active pipeline config so the
+    in-process adapter honours it. Falls back to the
+    :class:`LocalLlamaAdapter` default (4096) when there's no config to
+    read — same behaviour as 0.1.0, so a missing pipeline (early boot,
+    unit tests with no config) doesn't surprise anyone.
+
+    This closes a real 0.1.0 hole: the local model adapter accepted
+    ``max_tokens`` in its constructor but no caller actually passed it,
+    so every agent turn was capped at the hardcoded 4096 regardless of
+    what the user put in ``config.yaml:model.max_tokens``. The field
+    didn't even exist on the local ``ModelConfig`` schema — added in
+    0.2.0 alongside this plumbing."""
+    try:
+        from jaeger_os.main import _pipeline  # noqa: PLC0415 — lazy
+        cfg = _pipeline.get("config")
+        if cfg is None:
+            return 4096
+        return int(getattr(cfg.model, "max_tokens", 4096))
+    except Exception:  # noqa: BLE001 — never block adapter construction
+        return 4096
+
+
+def _resolve_thinking_env() -> bool | None:
+    """``JAEGER_BENCH_THINKING`` env → ``enable_thinking`` adapter arg.
+
+    Values (case-insensitive):
+      * ``""`` / ``auto`` / ``default`` → ``None`` (model's default mode,
+        unchanged behaviour — this is the baseline)
+      * ``on`` / ``true`` / ``1`` → ``True`` (force thinking ON)
+      * ``off`` / ``false`` / ``0`` → ``False`` (force thinking OFF)
+
+    Lets the benchmark run a hybrid model twice — once each mode — and
+    show the deep-think vs direct-mode tradeoff side-by-side, the way
+    Claude / GPT-o1 expose ``thinking`` per call."""
+    raw = (os.environ.get("JAEGER_BENCH_THINKING") or "").strip().lower()
+    if raw in ("", "auto", "default", "none"):
+        return None
+    if raw in ("on", "true", "1", "yes"):
+        return True
+    if raw in ("off", "false", "0", "no"):
+        return False
+    return None  # unrecognised value → safe default
+
+
 def _adapter_for_client(
     client: Any,
     *,
@@ -62,6 +107,8 @@ def _adapter_for_client(
         return LocalLlamaAdapter(
             model=getattr(client, "model_name", "local"),
             llama=llm,
+            enable_thinking=_resolve_thinking_env(),
+            max_tokens=_resolve_local_max_tokens(),
         )
 
     ext = getattr(client, "ext", None)
@@ -134,6 +181,7 @@ def build_jaeger_agent(
     max_iterations: int = 24,
     ctx_window: int | None = None,
     artifact_dir: Any = None,
+    stale_call_timeout_s: float | None = None,
 ) -> JaegerAgent:
     """Construct a :class:`JaegerAgent` wired against the provided
     JROS client. The skip-final finalizer is the legacy bounded-chat
@@ -167,7 +215,22 @@ def build_jaeger_agent(
         ContextGuard(ContextBudget(ctx_window=ctx_window, artifact_dir=artifact_dir))
         if ctx_window else None
     )
-    return JaegerAgent(
+    # Default stall timeout depends on the backend. HTTP adapters do
+    # well with 30s (the SDK is usually streaming or about to error
+    # out). In-process llama.cpp on Metal can sit in a long prefill
+    # for 60-90s on a cold load of a big model, so the default for
+    # the local backend is more generous. The caller can override.
+    if stale_call_timeout_s is None:
+        if adapter.__class__.__name__ == "LocalLlamaAdapter":
+            # Cold prefill on a 30B Q4 can take ~60s; allow headroom
+            # for an unusual prompt without false-positive stall
+            # alarms during legitimate slow decodes. The pathological
+            # hang we're guarding against is multi-minute, so 120s
+            # catches it cleanly while letting normal work finish.
+            stale_call_timeout_s = 120.0
+        else:
+            stale_call_timeout_s = 30.0
+    agent = JaegerAgent(
         adapter=adapter,
         system_prompt=system_prompt,
         toolsets=toolsets,
@@ -177,6 +240,8 @@ def build_jaeger_agent(
         max_iterations=max_iterations,
         context_guard=guard,
     )
+    agent.stale_call_timeout_s = stale_call_timeout_s
+    return agent
 
 
 def _tool_activity_lines(messages: list[Message]) -> list[str]:
@@ -274,6 +339,11 @@ def drive_one_turn(
         "halt_reason": agent.last_halt_reason,
         "iterations": agent.last_iteration_count,
         "new_messages": new_messages,
+        # Real token counts when the adapter reported usage; 0 when
+        # the adapter doesn't expose it (the bench falls back to a
+        # whitespace-split estimate in that case).
+        "prompt_tokens": agent.last_prompt_tokens,
+        "completion_tokens": agent.last_completion_tokens,
     }
 
 

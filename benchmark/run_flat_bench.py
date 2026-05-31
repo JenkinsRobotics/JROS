@@ -80,6 +80,37 @@ def main() -> int:
         print(f"  [ROW {idx:02d}] {case_id:40s} pass={mark}  "
               f"{elapsed_s:5.2f}s", flush=True)
 
+    # System-load sampler: poll ``os.getloadavg()`` every 5s during
+    # the run, stash the peak in the summary. Tells the reader how
+    # hard this model strained the host while benching — orthogonal
+    # to wall time (a 4-min model that pegs CPU at 50 vs a 60-min
+    # model that idles at 5 is information the leaderboard couldn't
+    # see before). Daemon thread so a bench crash never blocks exit.
+    #
+    # TODO(future): subtract a baseline. ``os.getloadavg()`` is a
+    # DECAYING 1-min average, so the first sample after the bench
+    # starts captures whatever load was already on the system —
+    # e.g. a previous sanity sweep cooling down, or a Spotlight
+    # reindex. The fix is to sample a baseline BEFORE the run starts
+    # and store ``peak - baseline`` as the bench's contribution. For
+    # now the absolute value is informative but the first model in a
+    # back-to-back queue can show a spuriously high reading; rerun it
+    # standalone for a clean number.
+    import threading
+    peak_load_holder = {"v": 0.0}
+    _stop = threading.Event()
+    def _sample_load():
+        while not _stop.is_set():
+            try:
+                cur = os.getloadavg()[0]   # 1-min average
+                if cur > peak_load_holder["v"]:
+                    peak_load_holder["v"] = cur
+            except OSError:
+                pass
+            _stop.wait(5.0)
+    _sampler = threading.Thread(target=_sample_load, daemon=True)
+    _sampler.start()
+
     started = time.perf_counter()
     try:
         rows = run_bench(boot.client, tags=tag_list or None,
@@ -90,30 +121,129 @@ def main() -> int:
             boot.cleanup()
         except Exception:  # noqa: BLE001 — cleanup is best-effort
             pass
+        _stop.set()
     wall = time.perf_counter() - started
 
     summary = summarise(rows)
     summary["wall_s"] = round(wall, 2)
     summary["load_s"] = round(load_s, 2)
+    summary["peak_load"] = round(peak_load_holder["v"], 2)
 
-    out_dir = _REPO / "benchmark" / "flat" / time.strftime("%Y%m%d-%H%M%S")
+    # Stamp the model identity into the summary so the history
+    # aggregator (``jaeger bench history``) can attribute results to
+    # the model that produced them — without this, multi-model sweeps
+    # leave a pile of timestamped directories with no model context.
+    model_name = "unknown"
+    try:
+        from pathlib import Path as _Path
+        from jaeger_os.main import _pipeline as _pl
+        _cfg = _pl.get("config")
+        _mp = getattr(getattr(_cfg, "model", None), "model_path", None)
+        if _mp:
+            summary["model_path"] = str(_mp)
+            model_name = _Path(str(_mp)).stem
+            summary["model_name"] = model_name
+    except Exception:  # noqa: BLE001 — model identity is metadata; never block
+        pass
+    ts = time.strftime("%Y%m%d-%H%M%S")
+    summary["run_id"] = ts
+    # Record which thinking mode the model ran in (Phase 2 of the cloud-
+    # style ``thinking`` toggle). The leaderboard groups runs by
+    # (model, thinking_mode) so a hybrid model's think-vs-direct
+    # tradeoff is visible side-by-side. ``auto`` = the model's default
+    # mode (unchanged behaviour, matches all historical runs).
+    summary["thinking_mode"] = (
+        os.environ.get("JAEGER_BENCH_THINKING") or "auto"
+    ).strip().lower() or "auto"
+    # Stamp the corpus version (cases.BENCHMARK_VERSION). The
+    # leaderboard filters to runs of the current version so a 1.0
+    # (51-case) run isn't visually ranked against a 1.1 (59-case)
+    # run. Legacy summaries without this field get their version
+    # inferred from total case count in the aggregator.
+    try:
+        from jaeger_os.core.bench.cases import BENCHMARK_VERSION
+        summary["benchmark_version"] = BENCHMARK_VERSION
+    except Exception:  # noqa: BLE001 — metadata, never block a bench
+        pass
+
+    # Per-model nesting under benchmark/flat/<model>/<ts>/. Each
+    # artifact ALSO carries ``<model>-<ts>`` in its filename — so a
+    # file copied / shared out of context still self-identifies. The
+    # generic ``rows.jsonl`` / ``summary.json`` names of the original
+    # layout were undescriptive once moved; the prefix fixes that.
+    # ``unknown`` collects runs where the config didn't expose a
+    # model_path (rare; usually a misconfigured boot).
+    out_dir = _REPO / "benchmark" / "flat" / model_name / ts
     out_dir.mkdir(parents=True, exist_ok=True)
-    (out_dir / "rows.jsonl").write_text(
+    prefix = f"{model_name}-{ts}"
+    rows_path = out_dir / f"{prefix}-rows.jsonl"
+    summary_path = out_dir / f"{prefix}-summary.json"
+    log_path = out_dir / f"{prefix}.log"
+
+    rows_path.write_text(
         "\n".join(json.dumps(r, default=str, ensure_ascii=False)
                   for r in summary["rows"]) + "\n",
         encoding="utf-8",
     )
-    (out_dir / "summary.json").write_text(
+    summary_path.write_text(
         json.dumps({k: v for k, v in summary.items() if k != "rows"},
                    indent=2, default=str, ensure_ascii=False),
         encoding="utf-8",
     )
+
+    # Human-readable per-case digest. The JSON files are for the
+    # history aggregator + machine consumers; this one is for a
+    # human eyeballing the run after the fact ("which case failed?",
+    # "how slow was speak_file?") without `jq`-ing into JSON. Mirrors
+    # what the per-row console output showed but persisted to disk.
+    log_lines: list[str] = [
+        f"# {model_name} — flat bench  ({ts})",
+        f"# wall={wall:.1f}s  load={load_s:.1f}s  cases={summary['total']}",
+        f"# passed={summary['passed']}  errors={summary['errors']}",
+        "",
+    ]
+    metrics = summary.get("metrics") or {}
+    if metrics:
+        log_lines.append(
+            f"# avg={metrics.get('avg_latency_s', 0):.2f}s  "
+            f"p50={metrics.get('p50_latency_s', 0):.2f}s  "
+            f"p95={metrics.get('p95_latency_s', 0):.2f}s  "
+            f"tok/s={metrics.get('answer_tokens_per_sec', 0):.1f} "
+            f"({metrics.get('answer_tokens_source', '?')})"
+        )
+        log_lines.append("")
+    for i, r in enumerate(summary.get("rows") or []):
+        mark = "✓" if r.get("case_pass") else "✗"
+        log_lines.append(
+            f"  [ROW {i:02}] {r.get('id', '?'):<40} pass={mark}  "
+            f"{r.get('elapsed_s', 0):.2f}s"
+        )
+    log_lines.append("")
+    log_lines.append(
+        f"{summary['passed']}/{summary['total']} passed; "
+        f"errors={summary['errors']}; wall={wall:.1f}s"
+    )
+    log_path.write_text("\n".join(log_lines) + "\n", encoding="utf-8")
 
     total = summary["total"] or 1
     print(f"\n{summary['passed']}/{summary['total']} passed "
           f"({100 * summary['passed'] / total:.0f}%); "
           f"errors={summary['errors']}; wall={wall:.1f}s", flush=True)
     print(f"Wrote {out_dir}", flush=True)
+
+    # Auto-refresh the rolling leaderboard so HISTORY.md is always
+    # current after a bench — no manual ``jaeger bench history --write``.
+    # Suppressed when running as a sweep subprocess (the sweep
+    # regenerates ONCE at the end instead of 15× — one per model):
+    # ``run_model_sweep.py`` sets ``JAEGER_SUPPRESS_HISTORY=1``.
+    if not os.environ.get("JAEGER_SUPPRESS_HISTORY"):
+        try:
+            from jaeger_os.daemon.bench_history_verb import write_history_md
+            written = write_history_md()
+            if written:
+                print(f"Updated {written}", flush=True)
+        except Exception:  # noqa: BLE001 — never fail a bench over bookkeeping
+            pass
     return 0 if summary["passed"] == summary["total"] else 1
 
 

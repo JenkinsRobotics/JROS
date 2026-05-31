@@ -30,6 +30,7 @@ from ._common import (
     _require_layout,
     _resolve_read,
     _resolve_under,
+    _resolve_write,
     git_autocommit,
 )
 
@@ -95,25 +96,35 @@ def _maybe_syntax_check(path_rel: str, content: str) -> dict[str, Any] | None:
 
 
 def file_write(path: str, content: str) -> dict[str, Any]:
-    """Write a text file inside the instance's skills/ directory.
+    """Write a text file inside the instance's sandbox.
 
-    Path is relative to <instance>/skills/. Refuses absolute paths, `..`
-    escapes, symlinks that escape the sandbox, and any attempt to touch
-    identity.yaml / config.yaml / manifest.json / credentials / memory /
-    logs. Every write is recorded in logs/audit.log AND auto-committed
-    to the instance's git repo (best-effort) so the agent's authorship
-    history is a real audit trail.
+    Two write destinations, picked by the lead path component:
+
+      - ``workspace/...`` → ``<instance>/workspace/`` — general scratch
+        and outputs: reports, downloads, generated data, ad-hoc notes.
+      - everything else → ``<instance>/skills/`` — code modules
+        (``SKILL.md`` + ``.py``). Backward-compatible default.
+
+    Refuses absolute paths, ``..`` escapes, symlinks that escape the
+    sandbox, and any attempt to touch identity.yaml / config.yaml /
+    manifest.json / credentials / memory / logs. Every write is
+    recorded in ``logs/audit.log`` AND auto-committed to the instance's
+    git repo (best-effort) so the agent's authorship history is a real
+    audit trail.
     """
     layout = _require_layout()
     try:
-        target = _resolve_under(layout.skills_dir, path)
+        target = _resolve_write(path)
     except SandboxError as exc:
         _audit("file_write_denied", {"path": path, "reason": str(exc)})
         return {"written": False, "error": str(exc)}
 
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(content, encoding="utf-8")
-    rel = str(target.relative_to(layout.root))
+    # ``_display_path`` falls back to absolute when target lives
+    # outside the instance root — happens when the user pointed
+    # ``workspace.location`` at a path elsewhere (INST-11).
+    rel = _display_path(target, layout)
     bytes_written = len(content.encode("utf-8"))
     _audit("file_write", {"path": rel, "bytes": bytes_written})
 
@@ -128,14 +139,14 @@ def file_write(path: str, content: str) -> dict[str, Any]:
 
 
 def append_file(path: str, content: str) -> dict[str, Any]:
-    """Append text to an existing file under <instance>/skills/.
+    """Append text to an existing file under the instance sandbox.
 
-    Same sandbox enforcement as file_write — path must resolve inside
-    skills/. If the file doesn't exist yet, this creates it (same as
-    file_write would). Every append is audited + git-committed."""
+    Same path-routing as file_write: ``workspace/...`` → workspace,
+    anything else → skills. If the file doesn't exist yet, this
+    creates it. Every append is audited + git-committed."""
     layout = _require_layout()
     try:
-        target = _resolve_under(layout.skills_dir, path)
+        target = _resolve_write(path)
     except SandboxError as exc:
         _audit("append_file_denied", {"path": path, "reason": str(exc)})
         return {"appended": False, "error": str(exc)}
@@ -143,7 +154,7 @@ def append_file(path: str, content: str) -> dict[str, Any]:
     target.parent.mkdir(parents=True, exist_ok=True)
     with target.open("a", encoding="utf-8") as fh:
         fh.write(content)
-    rel = str(target.relative_to(layout.root))
+    rel = _display_path(target, layout)
     bytes_appended = len(content.encode("utf-8"))
     _audit("append_file", {"path": rel, "bytes": bytes_appended})
     commit_sha = git_autocommit(layout, rel, f"agent: append {rel}")
@@ -178,7 +189,7 @@ def edit_file(path: str, old: str, new: str, replace_all: bool = False) -> dict[
     logging, git auto-commit and .py syntax check as file_write."""
     layout = _require_layout()
     try:
-        target = _resolve_under(layout.skills_dir, path)
+        target = _resolve_write(path)
     except SandboxError as exc:
         _audit("edit_file_denied", {"path": path, "reason": str(exc)})
         return {"edited": False, "error": str(exc)}
@@ -202,7 +213,7 @@ def edit_file(path: str, old: str, new: str, replace_all: bool = False) -> dict[
 
     updated = original.replace(old, new)
     target.write_text(updated, encoding="utf-8")
-    rel = str(target.relative_to(layout.root))
+    rel = _display_path(target, layout)
     replacements = count if replace_all else 1
     _audit("edit_file", {"path": rel, "replacements": replacements})
 
@@ -232,7 +243,7 @@ def delete_file(path: str) -> dict[str, Any]:
     delete, the file lives in the commit log inside the instance repo."""
     layout = _require_layout()
     try:
-        target = _resolve_under(layout.skills_dir, path)
+        target = _resolve_write(path)
     except SandboxError as exc:
         _audit("delete_file_denied", {"path": path, "reason": str(exc)})
         return {"deleted": False, "error": str(exc)}
@@ -242,7 +253,7 @@ def delete_file(path: str) -> dict[str, Any]:
     if target.is_dir():
         return {"deleted": False, "reason": "is a directory", "path": path}
 
-    rel = str(target.relative_to(layout.root))
+    rel = _display_path(target, layout)
     target.unlink()
     _audit("delete_file", {"path": rel})
     commit_sha = git_autocommit(layout, rel, f"agent: delete {rel}")

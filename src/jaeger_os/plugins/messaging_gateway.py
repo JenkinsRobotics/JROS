@@ -78,7 +78,7 @@ def main() -> int:
     layout = InstanceLayout(root=resolve_instance_dir(instance_name))
     if not layout.exists():
         print(f"[gateway] instance {instance_name!r} not initialized; "
-              f"run `python -m jaeger_os --setup` first.", file=sys.stderr)
+              f"run `jaeger setup` first.", file=sys.stderr)
         return 2
 
     config: Config = load_yaml(layout.config_path, Config)

@@ -80,6 +80,37 @@ def main() -> int:
         print(f"  [ROW {idx:02d}] {case_id:40s} pass={mark}  "
               f"{elapsed_s:5.2f}s", flush=True)
 
+    # System-load sampler: poll ``os.getloadavg()`` every 5s during
+    # the run, stash the peak in the summary. Tells the reader how
+    # hard this model strained the host while benching — orthogonal
+    # to wall time (a 4-min model that pegs CPU at 50 vs a 60-min
+    # model that idles at 5 is information the leaderboard couldn't
+    # see before). Daemon thread so a bench crash never blocks exit.
+    #
+    # TODO(future): subtract a baseline. ``os.getloadavg()`` is a
+    # DECAYING 1-min average, so the first sample after the bench
+    # starts captures whatever load was already on the system —
+    # e.g. a previous sanity sweep cooling down, or a Spotlight
+    # reindex. The fix is to sample a baseline BEFORE the run starts
+    # and store ``peak - baseline`` as the bench's contribution. For
+    # now the absolute value is informative but the first model in a
+    # back-to-back queue can show a spuriously high reading; rerun it
+    # standalone for a clean number.
+    import threading
+    peak_load_holder = {"v": 0.0}
+    _stop = threading.Event()
+    def _sample_load():
+        while not _stop.is_set():
+            try:
+                cur = os.getloadavg()[0]   # 1-min average
+                if cur > peak_load_holder["v"]:
+                    peak_load_holder["v"] = cur
+            except OSError:
+                pass
+            _stop.wait(5.0)
+    _sampler = threading.Thread(target=_sample_load, daemon=True)
+    _sampler.start()
+
     started = time.perf_counter()
     try:
         rows = run_bench(boot.client, tags=tag_list or None,
@@ -90,11 +121,13 @@ def main() -> int:
             boot.cleanup()
         except Exception:  # noqa: BLE001 — cleanup is best-effort
             pass
+        _stop.set()
     wall = time.perf_counter() - started
 
     summary = summarise(rows)
     summary["wall_s"] = round(wall, 2)
     summary["load_s"] = round(load_s, 2)
+    summary["peak_load"] = round(peak_load_holder["v"], 2)
 
     # Stamp the model identity into the summary so the history
     # aggregator (``jaeger bench history``) can attribute results to

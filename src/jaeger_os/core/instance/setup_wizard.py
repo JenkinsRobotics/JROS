@@ -185,23 +185,75 @@ def run_wizard(*, force: bool = False, instance_name: str | None = None) -> Inst
 
     # ── Step 2 · Model ──────────────────────────────────────────────
     _step(2, "Model")
-    print("  Which model is the Jaeger's brain?")
-    model_opts = [
-        (key, f"{key}" + ("  (default)" if key == DEFAULT_MODEL else ""))
-        for key in MODEL_REGISTRY
+    # Detect the host's unified-memory tier so we can recommend the
+    # data-validated awake (+ asleep, if the tier supports a swap)
+    # pair. Operator can still drop into "custom GGUF path" if they
+    # know what they want.
+    from jaeger_os.core.models.host_recommendation import (
+        detect_total_memory_gb, classify_tier, recommend_for_tier,
+    )
+    detected_gb = detect_total_memory_gb()
+    detected_tier = classify_tier(detected_gb)
+    rec = recommend_for_tier(detected_tier)
+    print(f"  Host: {detected_gb:.1f} GB unified memory → "
+          f"{rec.tier_label} tier")
+    print(f"  {rec.description}")
+    print()
+    print(f"  Recommended awake model (real-time conversation):")
+    print(f"    • {rec.awake.display_name}  ({rec.awake.size_gb:.1f} GB, "
+          f"score {rec.awake.score_pct:.1f}%, "
+          f"{rec.awake.tokens_per_task} tok/task)")
+    print(f"      {rec.awake.notes}")
+    print()
+    print(f"  Recommended asleep model (deep-think / kanban work):")
+    print(f"    • {rec.asleep.display_name}  ({rec.asleep.size_gb:.1f} GB, "
+          f"score {rec.asleep.score_pct:.1f}%, "
+          f"{rec.asleep.tokens_per_task} tok/task)")
+    print(f"      {rec.asleep.notes}")
+    if rec.awake.registry_key == rec.asleep.registry_key:
+        print(f"    (same model as awake — no swap needed at this tier; "
+              f"deep-think runs the same weights in their natural "
+              f"reasoning mode)")
+    print()
+    print("  How do you want to pick?")
+    pick_opts = [
+        ("recommended", f"Use the recommended awake model "
+                        f"({rec.awake.display_name})"),
+        ("registry",    "Choose from the full registry"),
+        ("__custom__",  "Provide a custom GGUF path"),
     ]
-    model_opts.append(("__custom__", "a custom GGUF path"))
-    default_idx = next((i for i, (k, _) in enumerate(model_opts) if k == DEFAULT_MODEL), 0)
-    model_choice = _ask_choice("Pick a model", model_opts, default=default_idx)
-    if model_choice == "__custom__":
+    pick_mode = _ask_choice("Pick", pick_opts, default=0)
+    if pick_mode == "recommended":
+        model_path = rec.awake.registry_key
+        print(f"     → {model_path} (resolved from the registry; "
+              "downloaded on first use if not cached).")
+    elif pick_mode == "registry":
+        model_opts = [
+            (key, f"{key}" + ("  (default)" if key == DEFAULT_MODEL else ""))
+            for key in MODEL_REGISTRY
+        ]
+        default_idx = next((i for i, (k, _) in enumerate(model_opts)
+                            if k == DEFAULT_MODEL), 0)
+        model_path = _ask_choice("Pick a model", model_opts,
+                                 default=default_idx)
+        print(f"     → {model_path} (resolved from the registry; "
+              "downloaded on first use if not cached).")
+    else:
         model_path = _ask("Path to a .gguf file", "")
         if model_path and not Path(model_path).expanduser().exists():
             print(f"     ⚠  {model_path} not found — saving anyway; "
                   "resolve it before first use.")
-    else:
-        model_path = model_choice
-        print(f"     → {model_path} (resolved from the registry; "
-              "downloaded on first use if not cached).")
+    # Offer to pre-download the asleep model so the sleep-cycle swap
+    # has the weights resident when the inactivity timer fires.
+    # Skip the hint when awake and asleep are the same model — no
+    # second download needed.
+    if (rec.asleep.registry_key != rec.awake.registry_key
+            and rec.asleep.download_url):
+        print()
+        print(f"  Asleep-mode pre-download (optional):")
+        print(f"    {rec.asleep.download_url}")
+        print(f"    (will be downloaded on first model swap if you skip "
+              "this step)")
 
     # ── Step 3 · Permissions ────────────────────────────────────────
     _step(3, "Permissions")

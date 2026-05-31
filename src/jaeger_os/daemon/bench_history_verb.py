@@ -228,6 +228,13 @@ def render_history_md(
         needle = family.lower()
         entries = [e for e in entries if needle in e["model"].lower()]
     aggregated = _aggregate_by_model(entries)
+    # Same aggregation for archived (pre-1.1) data — used by the
+    # renderer to show "what we have from the old corpus" so the user
+    # can see which models need re-benching on 1.1 to rejoin the
+    # active leaderboard.
+    archived_aggregated = (
+        _aggregate_by_model(archived_entries) if archived_entries else []
+    )
     hidden_orphans: list[str] = []
     if not include_uninstalled:
         installed = _installed_model_stems(repo=repo)
@@ -247,7 +254,8 @@ def render_history_md(
         aggregated = aggregated[:top]
     return _render(aggregated, all_entries=entries,
                    total_entries=len(entries), since=since,
-                   hidden_orphans=hidden_orphans)
+                   hidden_orphans=hidden_orphans,
+                   archived_rows=archived_aggregated)
 
 
 def write_history_md(repo: pathlib.Path | None = None) -> pathlib.Path | None:
@@ -408,12 +416,14 @@ def _from_flat_summaries(repo: pathlib.Path) -> Iterable[dict[str, Any]]:
         route_passed = int(summary.get("routing_passed", 0) or 0)
         route_pct = (100 * route_passed / route_total) if route_total else 0.0
         # Cloud-style thinking toggle (Phase 2). Older summaries don't
-        # carry this field — they ran in the model's default mode, which
-        # we tag ``default`` so they don't collide with the new ``on``/
-        # ``off`` runs in the aggregator's (model, mode) grouping.
+        # carry this field — they ran in the model's default mode,
+        # which we tag ``default`` so the aggregator's (model, mode)
+        # grouping doesn't collide them with explicit on/off runs.
+        # ``auto`` is the modern explicit value (current sweep default)
+        # — it stays as ``auto`` so the renderer can show "🧠 auto" as
+        # the mode label rather than mislabel it "🧠 on" via the
+        # default-bucket fallback path.
         thinking_mode = (summary.get("thinking_mode") or "default").lower()
-        if thinking_mode == "auto":
-            thinking_mode = "default"
         yield {
             "model": model,
             "family": _family_of(model),
@@ -426,6 +436,12 @@ def _from_flat_summaries(repo: pathlib.Path) -> Iterable[dict[str, Any]]:
             "p50_s": float(metrics.get("p50_latency_s", 0.0) or 0.0),
             "p95_s": float(metrics.get("p95_latency_s", 0.0) or 0.0),
             "wall_s": float(summary.get("wall_s", 0.0) or 0.0),
+            "passed": int(summary.get("passed", 0) or 0),
+            "total": int(summary.get("total", 0) or 0),
+            "peak_load": float(summary.get("peak_load", 0.0) or 0.0),
+            "answer_tokens_total": int(
+                metrics.get("answer_tokens_total", 0) or 0
+            ),
             "benchmark_version": _infer_bench_version(summary),
             "avg_latency_s": float(metrics.get("avg_latency_s", 0.0) or 0.0),
             "tokens_per_sec": float(
@@ -453,16 +469,11 @@ _CONTEXT_TAGS = frozenset({"memory", "multiturn"})
 _MULTITURN_TAGS = frozenset({"multiturn", "cross_turn"})
 _SAFETY_TAGS = frozenset({"safety"})
 
-# Final-score weights (mirrors the T1-T5 suite — tools 30 / context 20
-# / multi-turn 25 / safety 10, with the remaining 15 split toward
-# routing/real-time as the everyday-dispatch baseline).
-_SCORE_WEIGHTS = {
-    "tools":     0.30,   # routing + multistep + code (the "Tools" tier)
-    "real_time": 0.15,
-    "context":   0.20,
-    "multiturn": 0.25,
-    "safety":    0.10,
-}
+# Score is just ``passed / total`` — every case worth the same
+# 1/total fraction. No tier weighting, no hidden math. The per-tier
+# columns (Deep-think / Real-time / Multi-turn / Safety) are
+# informational breakdowns of WHICH cases passed, not weighted
+# contributors. Pass 50/59 → Score 84.7%, period.
 
 
 def _category_pass(run_dir: pathlib.Path) -> dict[str, int]:
@@ -574,42 +585,23 @@ def _latest_category(runs: list[dict[str, Any]]) -> dict[str, Any]:
     return {k: 0 if k != "safety_fail_ids" else [] for k in _CAT_KEYS}
 
 
-def _score(cats: dict[str, Any]) -> tuple[str, bool]:
-    """Compute the weighted final Score from the latest per-category
-    counts. Returns ``(display, False)`` — the second element is kept
-    for back-compat with callers that still unpack two values.
+def _score(model_row: dict[str, Any]) -> tuple[str, bool]:
+    """Score = ``passed / total`` from the latest run. Every case
+    counts the same — no tier weighting, no hidden math. The Score
+    column literally just says "how many of the 59 cases did this
+    model pass?"
 
-    Safety failures DON'T disqualify the model. They show up two ways:
-    (a) the per-tier Safety count column (``4/5`` means one failure),
-    and (b) the weighted score itself — safety is 10% of the total, so
-    a model with safety failures takes a measurable hit. The previous
-    hard-gate "any safety fail → DQ" was unrealistic in practice: every
-    model failed at least one of the safety cases (typically prompt-
-    injection refusal phrasing), which collapsed the leaderboard to
-    'everyone DQ'd' and made the rolled-up Score useless. The score is
-    now always a number so models remain comparable; the Safety column
-    + per-case ``<details>`` block tell you exactly what failed."""
-    # ``tier name`` → (pass-count key, total-count key) in ``cats``.
-    keys = {
-        "tools":     ("deep_pass",   "deep_total"),
-        "real_time": ("rt_pass",     "rt_total"),
-        "context":   ("ctx_pass",    "ctx_total"),
-        "multiturn": ("mt_pass",     "mt_total"),
-        "safety":    ("safety_pass", "safety_total"),
-    }
-    # A category with zero cases on disk (older run, missing tag) has its
-    # weight redistributed proportionally across the present ones —
-    # otherwise the score is artificially deflated by a missing tier.
-    present = {k: w for k, w in _SCORE_WEIGHTS.items()
-               if (cats.get(keys[k][1]) or 0) > 0}
-    if not present:
+    Returns ``(display, False)`` — the second element is kept for
+    back-compat with callers that still unpack two values.
+
+    The per-tier columns (Deep-think / Real-time / Multi-turn /
+    Safety) are informational — they show WHICH cases the model
+    passed, not weighted contributors to the score."""
+    passed = model_row.get("latest_passed", 0) or 0
+    total = model_row.get("latest_total", 0) or 0
+    if not total:
         return "—", False
-    weight_sum = sum(present.values())
-    score = 0.0
-    for tier, w in present.items():
-        pk, tk = keys[tier]
-        score += (cats[pk] / cats[tk]) * (w / weight_sum)
-    return f"{score * 100:.1f}%", False
+    return f"{passed / total * 100:.1f}%", False
 
 
 def _aggregate_by_model(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -628,6 +620,14 @@ def _aggregate_by_model(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
     by_key: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
     for e in entries:
         mode = e.get("thinking_mode") or "default"
+        # Collapse legacy ``default`` into ``auto`` at the bucket-key
+        # level — for hybrid models the two are semantically identical
+        # (default = no explicit flag = model decides = auto). Without
+        # this, the same model shows up twice on the leaderboard when
+        # a pre-fix run stamped ``default`` and a post-fix run stamped
+        # ``auto``.
+        if mode == "default":
+            mode = "auto"
         by_key[(e["model"], mode)].append(e)
 
     out: list[dict[str, Any]] = []
@@ -646,6 +646,10 @@ def _aggregate_by_model(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
             "latest_p50_s": latest["p50_s"],
             "latest_p95_s": latest["p95_s"],
             "latest_wall_s": latest.get("wall_s", 0.0),
+            "latest_passed": latest.get("passed", 0),
+            "latest_total": latest.get("total", 0),
+            "latest_peak_load": latest.get("peak_load", 0.0),
+            "latest_tokens_total": latest.get("answer_tokens_total", 0),
             "latest_tokens_per_sec": latest["tokens_per_sec"],
             "latest_tokens_source": latest["tokens_source"],
             "latest_route_pct": latest["route_pct"],
@@ -1169,6 +1173,7 @@ def _render(
     total_entries: int,
     since: str | None = None,
     hidden_orphans: list[str] | None = None,
+    archived_rows: list[dict[str, Any]] | None = None,
 ) -> str:
     """Three-section report: per-model summary, all-time top runs,
     and the full chronological run log. Together they answer
@@ -1226,17 +1231,15 @@ def _render(
             "",
         ]
     lines += [
-        "``Score`` is the rolled-up weighted result — tools 30% / "
-        "real-time 15% / context 20% / multi-turn 25% / safety 10%. "
-        "Safety failures are folded into the score via the 10% safety "
-        "weight (a model with safety failures gets a lower number, not "
-        "a DQ) and itemised in the ``Safety`` column + the per-model "
-        "``<details>`` block so you can see exactly what failed. "
-        "``Deep-think`` is full pass on the HARD subset (code / "
-        "multistep / recovery — what a coding agent needs); "
-        "``Real-time`` is full pass on routing (what a fast agent "
-        "needs); ``Safety`` is pass on the refusal / no-hallucination "
-        "cases. Latest-run figures, sorted by Score.",
+        "``Score`` is dead simple: **``passed / total``** from the "
+        "latest run. Every case worth the same 1/total — pass 50/59 "
+        "→ 84.7%, no tier weighting, no hidden math. The per-tier "
+        "columns are informational breakdowns of WHICH cases "
+        "passed: ``Deep-think`` = code / multistep / recovery (what "
+        "a coding agent needs); ``Real-time`` = routing (what a "
+        "fast agent needs); ``Multi-turn`` = multiturn / cross-turn "
+        "(stateful conversations); ``Safety`` = refusal / no-"
+        "hallucination cases. Latest-run figures, sorted by Score.",
         "",
         "**Methodology — ideal state vs baseline.** Each model is "
         "primarily benched in its **ideal operational state**: "
@@ -1251,9 +1254,9 @@ def _render(
         "ideal works.",
         "",
         "| # | Model | Mode | Family | **Score** | Deep-think | "
-        "Real-time | Safety | Best route% | Latest elapsed | "
-        "Raw tok/s | Bench tok/s | Latest run | Runs |",
-        "|---|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---|---:|",
+        "Real-time | Multi-turn | Safety | Best route% | Latest elapsed | "
+        "Tokens/task | Peak TPS | VRAM | Peak load | Latest run | Runs |",
+        "|---|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|---:|",
     ]
     # ``Raw tok/s`` = the model's per-token GPU decode rate measured by
     # ``run_model_sanity`` on a trivial prompt. ``Bench tok/s`` =
@@ -1267,9 +1270,11 @@ def _render(
     for i, r in enumerate(rows, start=1):
         latest_ts = _compact_ts(r["latest_ts"])
         dt, rt = r.get("deep_total", 0), r.get("rt_total", 0)
+        mt_t = r.get("mt_total", 0)
         st = r.get("safety_total", 0)
         deep = f"{r.get('deep_pass', 0)}/{dt}" if dt else "—"
         real = f"{r.get('rt_pass', 0)}/{rt}" if rt else "—"
+        multi = f"{r.get('mt_pass', 0)}/{mt_t}" if mt_t else "—"
         safety = f"{r.get('safety_pass', 0)}/{st}" if st else "—"
         score = r.get("score_display", "—")
         rec = sanity_records.get(r["model"]) or {}
@@ -1281,16 +1286,47 @@ def _render(
         # model's IDEAL-state run. Forced on/off variants live in the
         # sanity-probe section instead — different question, different
         # data set.
+        # VRAM = Metal buffer size from the sanity probe — answers
+        # "how big a chunk of GPU memory does this model claim?". Shown
+        # in GB for at-a-glance comparison.
+        vram_mb = rec.get("metal_mb") or 0
+        vram_disp = f"{vram_mb / 1024:.1f} GB" if vram_mb else "—"
+        # Peak load = max ``os.getloadavg()`` 1-min average sampled by
+        # the bench runner during the run (instrumented per-run). Tells
+        # you how hard the model strained the system. Backfilled to
+        # "—" for runs that pre-date the instrumentation.
+        peak_load = r.get("latest_peak_load")
+        load_disp = f"{peak_load:.1f}" if peak_load else "—"
+        # Tokens/task = total tokens generated ÷ cases. Captures
+        # verbosity: a Thinking model that emits hundreds of reasoning
+        # tokens per case (even hidden ones) has a high value; a terse
+        # model that answers in 30 tokens has a low value. Different
+        # signal from wall time — two models can take similar time but
+        # one is generating 10x more tokens to do it.
+        tokens_total = r.get("latest_tokens_total", 0) or 0
+        total_cases = r.get("latest_total", 0) or 0
+        per_task = (tokens_total / total_cases) if total_cases else 0
+        tokens_disp = f"{per_task:.0f}" if per_task else "—"
+        # Peak TPS = the model's ceiling decode rate on THIS machine
+        # (measured by the sanity probe on a trivial single-prompt —
+        # no agent loop, no tools, no multi-turn). Model-on-machine
+        # metric: same model on different hardware gives a different
+        # number; same hardware with different models gives different
+        # numbers because architecture / quant / MoE-vs-dense all
+        # affect it. The leaderboard's Latest elapsed reflects effective
+        # throughput (peak TPS × concision × prefill cost); a high
+        # Peak TPS with low Tokens/task is the speed-and-efficiency win.
         rec_runs = rec.get("runs") or []
-        raw_tps = max((rn.get("tps", 0.0) for rn in rec_runs), default=0.0) or None
-        raw_disp = f"{raw_tps:.1f}" if raw_tps else "—"
+        peak_tps = max(
+            (rn.get("tps", 0.0) for rn in rec_runs), default=0.0
+        ) or None
+        peak_tps_disp = f"{peak_tps:.1f}" if peak_tps else "—"
         lines.append(
             f"| {i} | `{r['model']}` | {mode_label} | {r['family']} | "
-            f"**{score}** | {deep} | {real} | {safety} | "
+            f"**{score}** | {deep} | {real} | {multi} | {safety} | "
             f"{r['best_route_pct']:.1f}% | "
             f"{_format_duration(r.get('latest_wall_s', 0.0))} | "
-            f"{raw_disp} | "
-            f"{r['latest_tokens_per_sec']:.1f} | "
+            f"{tokens_disp} | {peak_tps_disp} | {vram_disp} | {load_disp} | "
             f"{latest_ts} | {r['run_count']} |"
         )
 
@@ -1412,6 +1448,56 @@ def _render(
             f"``model_name`` was stamped into ``summary.json`` "
             f"(2026-05-27). Re-run those to attribute them._"
         )
+
+    # ── Archived runs (pre-1.1 corpus) ─────────────────────────
+    # Surface the score each model last earned on the 1.0 corpus so
+    # the reader knows what the model used to look like — and which
+    # models still need re-benching on 1.1 to rejoin the active
+    # leaderboard. Only shown when archived data exists for at least
+    # one model that's also currently installed (otherwise it's just
+    # noise about deleted models).
+    if archived_rows:
+        # Only keep archived entries for models that:
+        #   1. Are still on disk (otherwise it's noise about deleted
+        #      models), AND
+        #   2. Do NOT have any v1.1 data yet — i.e. they truly need
+        #      re-benching. A model that already has a v1.1 run is on
+        #      the active leaderboard above, so re-listing it here
+        #      under its old score is just redundant noise.
+        installed = _installed_model_stems(
+            repo=pathlib.Path(__file__).resolve().parents[3]
+        )
+        models_with_current = {r["model"] for r in rows}
+        visible_archived = [
+            r for r in archived_rows
+            if (not installed or r["model"] in installed)
+            and r["model"] not in models_with_current
+        ]
+        if visible_archived:
+            lines += [
+                "",
+                "## Archived runs (pre-1.1 corpus)",
+                "",
+                f"These models have only pre-{_CURRENT_BENCH_VERSION} "
+                "(51-case) data — older corpus that lacked the safety / "
+                "hallucination / cross-turn tiers. Scores aren't "
+                "comparable with the active leaderboard above. **Re-run "
+                "them on the current corpus to rejoin the rankings** — "
+                "the sweep does this automatically once you bench the "
+                "model again.",
+                "",
+                "| Model | Last v1.0 Score | Best route% | Latest run |",
+                "|---|---:|---:|---|",
+            ]
+            for r in sorted(visible_archived,
+                            key=lambda x: -x.get("best_route_pct", 0)):
+                lines.append(
+                    f"| `{r['model']}` | "
+                    f"{r.get('score_display', '—')} | "
+                    f"{r.get('best_route_pct', 0):.1f}% | "
+                    f"{_compact_ts(r.get('latest_ts', ''))} |"
+                )
+
     return "\n".join(lines) + "\n"
 
 

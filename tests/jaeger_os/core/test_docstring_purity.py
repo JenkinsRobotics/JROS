@@ -27,7 +27,7 @@ import pytest
 
 
 REPO = Path(__file__).resolve().parents[3]
-TOOLS_DIR = REPO / "src" / "jaeger_os" / "core" / "tools"
+TOOLS_DIR = REPO / "jaeger_os" / "core" / "tools"
 
 
 # Imperative phrases that signal "this docstring is telling the agent

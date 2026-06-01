@@ -26,7 +26,7 @@ from jaeger_os.plugins.manifest import (
 
 _BUNDLED_PLUGINS_ROOT = (
     Path(__file__).resolve().parents[3]
-    / "src" / "jaeger_os" / "plugins"
+    / "jaeger_os" / "plugins"
 )
 
 

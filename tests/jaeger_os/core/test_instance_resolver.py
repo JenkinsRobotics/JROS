@@ -79,7 +79,7 @@ def test_editable_install_still_treated_as_dev(tmp_path, monkeypatch):
     checkout — no ``site-packages`` ancestor, so it must NOT trigger
     the pip-install branch (the resolver returns the same
     user-instances path either way; this test pins the detection)."""
-    fake_pkg = tmp_path / "GITHUB" / "JROS" / "src" / "jaeger_os"
+    fake_pkg = tmp_path / "GITHUB" / "JROS" / "jaeger_os"
     fake_pkg.mkdir(parents=True)
     monkeypatch.setattr(instance_module, "PACKAGE_ROOT", fake_pkg, raising=True)
     assert instance_module.is_pip_installed() is False

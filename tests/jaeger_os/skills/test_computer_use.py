@@ -16,7 +16,7 @@ import pytest
 
 _MODULE_PATH = (
     Path(__file__).resolve().parents[3]
-    / "src" / "jaeger_os" / "skills" / "computer_use_v1" / "computer_use.py"
+    / "jaeger_os" / "skills" / "computer_use_v1" / "computer_use.py"
 )
 
 

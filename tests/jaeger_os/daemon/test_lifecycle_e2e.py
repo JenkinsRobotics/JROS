@@ -70,8 +70,8 @@ def _run_cli(args, *, env_extra: dict) -> subprocess.CompletedProcess:
     we're measuring."""
     env = os.environ.copy()
     env.update(env_extra)
-    repo_src = str(Path(__file__).resolve().parents[3] / "src")
-    env["PYTHONPATH"] = repo_src + os.pathsep + env.get("PYTHONPATH", "")
+    repo_root = str(Path(__file__).resolve().parents[3])
+    env["PYTHONPATH"] = repo_root + os.pathsep + env.get("PYTHONPATH", "")
     return subprocess.run(
         [sys.executable, "-m", "jaeger_os.daemon.cli", *args],
         env=env, capture_output=True, text=True, timeout=15,

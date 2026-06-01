@@ -32,10 +32,11 @@ def live_instance(tmp_path, monkeypatch):
     it. Populates each table with at least one row so the export
     verb has something to dump."""
     monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("JAEGER_HOME", str(tmp_path))
     monkeypatch.delenv("JAEGER_INSTANCE_DIR", raising=False)
     monkeypatch.delenv("JAEGER_INSTANCE_NAME", raising=False)
 
-    inst = tmp_path / ".jaeger" / "instances" / "default"
+    inst = tmp_path / ".jaeger_os" / "instances" / "default"
     inst.mkdir(parents=True)
     (inst / "memory").mkdir()
     (inst / "logs").mkdir()

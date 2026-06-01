@@ -35,8 +35,9 @@ def _make_instance_dir(parent: Path, name: str, *,
 
 def test_find_lock_files_finds_files_under_instance_run(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("JAEGER_HOME", str(tmp_path))
     monkeypatch.delenv("JAEGER_INSTANCE_DIR", raising=False)
-    instances = tmp_path / ".jaeger" / "instances"
+    instances = tmp_path / ".jaeger_os" / "instances"
     instances.mkdir(parents=True)
     _make_instance_dir(instances, "default")
     _make_instance_dir(instances, "work")
@@ -49,8 +50,9 @@ def test_find_lock_files_finds_files_under_instance_run(tmp_path, monkeypatch):
 
 def test_find_lock_files_filters_by_instance_name(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("JAEGER_HOME", str(tmp_path))
     monkeypatch.delenv("JAEGER_INSTANCE_DIR", raising=False)
-    instances = tmp_path / ".jaeger" / "instances"
+    instances = tmp_path / ".jaeger_os" / "instances"
     instances.mkdir(parents=True)
     _make_instance_dir(instances, "default")
     _make_instance_dir(instances, "work")
@@ -65,6 +67,7 @@ def test_find_lock_files_handles_dev_sandbox(tmp_path, monkeypatch):
     parent that contains instances). The finder must handle both
     shapes."""
     monkeypatch.setenv("HOME", str(tmp_path / "home"))  # empty home
+    monkeypatch.setenv("JAEGER_HOME", str(tmp_path / "home"))
     sandbox = tmp_path / "sandbox" / "jros-dev"
     (sandbox / "run").mkdir(parents=True)
     (sandbox / "run" / "tui.pid").write_text("99999")
@@ -77,6 +80,7 @@ def test_find_lock_files_handles_dev_sandbox(tmp_path, monkeypatch):
 
 def test_find_lock_files_returns_empty_when_no_instances(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("JAEGER_HOME", str(tmp_path))
     monkeypatch.delenv("JAEGER_INSTANCE_DIR", raising=False)
     assert kill_verb._find_lock_files() == []
 
@@ -85,8 +89,9 @@ def test_find_lock_files_only_picks_known_names(tmp_path, monkeypatch):
     """A file called ``some_other.pid`` under run/ must not be
     swept — only the documented names."""
     monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("JAEGER_HOME", str(tmp_path))
     monkeypatch.delenv("JAEGER_INSTANCE_DIR", raising=False)
-    instances = tmp_path / ".jaeger" / "instances"
+    instances = tmp_path / ".jaeger_os" / "instances"
     instances.mkdir(parents=True)
     inst = instances / "default"
     (inst / "run").mkdir(parents=True)
@@ -180,6 +185,7 @@ def test_find_jaeger_pids_returns_empty_on_ps_failure(monkeypatch):
 def test_kill_with_nothing_to_do_returns_zero(tmp_path, monkeypatch, capsys):
     """No processes, no locks → clean exit, rc=0, no error noise."""
     monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("JAEGER_HOME", str(tmp_path))
     monkeypatch.delenv("JAEGER_INSTANCE_DIR", raising=False)
     monkeypatch.setattr(
         kill_verb, "_find_jaeger_pids", lambda **_kw: [],
@@ -192,8 +198,9 @@ def test_kill_with_nothing_to_do_returns_zero(tmp_path, monkeypatch, capsys):
 
 def test_kill_dry_run_lists_but_does_not_act(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("JAEGER_HOME", str(tmp_path))
     monkeypatch.delenv("JAEGER_INSTANCE_DIR", raising=False)
-    instances = tmp_path / ".jaeger" / "instances"
+    instances = tmp_path / ".jaeger_os" / "instances"
     instances.mkdir(parents=True)
     _make_instance_dir(instances, "default")
 
@@ -221,8 +228,9 @@ def test_kill_dry_run_lists_but_does_not_act(tmp_path, monkeypatch, capsys):
 
 def test_kill_removes_stale_lock_files(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("JAEGER_HOME", str(tmp_path))
     monkeypatch.delenv("JAEGER_INSTANCE_DIR", raising=False)
-    instances = tmp_path / ".jaeger" / "instances"
+    instances = tmp_path / ".jaeger_os" / "instances"
     instances.mkdir(parents=True)
     inst = _make_instance_dir(instances, "default")
 
@@ -239,6 +247,7 @@ def test_kill_removes_stale_lock_files(tmp_path, monkeypatch, capsys):
 
 def test_kill_signals_targeted_pids(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("JAEGER_HOME", str(tmp_path))
     monkeypatch.delenv("JAEGER_INSTANCE_DIR", raising=False)
 
     monkeypatch.setattr(
@@ -274,8 +283,9 @@ def test_kill_handles_processes_already_gone(tmp_path, monkeypatch):
     ProcessLookupError must be swallowed — the verb keeps going and
     still cleans locks."""
     monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("JAEGER_HOME", str(tmp_path))
     monkeypatch.delenv("JAEGER_INSTANCE_DIR", raising=False)
-    instances = tmp_path / ".jaeger" / "instances"
+    instances = tmp_path / ".jaeger_os" / "instances"
     instances.mkdir(parents=True)
     inst = _make_instance_dir(instances, "default")
 

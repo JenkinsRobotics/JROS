@@ -20,10 +20,11 @@ def fake_instance(tmp_path, monkeypatch):
     handful of files + the standard subdirs, and point HOME at the
     tmp_path so the resolver discovers it."""
     monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("JAEGER_HOME", str(tmp_path))
     monkeypatch.delenv("JAEGER_INSTANCE_DIR", raising=False)
     monkeypatch.delenv("JAEGER_INSTANCE_NAME", raising=False)
 
-    inst = tmp_path / ".jaeger" / "instances" / "test"
+    inst = tmp_path / ".jaeger_os" / "instances" / "test"
     inst.mkdir(parents=True)
     (inst / "identity.yaml").write_text("name: Test\n", encoding="utf-8")
     (inst / "config.yaml").write_text("ctx: 32768\n", encoding="utf-8")
@@ -146,13 +147,14 @@ def test_backup_skips_skills_when_no_skills(fake_instance, tmp_path):
 def test_backup_default_output_lands_in_backups_dir(fake_instance, tmp_path,
                                                      monkeypatch):
     archive = B.backup_instance("test")
-    assert archive.parent == tmp_path / ".jaeger" / "backups"
+    assert archive.parent == tmp_path / ".jaeger_os" / "backups"
     assert archive.name.startswith("test-")
     assert archive.suffix == ".zip"
 
 
 def test_backup_raises_on_missing_instance(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("JAEGER_HOME", str(tmp_path))
     monkeypatch.delenv("JAEGER_INSTANCE_DIR", raising=False)
     with pytest.raises(FileNotFoundError):
         B.backup_instance("nonexistent", output=tmp_path / "out.zip")

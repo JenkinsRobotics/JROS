@@ -33,10 +33,11 @@ def _seed_bundled(skills_root: Path, name: str, version: int = 1) -> Path:
 def fake_layout(tmp_path, monkeypatch):
     """Wire a real layout into ``HOME`` so the resolver finds it."""
     monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("JAEGER_HOME", str(tmp_path))
     monkeypatch.delenv("JAEGER_INSTANCE_DIR", raising=False)
     monkeypatch.delenv("JAEGER_INSTANCE_NAME", raising=False)
 
-    inst = tmp_path / ".jaeger" / "instances" / "default"
+    inst = tmp_path / ".jaeger_os" / "instances" / "default"
     inst.mkdir(parents=True)
     (inst / "identity.yaml").write_text("name: Test\nrole: r\npersonality: p\n",
                                          encoding="utf-8")

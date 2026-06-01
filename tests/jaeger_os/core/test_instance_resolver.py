@@ -57,11 +57,12 @@ def test_pip_install_uses_user_instances_root(tmp_path, monkeypatch):
     fake_pkg.mkdir(parents=True)
     fake_home = tmp_path / "home"
     monkeypatch.setenv("HOME", str(fake_home))
+    monkeypatch.setenv("JAEGER_HOME", str(fake_home))
     monkeypatch.setattr(instance_module, "PACKAGE_ROOT", fake_pkg, raising=True)
 
     assert instance_module.is_pip_installed() is True
     resolved = instance_module.resolve_instance_dir("default")
-    expected = (fake_home / ".jaeger" / "instances" / "default").resolve()
+    expected = (fake_home / ".jaeger_os" / "instances" / "default").resolve()
     assert resolved == expected
 
 
@@ -91,6 +92,7 @@ def test_editable_install_still_treated_as_dev(tmp_path, monkeypatch):
 def test_default_instance_name_falls_back_to_default(monkeypatch, tmp_path):
     monkeypatch.delenv("JAEGER_INSTANCE_NAME", raising=False)
     monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("JAEGER_HOME", str(tmp_path))
     assert instance_module.default_instance_name() == "default"
 
 
@@ -99,8 +101,9 @@ def test_default_instance_name_reads_active_instance_file(monkeypatch, tmp_path)
     when no env var is set."""
     monkeypatch.delenv("JAEGER_INSTANCE_NAME", raising=False)
     monkeypatch.setenv("HOME", str(tmp_path))
-    (tmp_path / ".jaeger").mkdir()
-    (tmp_path / ".jaeger" / "active_instance").write_text("work\n",
+    monkeypatch.setenv("JAEGER_HOME", str(tmp_path))
+    (tmp_path / ".jaeger_os").mkdir()
+    (tmp_path / ".jaeger_os" / "active_instance").write_text("work\n",
                                                           encoding="utf-8")
     assert instance_module.default_instance_name() == "work"
 
@@ -109,8 +112,9 @@ def test_env_var_beats_active_instance_file(monkeypatch, tmp_path):
     """If both the env var and the sticky file are set, the env var
     wins — explicit (in-shell) beats implicit (on-disk)."""
     monkeypatch.setenv("HOME", str(tmp_path))
-    (tmp_path / ".jaeger").mkdir()
-    (tmp_path / ".jaeger" / "active_instance").write_text("sticky-name\n",
+    monkeypatch.setenv("JAEGER_HOME", str(tmp_path))
+    (tmp_path / ".jaeger_os").mkdir()
+    (tmp_path / ".jaeger_os" / "active_instance").write_text("sticky-name\n",
                                                           encoding="utf-8")
     monkeypatch.setenv("JAEGER_INSTANCE_NAME", "env-name")
     assert instance_module.default_instance_name() == "env-name"
@@ -118,23 +122,26 @@ def test_env_var_beats_active_instance_file(monkeypatch, tmp_path):
 
 def test_write_active_instance_creates_file(monkeypatch, tmp_path):
     monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("JAEGER_HOME", str(tmp_path))
     instance_module.write_active_instance("work")
-    assert (tmp_path / ".jaeger" / "active_instance").read_text().strip() == "work"
+    assert (tmp_path / ".jaeger_os" / "active_instance").read_text().strip() == "work"
 
 
 def test_write_active_instance_none_removes_file(monkeypatch, tmp_path):
     monkeypatch.setenv("HOME", str(tmp_path))
-    (tmp_path / ".jaeger").mkdir()
-    (tmp_path / ".jaeger" / "active_instance").write_text("work\n",
+    monkeypatch.setenv("JAEGER_HOME", str(tmp_path))
+    (tmp_path / ".jaeger_os").mkdir()
+    (tmp_path / ".jaeger_os" / "active_instance").write_text("work\n",
                                                           encoding="utf-8")
     instance_module.write_active_instance(None)
-    assert not (tmp_path / ".jaeger" / "active_instance").exists()
+    assert not (tmp_path / ".jaeger_os" / "active_instance").exists()
 
 
 def test_read_active_instance_treats_whitespace_as_missing(monkeypatch, tmp_path):
     monkeypatch.setenv("HOME", str(tmp_path))
-    (tmp_path / ".jaeger").mkdir()
-    (tmp_path / ".jaeger" / "active_instance").write_text("   \n  \n",
+    monkeypatch.setenv("JAEGER_HOME", str(tmp_path))
+    (tmp_path / ".jaeger_os").mkdir()
+    (tmp_path / ".jaeger_os" / "active_instance").write_text("   \n  \n",
                                                           encoding="utf-8")
     assert instance_module.read_active_instance() is None
 

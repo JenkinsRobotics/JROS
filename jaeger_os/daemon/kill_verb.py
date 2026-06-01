@@ -229,11 +229,14 @@ def _is_real_jaeger_command(cmdline: str) -> bool:
 
 def _find_lock_files(*, instance: str | None = None) -> list[Path]:
     """Locate stale lock/PID files under every instance dir we know
-    about (``~/.jaeger/instances/*/run/`` + the dev sandbox)."""
+    about (``<install_root>/.jaeger_os/instances/*/run/`` + the dev
+    sandbox)."""
     roots: list[Path] = []
 
-    # User instances.
-    home_instances = Path.home() / ".jaeger" / "instances"
+    # 0.2.6: instance state moved into the operator-state dir under
+    # the install root.
+    from jaeger_os.core.instance.instance import user_instances_root
+    home_instances = user_instances_root()
     if home_instances.exists():
         roots.append(home_instances)
 

@@ -112,11 +112,12 @@ def test_config_has_interaction_field_with_default():
 
 def test_write_env_file_lands_at_home_jaeger(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("JAEGER_HOME", str(tmp_path))
     instance_root = tmp_path / "instance"
     instance_root.mkdir()
     W._write_env_file(instance_root, "default")
 
-    env_path = tmp_path / ".jaeger" / "jaeger.env"
+    env_path = tmp_path / ".jaeger_os" / "jaeger.env"
     assert env_path.exists()
     body = env_path.read_text(encoding="utf-8")
     assert f'export JAEGER_INSTANCE_DIR="{instance_root}"' in body
@@ -129,13 +130,14 @@ def test_write_env_file_lands_at_home_jaeger(tmp_path, monkeypatch):
 
 def test_write_env_file_overwrites_previous(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("JAEGER_HOME", str(tmp_path))
     a = tmp_path / "first"
     b = tmp_path / "second"
     a.mkdir()
     b.mkdir()
     W._write_env_file(a, "first")
     W._write_env_file(b, "second")
-    body = (tmp_path / ".jaeger" / "jaeger.env").read_text(encoding="utf-8")
+    body = (tmp_path / ".jaeger_os" / "jaeger.env").read_text(encoding="utf-8")
     assert str(b) in body
     assert str(a) not in body
 
@@ -147,6 +149,7 @@ def test_wizard_writes_ctx_32k_for_new_instances(monkeypatch, tmp_path):
     """Walk the wizard end-to-end with canned input. The resulting
     config.yaml on disk must have ctx=32768 (was 16384 in 0.1.0)."""
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("JAEGER_HOME", str(tmp_path / "home"))
     monkeypatch.setenv("JAEGER_INSTANCE_DIR", str(tmp_path / "inst"))
 
     # Canned answers walk: name, role, personality, voice idx, model

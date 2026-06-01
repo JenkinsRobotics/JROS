@@ -21,7 +21,7 @@ from jaeger_os.daemon import update_verb as U
 
 def _make_instance(home: Path, name: str, core_version: str = "1.0.0") -> Path:
     """Build a minimal valid 0.2.0 instance dir under HOME."""
-    inst = home / ".jaeger" / "instances" / name
+    inst = home / ".jaeger_os" / "instances" / name
     inst.mkdir(parents=True)
     (inst / "identity.yaml").write_text(f"name: {name}\nrole: r\npersonality: p\n",
                                          encoding="utf-8")
@@ -46,12 +46,14 @@ def _make_instance(home: Path, name: str, core_version: str = "1.0.0") -> Path:
 
 def test_list_stale_returns_empty_when_no_instances(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("JAEGER_HOME", str(tmp_path))
     monkeypatch.delenv("JAEGER_INSTANCE_DIR", raising=False)
     assert U._list_stale_instances() == []
 
 
 def test_list_stale_finds_old_manifests(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("JAEGER_HOME", str(tmp_path))
     monkeypatch.delenv("JAEGER_INSTANCE_DIR", raising=False)
     # 1.0.0 != current 1.1.0 → stale.
     _make_instance(tmp_path, "default", core_version="1.0.0")
@@ -65,6 +67,7 @@ def test_list_stale_finds_old_manifests(tmp_path, monkeypatch):
 
 def test_list_stale_skips_current_version(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("JAEGER_HOME", str(tmp_path))
     monkeypatch.delenv("JAEGER_INSTANCE_DIR", raising=False)
     from jaeger_os.core.instance.schemas import CORE_VERSION
     _make_instance(tmp_path, "default", core_version=CORE_VERSION)
@@ -100,6 +103,7 @@ def test_upgrade_command_unknown_returns_none():
 
 def test_check_exits_0_when_clean(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("JAEGER_HOME", str(tmp_path))
     monkeypatch.delenv("JAEGER_INSTANCE_DIR", raising=False)
     code = U._cmd_update_argv(["--check"])
     assert code == 0
@@ -109,6 +113,7 @@ def test_check_exits_0_when_clean(tmp_path, monkeypatch, capsys):
 
 def test_check_exits_1_when_stale(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("JAEGER_HOME", str(tmp_path))
     monkeypatch.delenv("JAEGER_INSTANCE_DIR", raising=False)
     _make_instance(tmp_path, "default", core_version="1.0.0")
     code = U._cmd_update_argv(["--check"])
@@ -125,6 +130,7 @@ def test_update_runs_upgrade_and_skips_migrate_on_no_migrate(tmp_path, monkeypat
     """``--no-migrate`` runs the upgrade but doesn't walk stale
     instances (no prompting + no migration applied)."""
     monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("JAEGER_HOME", str(tmp_path))
     monkeypatch.delenv("JAEGER_INSTANCE_DIR", raising=False)
     _make_instance(tmp_path, "default", core_version="1.0.0")
 
@@ -148,12 +154,13 @@ def test_update_runs_upgrade_and_skips_migrate_on_no_migrate(tmp_path, monkeypat
     # Upgrade was attempted.
     assert any("install" in c and "-U" in c for c in upgrade_calls)
     # Migration was NOT run — the manifest is still 1.0.0.
-    inst_mf = tmp_path / ".jaeger" / "instances" / "default" / "manifest.json"
+    inst_mf = tmp_path / ".jaeger_os" / "instances" / "default" / "manifest.json"
     assert json.loads(inst_mf.read_text())["core_version"] == "1.0.0"
 
 
 def test_update_dev_checkout_prints_hint(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("JAEGER_HOME", str(tmp_path))
     monkeypatch.delenv("JAEGER_INSTANCE_DIR", raising=False)
     monkeypatch.setattr(U, "_detect_method", lambda: "dev-checkout")
     code = U._cmd_update_argv(["--no-migrate"])
@@ -167,6 +174,7 @@ def test_update_prints_restart_hint(tmp_path, monkeypatch, capsys):
     """After upgrade, the verb tells the user to restart — never
     auto-restarts a running daemon."""
     monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("JAEGER_HOME", str(tmp_path))
     monkeypatch.delenv("JAEGER_INSTANCE_DIR", raising=False)
     monkeypatch.setattr(U, "_detect_method", lambda: "dev-checkout")
     U._cmd_update_argv(["--no-migrate"])

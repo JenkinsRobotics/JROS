@@ -28,10 +28,11 @@ from jaeger_os.daemon import health_verb
 def live_instance(tmp_path, monkeypatch):
     """Build a minimal instance the verb can bind to."""
     monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("JAEGER_HOME", str(tmp_path))
     monkeypatch.delenv("JAEGER_INSTANCE_DIR", raising=False)
     monkeypatch.delenv("JAEGER_INSTANCE_NAME", raising=False)
 
-    inst = tmp_path / ".jaeger" / "instances" / "default"
+    inst = tmp_path / ".jaeger_os" / "instances" / "default"
     inst.mkdir(parents=True)
     (inst / "memory").mkdir()
     (inst / "logs").mkdir()
@@ -125,6 +126,7 @@ def test_health_no_instance_returns_one(tmp_path, monkeypatch, capsys):
     """No instance on disk → bind fails → rc=1 with a useful message
     on stderr (not a stacktrace)."""
     monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("JAEGER_HOME", str(tmp_path))
     monkeypatch.delenv("JAEGER_INSTANCE_DIR", raising=False)
     monkeypatch.delenv("JAEGER_INSTANCE_NAME", raising=False)
     rc = health_verb._cmd_health_argv([])

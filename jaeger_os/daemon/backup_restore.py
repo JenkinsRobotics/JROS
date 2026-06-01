@@ -98,8 +98,15 @@ def _backup_manifest(name: str, *,
     }
 
 
+def _backups_dir() -> Path:
+    """0.2.6: backups land in ``<install_root>/.jaeger_os/backups/``
+    alongside instances/, not the legacy ``~/.jaeger/backups/``."""
+    from jaeger_os.core.instance.instance import operator_state_root
+    return operator_state_root() / "backups"
+
+
 def _default_output_path(name: str) -> Path:
-    backups = Path("~/.jaeger/backups").expanduser()
+    backups = _backups_dir()
     backups.mkdir(parents=True, exist_ok=True)
     ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
     return backups / f"{name}-{ts}.zip"
@@ -343,10 +350,10 @@ def _ver_gt(a: str, b: str) -> bool:
 
 
 def _pick_backup_interactively() -> Path | None:
-    """List zips under ``~/.jaeger/backups/`` (newest first) and let
-    the user pick one. Returns ``None`` if the dir is empty or stdin
-    isn't a TTY."""
-    backups_dir = Path("~/.jaeger/backups").expanduser()
+    """List zips under ``<install_root>/.jaeger_os/backups/`` (newest
+    first) and let the user pick one. Returns ``None`` if the dir is
+    empty or stdin isn't a TTY."""
+    backups_dir = _backups_dir()
     if not backups_dir.exists():
         print(f"[jaeger restore] no backup dir at {backups_dir}.",
               file=sys.stderr)

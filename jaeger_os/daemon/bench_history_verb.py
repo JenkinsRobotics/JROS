@@ -831,8 +831,15 @@ def _installed_model_stems(repo: pathlib.Path | None = None) -> set[str]:
     benched on this machine"."""
     roots: list[pathlib.Path] = []
     home = pathlib.Path.home()
-    for candidate in (home / ".lmstudio" / "models",
-                      home / ".jaeger" / "models"):
+    # 0.2.6: model cache moved into <install_root>/.jaeger_os/models/.
+    # Resolve lazily so this module stays import-cheap.
+    try:
+        from jaeger_os.core.instance.instance import operator_state_root
+        candidates = (home / ".lmstudio" / "models",
+                      operator_state_root() / "models")
+    except ImportError:
+        candidates = (home / ".lmstudio" / "models",)
+    for candidate in candidates:
         if candidate.exists():
             roots.append(candidate)
     if repo is not None:

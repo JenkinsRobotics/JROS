@@ -70,12 +70,10 @@ def main() -> int:
     # OBJC_DISABLE_INITIALIZE_FORK_SAFETY already in env. From this
     # point Metal initializes cleanly during boot_for_daemon.
     #
-    # Also: run the legacy-layout bootstrap in case the user
-    # launched the daemon via a path that didn't go through
-    # ``main.py`` (e.g. ``python -m jaeger_os.daemon._child_entry``
-    # directly). Idempotent — no-op when nothing is legacy.
-    from jaeger_os.core.instance.legacy_migrations import migrate_legacy_layout
-    migrate_legacy_layout()
+    # 0.2.6: pre-0.2.0 legacy-layout migration removed (operators on
+    # 0.1.0-shape were running prototypes; nothing operational to
+    # migrate). Fresh installs go straight to the new
+    # <install_root>/.jaeger_os/instances/ layout.
 
     from jaeger_os.daemon.cli import _agent_serve_factory
     from jaeger_os.daemon.lifecycle import LifecyclePaths

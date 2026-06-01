@@ -1,8 +1,0 @@
-# Per-user agent workspaces — each agent (lilith/, eren/, etc.) is local
-# to the operator's clone. Upstream JROS never ships agent content;
-# users populate this dir themselves (manually or via `jaeger create-agent`).
-#
-# Ignore everything except the README and this .gitignore.
-*
-!.gitignore
-!README.md

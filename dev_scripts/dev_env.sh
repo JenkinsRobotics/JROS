@@ -59,16 +59,36 @@ _sandbox="$_jros_repo/sandbox"
 _src="$_jros_repo/jaeger_os"
 _dst="$_sandbox/jaeger_os"
 
-# Parse a single optional flag: --refresh.
+# Parse flags. Use a while-loop with shift so $@ ends up holding the
+# command (if any) to exec after we've consumed our flags. The
+# previous for-loop iterated over a snapshot of $@ and the shifts
+# inside didn't strip non-flag args, which left trailing zsh-style
+# inline comments (``# rsync the fix into sandbox``) in $@ and
+# tripped exec with ``exec: #: not found``.
 _refresh=0
-for _arg in "$@"; do
-    case "$_arg" in
+while [[ $# -gt 0 ]]; do
+    case "$1" in
         --refresh|-r)
             _refresh=1
-            shift || true
+            shift
+            ;;
+        --)
+            shift
+            break
+            ;;
+        *)
+            break
             ;;
     esac
 done
+# zsh's ``interactive_comments`` option is off by default, so a
+# trailing ``# comment`` typed at the prompt arrives here as args.
+# Treat a leading-# token as the start of a comment and discard
+# everything after it; otherwise exec would fail with
+# ``exec: #: not found``.
+if [[ $# -gt 0 && "${1:0:1}" == "#" ]]; then
+    set --
+fi
 
 # Set up the sandbox structure. Idempotent — re-source is safe.
 mkdir -p "$_sandbox" "$_sandbox/.jaeger_os/instances"
@@ -125,8 +145,13 @@ if [[ "${BASH_SOURCE[0]:-}" != "${0}" ]]; then
         "$_sandbox" "$_sandbox" >&2
     printf '[dev_env] refresh framework from parent:\n  dev_scripts/dev_env.sh --refresh\n' >&2
 else
-    # Executed — run the rest of argv with the env set.
+    # Executed — run the rest of argv with the env set, OR exit
+    # cleanly if --refresh was the only ask (no command to chain).
     if [[ $# -eq 0 ]]; then
+        if [[ "$_refresh" -eq 1 ]]; then
+            # ``dev_env.sh --refresh`` — refresh was the whole point.
+            exit 0
+        fi
         printf 'usage: source %s [--refresh]   (export env into your shell)\n' \
             "${BASH_SOURCE[0]:-$0}" >&2
         printf '   or: %s [--refresh] <cmd> [args…]   (run cmd with env set)\n' \

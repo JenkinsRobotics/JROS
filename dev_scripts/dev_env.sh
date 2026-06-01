@@ -26,7 +26,7 @@
 # automatically — the sandbox uses its own snapshot. When you want the
 # parent's latest code in the sandbox:
 #
-#   scripts/dev_env.sh --refresh
+#   dev_scripts/dev_env.sh --refresh
 #
 # This rsyncs ``<repo>/jaeger_os/`` over ``sandbox/jaeger_os/``. Any
 # agent edits in the sandbox to framework files are overwritten —
@@ -35,20 +35,20 @@
 # Resetting completely
 # --------------------
 #   rm -rf sandbox/
-#   source scripts/dev_env.sh
+#   source dev_scripts/dev_env.sh
 #
 # That wipes operator state (instances, memory, etc.) AND the framework
 # copy, then rebuilds from scratch.
 #
 # Usage
 # -----
-#   source scripts/dev_env.sh           # set up + export env into shell
+#   source dev_scripts/dev_env.sh           # set up + export env into shell
 #   ./run.sh setup jros-dev             # creates sandbox's test instance
 #   ./run.sh --instance jros-dev        # launch the sandbox agent
 #
 # Or one-shot:
 #
-#   scripts/dev_env.sh ./run.sh         # run cmd with env set
+#   dev_scripts/dev_env.sh ./run.sh         # run cmd with env set
 #
 # The sandbox tree is gitignored, so dev work never leaks into commits.
 
@@ -123,7 +123,7 @@ if [[ "${BASH_SOURCE[0]:-}" != "${0}" ]]; then
     printf '[dev_env] JAEGER_HOME=%s\n' "$JAEGER_HOME" >&2
     printf '[dev_env] sandbox layout:\n  %s/jaeger_os    (isolated copy)\n  %s/.jaeger_os/    (operator state)\n' \
         "$_sandbox" "$_sandbox" >&2
-    printf '[dev_env] refresh framework from parent:\n  scripts/dev_env.sh --refresh\n' >&2
+    printf '[dev_env] refresh framework from parent:\n  dev_scripts/dev_env.sh --refresh\n' >&2
 else
     # Executed — run the rest of argv with the env set.
     if [[ $# -eq 0 ]]; then

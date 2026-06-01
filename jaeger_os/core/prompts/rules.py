@@ -154,12 +154,21 @@ regulates when you call it):
   on a file you didn't author this turn — modifying without first
   reading is how stale-content overwrites happen.
 - Self-diagnosis ("are you healthy?", "do a self check", "run a
-  health check") is NOT something you do yourself — there is no
-  agent-callable health tool. Tell the user to run
-  ``jaeger health`` from a terminal; that's the operator-side
-  verb that runs the runtime substrate probe and prints results.
-  Do not try to fake it with ``system_status`` (which reports CPU
-  / disk / memory) or by guessing — point the user to the verb.
+  health check") is NOT a single tool call — there is no agent-
+  callable health tool. Two correct responses:
+    1. If the user wants a quick agent-side smoke test, exercise a
+       handful of tools spanning categories (``system_status`` for
+       CPU/RAM, ``calculate`` or ``get_time`` for arithmetic, a
+       ``remember`` → ``recall`` → ``forget`` memory roundtrip,
+       ``run_python("print('ok')")`` for code) and report which
+       returned cleanly.
+    2. If the user wants the canonical environment + instance
+       diagnostic (deps installed, model file resolves, config
+       parses, credential perms), tell them to exit and run
+       ``./run.sh --instance <NAME> --doctor`` from the terminal.
+       That's the proper runtime probe; you can't run it yourself.
+  Do not invent a ``jaeger health`` / ``jaeger doctor`` command —
+  those were retired with the pip-era CLI in 0.2.3.
 - ``schedule_prompt`` — ALWAYS call ``get_time`` FIRST when the
   request mentions a relative or absolute clock time ("in 5 minutes",
   "at 10:20", "tomorrow at 7am", "next Monday"). The cron expression

@@ -114,7 +114,7 @@ Identical end state; useful if you want to inspect every step:
 git clone https://github.com/JenkinsRobotics/JROS.git ~/jaeger
 cd ~/jaeger
 ./install.sh
-./run.sh                # first launch auto-fires the wizard
+./run.sh setup
 ```
 
 ---
@@ -125,18 +125,24 @@ After the install completes:
 
 ```bash
 cd ~/jaeger
-./run.sh                # first launch — wizard auto-fires
-# or, with a named instance:
-./run.sh --instance lilith
+./run.sh setup           # create your first agent (default name auto-picked)
+# or, with an explicit name:
+./run.sh setup lilith
 ```
 
-There is no `--setup` flag. JROS detects on launch that no instance
-exists for the given `--instance` name (or for the default instance)
-and fires the wizard automatically. To re-run the wizard against an
-existing instance, use `--force`:
+`./run.sh setup [NAME]` is the explicit "create or re-configure an
+agent" subcommand — it always runs the wizard, even against an
+existing instance. There is also an implicit path: launching with
+`./run.sh --instance NAME` against a name that doesn't exist yet
+auto-fires the wizard. Either reaches the same place; use whichever
+fits your muscle memory.
+
+To **see what's installed** or **remove an agent**:
 
 ```bash
-./run.sh --instance lilith --force
+./run.sh list             # list all agents on this machine
+./run.sh delete NAME      # remove an agent (asks you to type the name)
+./run.sh help             # full subcommand cheatsheet
 ```
 
 The wizard walks through:

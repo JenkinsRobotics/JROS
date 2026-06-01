@@ -10,17 +10,22 @@ Resolution order for any input string ``name_or_path``:
 
   1. Absolute path → use as-is (errors if it doesn't exist).
   2. Registry key (e.g. ``gemma-4-26b-a4b-it-q4_k_m``) → check
-     ``~/.jaeger/models/<key>/<file>``, then the repo's ``./models/<file>``
-     (dev convenience for symlinks to LM Studio), then download from
-     HF Hub to the user cache.
+     ``~/.jaeger/models/<key>/<file>``, then the package's
+     ``src/jaeger_os/models/<file>`` (dev convenience for symlinks
+     to LM Studio), then download from HF Hub to the user cache.
   3. Relative path (e.g. ``./models/x.gguf`` or ``x.gguf``) → check
-     cwd, repo root, then user cache. If still not found, fall through
-     to treating the basename as a registry key.
+     cwd, package models/, then user cache. If still not found,
+     fall through to treating the basename as a registry key.
 
 The user cache at ``~/.jaeger/models/<name>/<file>`` is the production
-location. The repo's ``./models/`` directory stays valid as a dev
-convenience — symlinks to LM Studio's cache resolve naturally through
-step 2.
+location. The package's ``src/jaeger_os/models/`` directory stays
+valid as a dev convenience — symlinks to LM Studio's cache resolve
+naturally through step 2.
+
+History: pre-0.2.1 the dev models dir lived at the repo root
+(``<repo>/models/``). 0.2.1 moved it into the package
+(``<repo>/src/jaeger_os/models/``). The resolver still honours the
+pre-0.2.1 location as a fallback so older dev checkouts keep working.
 """
 
 from __future__ import annotations
@@ -114,14 +119,27 @@ def user_cache_dir() -> pathlib.Path:
 
 
 def repo_models_dir() -> pathlib.Path | None:
-    """Returns the repo's ``./models/`` dir if jaeger_os is running from
+    """Returns the package's ``models/`` dir if jaeger_os is running from
     a source checkout (the usual dev shape). Returns None for installed-
     wheel deployments where there's no repo root to walk to.
 
-    Lets us treat the existing symlink at ``<repo>/models/gemma-...gguf``
-    as a valid resolution target without changing the dev workflow."""
+    Lets us treat the existing symlinks at
+    ``<repo>/src/jaeger_os/models/gemma-...gguf`` as valid resolution
+    targets without changing the dev workflow.
+
+    History: pre-0.2.1 this lived at ``<repo>/models/`` (a sibling of
+    ``src/``). 0.2.1 moved it INTO the package at
+    ``<repo>/src/jaeger_os/models/`` so it's discoverable via standard
+    imports and ships predictably in the wheel (README only, weights
+    gitignored). For pre-0.2.1 dev checkouts the old location is
+    still honoured as a fallback."""
     here = pathlib.Path(__file__).resolve()
-    # src/jaeger_os/core/model_resolver.py → parents[3] = repo root
+    # New (0.2.1+): models/ lives inside the package — one directory
+    # up from this file (core/models/model_resolver.py → core/.. → models/).
+    sibling = here.parent.parent.parent / "models"
+    if sibling.is_dir():
+        return sibling
+    # Pre-0.2.1 fallback: walk up to find <repo>/models/ alongside src/.
     for ancestor in here.parents:
         candidate = ancestor / "models"
         if candidate.is_dir() and (ancestor / "pyproject.toml").is_file():

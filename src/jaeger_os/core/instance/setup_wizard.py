@@ -42,7 +42,7 @@ from jaeger_os.core.instance.schemas import (
     dump_yaml,
 )
 
-_TOTAL_STEPS = 7
+_TOTAL_STEPS = 6
 
 # Mirrors ``Identity.role``'s ``max_length=256`` in schemas.py. If
 # the schema changes, this string lives next to the prompt so the
@@ -134,6 +134,112 @@ def _truncate_role(role_raw: str) -> tuple[str, str | None]:
     return role, role_raw
 
 
+# ── model pick helper (Step 2a / 2b) ─────────────────────────────────
+
+
+def _wizard_pick_model(
+    *,
+    role_label: str,
+    rec_entry,
+    discovered: list,
+    by_key: dict,
+    allow_same_as_awake: bool,
+    awake_choice: str | None,
+):
+    """One model-pick block, used twice (awake then asleep).
+
+    Returns the operator's choice — a registry key, an absolute GGUF
+    path, or (when ``allow_same_as_awake`` and the operator picks
+    that) the literal ``awake_choice`` value passed in.
+
+    Why this exists: pre-0.2.6 the wizard had one combined prompt
+    that picked awake and implicitly hard-coded asleep to the tier
+    recommendation. Operators couldn't override the asleep model
+    without hand-editing config.yaml, and couldn't see that the
+    recommended file was already on disk in LM Studio etc. Both
+    failures share the same UI — surface the recommendation,
+    discovery state, registry, custom path — so they share this
+    helper.
+    """
+    from jaeger_os.core.models.model_resolver import (
+        DEFAULT_MODEL, MODEL_REGISTRY,
+    )
+    print(f"  ── {role_label} ──")
+    print(f"    Recommended: {rec_entry.display_name}  "
+          f"({rec_entry.size_gb:.1f} GB, score {rec_entry.score_pct:.1f}%, "
+          f"{rec_entry.tokens_per_task} tok/task)")
+    print(f"    {rec_entry.notes}")
+
+    found = by_key.get(rec_entry.registry_key)
+    if found is not None:
+        rec_annot = f" — ✓ found locally ({found.source})"
+    else:
+        rec_annot = f" — will download ~{rec_entry.size_gb:.1f} GB on first use"
+
+    print()
+    opts: list[tuple[str, str]] = [
+        ("__recommended__",
+         f"Use recommended ({rec_entry.display_name}){rec_annot}"),
+        ("__registry__", "Choose from the full registry"),
+    ]
+    if discovered:
+        opts.append(("__discovered__",
+                     f"Pick from {len(discovered)} discovered GGUF file(s) "
+                     f"on this machine"))
+    opts.append(("__custom__", "Provide a custom GGUF path"))
+    if allow_same_as_awake and awake_choice:
+        opts.append(("__same_as_awake__",
+                     f"Same as awake ({awake_choice}) — no swap, saves memory"))
+
+    mode = _ask_choice("Pick", opts, default=0)
+
+    if mode == "__recommended__":
+        chosen = rec_entry.registry_key
+        if found is not None:
+            print(f"     → {chosen} (using local {found.source} copy)")
+        else:
+            print(f"     → {chosen} (will download on first use)")
+        return chosen
+
+    if mode == "__registry__":
+        # Sort registry keys; mark DEFAULT_MODEL with "(default)".
+        reg_opts = [
+            (key, f"{key}" + ("  (default)" if key == DEFAULT_MODEL else ""))
+            for key in MODEL_REGISTRY
+        ]
+        default_idx = next((i for i, (k, _) in enumerate(reg_opts)
+                            if k == DEFAULT_MODEL), 0)
+        chosen = _ask_choice("Registry key", reg_opts, default=default_idx)
+        local = by_key.get(chosen)
+        if local is not None:
+            print(f"     → {chosen} (using local {local.source} copy)")
+        else:
+            print(f"     → {chosen} (will download on first use)")
+        return chosen
+
+    if mode == "__discovered__":
+        disc_opts = [
+            (str(d.path),
+             f"{d.filename}  ({d.size_gb:.1f} GB)  — {d.source}")
+            for d in discovered
+        ]
+        chosen = _ask_choice("Pick a discovered file", disc_opts, default=0)
+        print(f"     → {chosen}")
+        return chosen
+
+    if mode == "__same_as_awake__":
+        print(f"     → same as awake ({awake_choice}) — deep-think swap "
+              "disabled")
+        return awake_choice
+
+    # Custom path
+    chosen = _ask("Path to a .gguf file", "")
+    if chosen and not Path(chosen).expanduser().exists():
+        print(f"     ⚠  {chosen} not found — saving anyway; "
+              "resolve it before first use.")
+    return chosen
+
+
 # ── the wizard ───────────────────────────────────────────────────────
 
 
@@ -157,10 +263,10 @@ def run_wizard(
 
     _banner("Welcome to Jaeger-OS")
     print()
-    print("  Let's set up your Jaeger. Seven quick steps:")
-    print("    1. identity        4. interaction      7. review")
+    print("  Let's set up your Jaeger. Six quick steps:")
+    print("    1. identity        4. interaction")
     print("    2. model           5. warm-up")
-    print("    3. permissions     6. subprocess HOME")
+    print("    3. permissions     6. review")
     print()
     print("  Tip: prompts show a [default] in brackets — press Enter to accept.")
     print(f"  Instance: {layout.root}")
@@ -209,12 +315,19 @@ def run_wizard(
 
     # ── Step 2 · Model ──────────────────────────────────────────────
     _step(2, "Model")
-    # Detect the host's unified-memory tier so we can recommend the
-    # data-validated awake (+ asleep, if the tier supports a swap)
-    # pair. Operator can still drop into "custom GGUF path" if they
-    # know what they want.
+    # Detect the host's unified-memory tier so we can recommend a
+    # data-validated awake / asleep pair, then scan the filesystem so
+    # an operator who already has the recommended GGUFs (LM Studio,
+    # HF cache, ~/.jaeger/models, …) doesn't get re-prompted to
+    # download 15+ GB.
     from jaeger_os.core.models.host_recommendation import (
         detect_total_memory_gb, classify_tier, recommend_for_tier,
+    )
+    from jaeger_os.core.models.local_discovery import (
+        discover_local_gguf_files, match_to_registry,
+    )
+    from jaeger_os.core.models.model_resolver import (
+        ensure_symlink_in_repo_models,
     )
     detected_gb = detect_total_memory_gb()
     detected_tier = classify_tier(detected_gb)
@@ -223,61 +336,59 @@ def run_wizard(
           f"{rec.tier_label} tier")
     print(f"  {rec.description}")
     print()
-    print(f"  Recommended awake model (real-time conversation):")
-    print(f"    • {rec.awake.display_name}  ({rec.awake.size_gb:.1f} GB, "
-          f"score {rec.awake.score_pct:.1f}%, "
-          f"{rec.awake.tokens_per_task} tok/task)")
-    print(f"      {rec.awake.notes}")
-    print()
-    print(f"  Recommended asleep model (deep-think / kanban work):")
-    print(f"    • {rec.asleep.display_name}  ({rec.asleep.size_gb:.1f} GB, "
-          f"score {rec.asleep.score_pct:.1f}%, "
-          f"{rec.asleep.tokens_per_task} tok/task)")
-    print(f"      {rec.asleep.notes}")
-    if rec.awake.registry_key == rec.asleep.registry_key:
-        print(f"    (same model as awake — no swap needed at this tier; "
-              f"deep-think runs the same weights in their natural "
-              f"reasoning mode)")
-    print()
-    print("  How do you want to pick?")
-    pick_opts = [
-        ("recommended", f"Use the recommended awake model "
-                        f"({rec.awake.display_name})"),
-        ("registry",    "Choose from the full registry"),
-        ("__custom__",  "Provide a custom GGUF path"),
-    ]
-    pick_mode = _ask_choice("Pick", pick_opts, default=0)
-    if pick_mode == "recommended":
-        model_path = rec.awake.registry_key
-        print(f"     → {model_path} (resolved from the registry; "
-              "downloaded on first use if not cached).")
-    elif pick_mode == "registry":
-        model_opts = [
-            (key, f"{key}" + ("  (default)" if key == DEFAULT_MODEL else ""))
-            for key in MODEL_REGISTRY
-        ]
-        default_idx = next((i for i, (k, _) in enumerate(model_opts)
-                            if k == DEFAULT_MODEL), 0)
-        model_path = _ask_choice("Pick a model", model_opts,
-                                 default=default_idx)
-        print(f"     → {model_path} (resolved from the registry; "
-              "downloaded on first use if not cached).")
+
+    # Step 2a — discover existing GGUFs so we can annotate the prompts
+    print("  Scanning for GGUF models on this machine…")
+    discovered = discover_local_gguf_files()
+    by_key = match_to_registry(discovered)
+    if discovered:
+        print(f"  Found {len(discovered)} GGUF file(s):")
+        for d in discovered:
+            size = f"{d.size_gb:.1f} GB" if d.size_gb >= 0 else "size?"
+            print(f"    • {d.filename}  ({size})  — {d.source}")
     else:
-        model_path = _ask("Path to a .gguf file", "")
-        if model_path and not Path(model_path).expanduser().exists():
-            print(f"     ⚠  {model_path} not found — saving anyway; "
-                  "resolve it before first use.")
-    # Note the asleep model only — it'll be auto-fetched on first
-    # deep-think entry. Earlier copy implied a "step to skip" that
-    # didn't exist and confused operators; the pre-download URL is
-    # still echoed for anyone who wants to grab it manually.
-    if (rec.asleep.registry_key != rec.awake.registry_key
-            and rec.asleep.download_url):
-        print()
-        print(f"  Asleep model ({rec.asleep.registry_key}) will be")
-        print(f"  auto-downloaded on first deep-think entry.")
-        print(f"    {rec.asleep.download_url}")
-        print(f"  (download manually if you want it pre-cached.)")
+        print("  (none found — registry picks will download from "
+              "Hugging Face on first use)")
+    print()
+
+    model_path = _wizard_pick_model(
+        role_label="Awake model (real-time conversation)",
+        rec_entry=rec.awake,
+        discovered=discovered,
+        by_key=by_key,
+        allow_same_as_awake=False,
+        awake_choice=None,
+    )
+    # Auto-symlink: if the recommended awake model is already on disk
+    # somewhere we know about, drop a symlink into the in-repo models
+    # dir so the resolver finds it without a Hugging Face round-trip.
+    if model_path == rec.awake.registry_key and rec.awake.registry_key in by_key:
+        linked = ensure_symlink_in_repo_models(
+            by_key[rec.awake.registry_key].path,
+            registry_key=rec.awake.registry_key,
+        )
+        if linked is not None:
+            print(f"     ✓ linked {linked.name} (no download needed)")
+
+    print()
+    asleep_path = _wizard_pick_model(
+        role_label="Asleep model (deep-think / kanban work)",
+        rec_entry=rec.asleep,
+        discovered=discovered,
+        by_key=by_key,
+        allow_same_as_awake=(rec.awake.registry_key
+                             != rec.asleep.registry_key),
+        awake_choice=model_path,
+    )
+    if (asleep_path == rec.asleep.registry_key
+            and rec.asleep.registry_key in by_key
+            and asleep_path != model_path):
+        linked = ensure_symlink_in_repo_models(
+            by_key[rec.asleep.registry_key].path,
+            registry_key=rec.asleep.registry_key,
+        )
+        if linked is not None:
+            print(f"     ✓ linked {linked.name} (no download needed)")
 
     # ── Step 3 · Permissions ────────────────────────────────────────
     _step(3, "Permissions")
@@ -337,50 +448,44 @@ def run_wizard(
         print("        for now ./run.sh will fall back to the TUI when invoked.")
 
     # ── Step 5 · Warm-up ────────────────────────────────────────────
+    # Vision (Moondream2) is wired in code (core/tools/vision.py) but
+    # has no test coverage and no bench case in 0.2.x — surfacing it
+    # in the wizard implied a first-class feature it isn't yet. The
+    # warmup flag is hard-coded off here; anyone who needs it can set
+    # ``warmup.vision: true`` in config.yaml. Returns to the wizard
+    # when 0.3.0 lands proper vision validation.
     _step(5, "Warm-up")
     print("  Pre-load components at boot so they're instant on first use.")
     warm_tts = _ask_yn("Warm Text-to-Speech (Kokoro)?", True)
     warm_stt = _ask_yn("Warm Speech-to-Text (Whisper)?", True)
-    warm_vision = _ask_yn("Warm Vision (Moondream2 — heavier, multi-GB)?", False)
+    warm_vision = False
 
-    # ── Step 6 · Per-instance git identity (INST-4, optional) ──────
-    # When the user opts in, subprocesses spawned by the agent see
-    # HOME=<instance>/home/ — so git commits, ssh keys, npm caches
-    # are per-instance. Without opt-in the agent inherits the
-    # user's real HOME (backward compatible).
-    _step(6, "Subprocess HOME")
-    print("  Should this instance use its own git/ssh identity for")
-    print("  subprocesses it spawns? Useful when you run two instances")
-    print("  (e.g. work + personal) that should commit with different")
-    print("  email addresses / SSH keys. Pick NO if you're not sure —")
-    print("  the agent will inherit your normal HOME.")
-    use_instance_home = _ask_yn(
-        "Use a per-instance subprocess HOME?", False,
-    )
+    # Subprocess HOME isolation (was a Step 6 in 0.2.5) is a power-user
+    # feature — runs the agent's spawned subprocesses with a private
+    # HOME so git/ssh/npm don't see the operator's real identity. ~95%
+    # of operators want the default (inherit), and the prompt confused
+    # the rest. Removed from the wizard; opt in via config.yaml's
+    # ``subprocess.use_instance_home`` field. The populate_instance_home
+    # code stays untouched for anyone who flips that bit by hand.
+    use_instance_home = False
     git_name: str | None = None
     git_email: str | None = None
     ssh_key_source: str | None = None
-    if use_instance_home:
-        git_name = _ask("  Git user.name (blank = skip)", "") or None
-        git_email = _ask("  Git user.email (blank = skip)", "") or None
-        ssh_key_source = _ask(
-            "  Path to an SSH private key to copy in (blank = skip)", "",
-        ) or None
 
-    # ── Step 7 · Review ─────────────────────────────────────────────
-    _step(7, "Review")
+    # ── Step 6 · Review ─────────────────────────────────────────────
+    _step(6, "Review")
     print(f"     Identity     {agent_name} — {role}")
     print(f"     Personality  {personality}")
     print(f"     Voice        {voice_id}")
     print(f"     Awake model  {model_path}")
-    if rec.asleep.registry_key != rec.awake.registry_key:
-        print(f"     Asleep model {rec.asleep.registry_key}  "
-              f"(swaps in during deep-think)")
+    if asleep_path == model_path:
+        print(f"     Asleep model (same as awake — no swap)")
+    else:
+        print(f"     Asleep model {asleep_path}  (swaps in during deep-think)")
     print(f"     Permissions  {'ask before each action' if perm_mode == 'confirm' else 'auto-allow'}")
     print(f"     Interaction  default mode = {interaction_mode}")
     print(f"     Warm-up      TTS={'on' if warm_tts else 'off'}  "
-          f"STT={'on' if warm_stt else 'off'}  Vision={'on' if warm_vision else 'off'}")
-    print(f"     Subproc HOME {'per-instance jail' if use_instance_home else 'inherit from user'}")
+          f"STT={'on' if warm_stt else 'off'}")
     if not _ask_yn("\n  Looks good — create the Jaeger?", True):
         print("  Setup cancelled. Re-run to start over.")
         sys.exit(0)
@@ -390,13 +495,20 @@ def run_wizard(
     # message (tool schemas alone ate ~14K). 32K is comfortable on
     # Apple Silicon and matches what the model trained on. See
     # docs/ROADMAP_0.2.0.md → Group 2.
-    from jaeger_os.core.instance.schemas import VoiceConfig
+    from jaeger_os.core.instance.schemas import DeepThinkConfig, VoiceConfig
     config = Config(
         instance_name=name,
         model=ModelConfig(model_path=model_path, ctx=32768, gpu_layers=-1),
         display=DisplayConfig(),
         skills=SkillsConfig(),
         retention=RetentionConfig(),
+        # 0.2.6: the asleep model is whatever the operator picked in
+        # Step 2's asleep prompt — either the tier recommendation, a
+        # different registry key, a discovered GGUF path, a custom
+        # path, or the same value as ``model_path`` (when "same as
+        # awake" was picked). DeepThinkConfig's default coder_model
+        # is now a fallback for upgrades from older instances.
+        deep_think=DeepThinkConfig(coder_model=asleep_path),
         warmup=WarmupConfig(tts=warm_tts, stt=warm_stt, vision=warm_vision),
         permissions=PermissionsConfig(mode=perm_mode),
         interaction=InteractionConfig(default_mode=interaction_mode),

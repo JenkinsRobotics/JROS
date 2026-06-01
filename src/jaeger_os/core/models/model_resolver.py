@@ -147,6 +147,52 @@ def repo_models_dir() -> pathlib.Path | None:
     return None
 
 
+def ensure_symlink_in_repo_models(
+    source: pathlib.Path,
+    registry_key: str | None = None,
+) -> pathlib.Path | None:
+    """Place a symlink to ``source`` inside the in-repo models slot so
+    ``resolve_model_path`` finds it without a Hugging Face download.
+
+    The wizard calls this when the operator picks "use recommended"
+    and we've already discovered a matching GGUF on disk (LM Studio,
+    HF cache, etc.). Idempotent — if a symlink already exists at the
+    target, we leave it alone.
+
+    Returns the symlink path on success, ``None`` when:
+      - the in-repo models dir doesn't exist (installed-wheel deploy)
+      - the source doesn't exist (broken)
+      - a non-symlink file with the same name already sits in the
+        target dir (we refuse to overwrite a real file)
+
+    ``registry_key`` is informational — currently unused, but kept on
+    the signature so future improvements (e.g. writing a small JSON
+    sidecar with provenance) can adopt it without churning callers.
+    """
+    del registry_key  # reserved
+    models_dir = repo_models_dir()
+    if models_dir is None:
+        return None
+    try:
+        src = source.expanduser().resolve(strict=False)
+    except (OSError, RuntimeError):
+        return None
+    if not src.is_file():
+        return None
+    target = models_dir / src.name
+    if target.exists() or target.is_symlink():
+        # Already present — could be the same symlink, a different
+        # symlink to a different copy, or a real file someone dropped.
+        # All three are "leave it alone" from our perspective.
+        return target if target.is_symlink() else None
+    try:
+        models_dir.mkdir(parents=True, exist_ok=True)
+        target.symlink_to(src)
+    except OSError:
+        return None
+    return target
+
+
 # ── Resolution ──────────────────────────────────────────────────────
 
 

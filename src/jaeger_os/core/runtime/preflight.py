@@ -153,10 +153,11 @@ def _check_install_method() -> Check:
             category="system",
             ok=True,
             detail=(
-                "installed via pip. Consider `pipx install jaeger-os` "
-                "for an isolated venv — protects your global Python "
-                "from JROS's heavy native deps (llama-cpp, kokoro, …) "
-                "and gives `pipx upgrade jaeger-os` for clean upgrades."
+                "installed via pip — legacy 0.2.2 layout. JROS 0.2.3+ "
+                "ships as a git-clone install (the in-tree install.sh / "
+                "scripts/install.sh curl one-liner). Re-install via the "
+                "curl one-liner so upgrades become `git pull && "
+                "./install.sh`."
             ),
         )
     return Check(
@@ -190,7 +191,7 @@ def _check_instance_config(layout: object) -> list[Check]:
         return [Check(
             "config.yaml", "instance", False,
             f"missing — expected at {config_path}",
-            "run `jaeger setup` to create the instance scaffold",
+            "run `./run.sh setup` to create the instance scaffold",
         )]
 
     # YAML parse — config.yaml is the agent's contract. If it doesn't

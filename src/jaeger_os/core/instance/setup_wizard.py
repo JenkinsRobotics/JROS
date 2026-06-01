@@ -137,15 +137,32 @@ def _truncate_role(role_raw: str) -> tuple[str, str | None]:
 # ── the wizard ───────────────────────────────────────────────────────
 
 
-def run_wizard(*, force: bool = False, instance_name: str | None = None) -> InstanceLayout:
-    """Walk first-boot setup end to end. Returns the new instance layout."""
+def run_wizard(
+    *,
+    force: bool = False,
+    instance_name: str | None = None,
+    boot_after: bool = True,
+) -> InstanceLayout:
+    """Walk first-boot setup end to end. Returns the new instance layout.
+
+    ``boot_after`` controls the final "Booting now…" message. The
+    auto-fire-on-first-launch callers in ``main.py`` keep the default
+    ``True`` because the agent does in fact boot after the wizard
+    returns. The explicit ``./run.sh setup`` subcommand passes
+    ``False`` — its caller exits cleanly after the wizard and there
+    is no boot, so claiming "Booting now…" would be a lie.
+    """
     name = instance_name or default_instance_name()
     layout = InstanceLayout(root=resolve_instance_dir(name))
 
     _banner("Welcome to Jaeger-OS")
     print()
-    print("  Let's set up your Jaeger. Five quick steps — identity, model,")
-    print("  permissions, and warm-up — then it boots straight in.")
+    print("  Let's set up your Jaeger. Seven quick steps:")
+    print("    1. identity        4. interaction      7. review")
+    print("    2. model           5. warm-up")
+    print("    3. permissions     6. subprocess HOME")
+    print()
+    print("  Tip: prompts show a [default] in brackets — press Enter to accept.")
     print(f"  Instance: {layout.root}")
 
     if layout.exists():
@@ -164,8 +181,15 @@ def run_wizard(*, force: bool = False, instance_name: str | None = None) -> Inst
     # gracefully — first sentence goes into identity.role, the full
     # text into soul.md. Previously a long answer crashed the wizard
     # with a pydantic ValidationError.
+    #
+    # Length hint uses parentheses, not brackets, so it doesn't
+    # collide visually with the `[default]` suffix _ask appends.
+    # Without that, the prompt read as
+    # ``Role … [≤256 chars] [general-purpose agentic assistant]:``
+    # which looks like two unrelated hints rather than "max-len,
+    # then default."
     role_raw = _ask(
-        f"Role — what does it do?  [≤{_ROLE_MAX_LEN} chars]",
+        f"Role — what does it do?  (≤{_ROLE_MAX_LEN} chars)",
         "general-purpose agentic assistant",
     )
     role, role_overflow = _truncate_role(role_raw)
@@ -243,17 +267,17 @@ def run_wizard(*, force: bool = False, instance_name: str | None = None) -> Inst
         if model_path and not Path(model_path).expanduser().exists():
             print(f"     ⚠  {model_path} not found — saving anyway; "
                   "resolve it before first use.")
-    # Offer to pre-download the asleep model so the sleep-cycle swap
-    # has the weights resident when the inactivity timer fires.
-    # Skip the hint when awake and asleep are the same model — no
-    # second download needed.
+    # Note the asleep model only — it'll be auto-fetched on first
+    # deep-think entry. Earlier copy implied a "step to skip" that
+    # didn't exist and confused operators; the pre-download URL is
+    # still echoed for anyone who wants to grab it manually.
     if (rec.asleep.registry_key != rec.awake.registry_key
             and rec.asleep.download_url):
         print()
-        print(f"  Asleep-mode pre-download (optional):")
+        print(f"  Asleep model ({rec.asleep.registry_key}) will be")
+        print(f"  auto-downloaded on first deep-think entry.")
         print(f"    {rec.asleep.download_url}")
-        print(f"    (will be downloaded on first model swap if you skip "
-              "this step)")
+        print(f"  (download manually if you want it pre-cached.)")
 
     # ── Step 3 · Permissions ────────────────────────────────────────
     _step(3, "Permissions")
@@ -280,7 +304,7 @@ def run_wizard(*, force: bool = False, instance_name: str | None = None) -> Inst
     interaction_mode = _ask_choice(
         "Pick a mode",
         [
-            ("tui", "Type — open a TUI when I run `jaeger`  (recommended)"),
+            ("tui", "Type — open a TUI when I run ./run.sh  (recommended)"),
             ("gui", "Floating window — PyQt6 chat bubble"),
             ("voice", "Voice — always-on mic + spoken responses  (experimental)"),
         ],
@@ -289,7 +313,7 @@ def run_wizard(*, force: bool = False, instance_name: str | None = None) -> Inst
     voice_enable_choice = False
     if interaction_mode == "voice":
         print()
-        print("     ⚠  voice is experimental in 0.2.0.")
+        print("     ⚠  voice is experimental.")
         # VOICE-2: probe for speexdsp (acoustic echo cancellation).
         # Without it the always-on mic feeds back podcast/youtube audio
         # playing nearby into the agent. We offer one-tap install if
@@ -309,8 +333,8 @@ def run_wizard(*, force: bool = False, instance_name: str | None = None) -> Inst
         )
     elif interaction_mode == "gui":
         print()
-        print("     ⚠  the PyQt6 GUI is landing in 0.2.0 (Group 3); for now")
-        print("        `jaeger` will fall back to the TUI when invoked.")
+        print("     ⚠  the PyQt6 GUI is planned for a future release;")
+        print("        for now ./run.sh will fall back to the TUI when invoked.")
 
     # ── Step 5 · Warm-up ────────────────────────────────────────────
     _step(5, "Warm-up")
@@ -346,8 +370,12 @@ def run_wizard(*, force: bool = False, instance_name: str | None = None) -> Inst
     # ── Step 7 · Review ─────────────────────────────────────────────
     _step(7, "Review")
     print(f"     Identity     {agent_name} — {role}")
+    print(f"     Personality  {personality}")
     print(f"     Voice        {voice_id}")
-    print(f"     Model        {model_path}")
+    print(f"     Awake model  {model_path}")
+    if rec.asleep.registry_key != rec.awake.registry_key:
+        print(f"     Asleep model {rec.asleep.registry_key}  "
+              f"(swaps in during deep-think)")
     print(f"     Permissions  {'ask before each action' if perm_mode == 'confirm' else 'auto-allow'}")
     print(f"     Interaction  default mode = {interaction_mode}")
     print(f"     Warm-up      TTS={'on' if warm_tts else 'off'}  "
@@ -427,7 +455,19 @@ def run_wizard(*, force: bool = False, instance_name: str | None = None) -> Inst
     print()
     print(f"  Instance: {layout.root}")
     _print_env_hint(name)
-    print("  Booting now…")
+    if boot_after:
+        print("  Booting now…")
+    else:
+        # Explicit-subcommand path: ``./run.sh setup`` exits after the
+        # wizard, no boot. Tell the operator how to launch and how to
+        # re-run the wizard if they want to.
+        print("  Done — instance ready to launch.")
+        print()
+        if name == default_instance_name():
+            print("  Launch:    ./run.sh")
+        else:
+            print(f"  Launch:    ./run.sh --instance {name}")
+        print(f"  Re-config: ./run.sh setup {name}")
     print()
     return layout
 

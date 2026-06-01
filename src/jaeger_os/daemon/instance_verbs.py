@@ -179,7 +179,7 @@ def _instance_list(argv: list[str]) -> int:
     root = user_instances_root()
     print(f"Instances under {root}:")
     if not root.exists():
-        print("  (none yet — run `jaeger setup` to create one)")
+        print("  (none yet — run `./run.sh setup` to create one)")
         return 0
 
     instances = sorted(
@@ -187,7 +187,7 @@ def _instance_list(argv: list[str]) -> int:
         if p.is_dir() and not p.name.startswith(".")
     )
     if not instances:
-        print("  (none yet — run `jaeger setup` to create one)")
+        print("  (none yet — run `./run.sh setup` to create one)")
         return 0
 
     active = default_instance_name()
@@ -249,7 +249,7 @@ def _pick_instance_interactively(prompt: str = "Which instance?") -> str | None:
     if not names:
         print("[jaeger] no instances found under ~/.jaeger/instances/.",
               file=sys.stderr)
-        print("         run `jaeger setup` to create one.", file=sys.stderr)
+        print("         run `./run.sh setup` to create one.", file=sys.stderr)
         return None
     if len(names) == 1:
         # Single-choice — no prompt; just pick it.
@@ -303,7 +303,7 @@ def _instance_use(argv: list[str]) -> int:
     if not target.exists():
         print(f"[jaeger instance use] no instance {name!r} at {target}",
               file=sys.stderr)
-        print("                       run `jaeger setup --name " + name +
+        print("                       run `./run.sh setup " + name +
               "` to create it.", file=sys.stderr)
         return 1
 

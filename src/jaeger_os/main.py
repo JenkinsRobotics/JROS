@@ -2702,7 +2702,7 @@ def _cli_list_instances() -> int:
     root = _instance_root()
     print(f"Instances under {root}:")
     if not instances:
-        print("  (none yet — run `jaeger setup` to create one)")
+        print("  (none yet — run `./run.sh setup` to create one)")
         return 0
     current = default_instance_name()
     for name, path, has_manifest in instances:

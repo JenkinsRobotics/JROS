@@ -11,7 +11,7 @@ to models, and renders a leaderboard sorted by best routing accuracy.
 Two output modes:
 
   jaeger bench history            # print the leaderboard
-  jaeger bench history --write    # also write benchmark/HISTORY.md
+  jaeger bench history --write    # also write dev_benchmark/HISTORY.md
 
 Data sources (skipped silently when missing):
 
@@ -94,7 +94,7 @@ def _cmd_bench_history_argv(argv: list[str]) -> int:
     )
     parser.add_argument(
         "--write", action="store_true",
-        help="also write benchmark/HISTORY.md",
+        help="also write dev_benchmark/HISTORY.md",
     )
     parser.add_argument(
         "--family", default=None,
@@ -138,7 +138,7 @@ def _cmd_bench_history_argv(argv: list[str]) -> int:
             "Rolling leaderboard across bench runs on this machine.\n"
             "Reads sweep + flat-bench artifacts and aggregates per model.\n"
             "\n"
-            "  --write       also write benchmark/HISTORY.md\n"
+            "  --write       also write dev_benchmark/HISTORY.md\n"
             "  --family STR  only show models whose name contains STR\n"
             "  --top N       cap to top-N by routing %\n"
             f"  --since DATE  only runs on/after DATE (default {_DEFAULT_SINCE},\n"
@@ -161,7 +161,7 @@ def _cmd_bench_history_argv(argv: list[str]) -> int:
     print(md)
 
     if args.write:
-        out_path = repo / "benchmark" / "HISTORY.md"
+        out_path = repo / "dev_benchmark" / "HISTORY.md"
         out_path.write_text(md, encoding="utf-8")
         print(f"\nwrote {out_path}", file=sys.stderr)
     return 0
@@ -259,7 +259,7 @@ def render_history_md(
 
 
 def write_history_md(repo: pathlib.Path | None = None) -> pathlib.Path | None:
-    """Silently (re)generate ``benchmark/HISTORY.md`` with the default
+    """Silently (re)generate ``dev_benchmark/HISTORY.md`` with the default
     current-generation filters. Returns the path written, or ``None``
     if the repo / benchmark dir can't be located. Best-effort — never
     raises, so a bench run can call it as a fire-and-forget finalizer
@@ -271,7 +271,7 @@ def write_history_md(repo: pathlib.Path | None = None) -> pathlib.Path | None:
     manual ``jaeger bench history --write``."""
     try:
         repo = repo or _repo_root()
-        out_path = repo / "benchmark" / "HISTORY.md"
+        out_path = repo / "dev_benchmark" / "HISTORY.md"
         if not out_path.parent.exists():
             return None
         md = render_history_md(repo)
@@ -319,7 +319,7 @@ def _from_sweep_jsonl(repo: pathlib.Path) -> Iterable[dict[str, Any]]:
     """Older format. ``benchmark/sweep/sweep_rows.jsonl`` is one
     JSON-per-line of ``ModelResult`` dataclasses, written by
     ``run_model_sweep.py`` after each model finishes."""
-    path = repo / "benchmark" / "sweep" / "sweep_rows.jsonl"
+    path = repo / "dev_benchmark" / "sweep" / "sweep_rows.jsonl"
     if not path.exists():
         return
     try:
@@ -385,7 +385,7 @@ def _from_flat_summaries(repo: pathlib.Path) -> Iterable[dict[str, Any]]:
     without one is a model-named bucket whose grandchildren are
     timestamped runs.
     """
-    flat_root = repo / "benchmark" / "flat"
+    flat_root = repo / "dev_benchmark" / "flat"
     if not flat_root.exists():
         return
     summary_paths: list[pathlib.Path] = []
@@ -892,7 +892,7 @@ def _load_sanity_records(repo: pathlib.Path) -> dict[str, dict[str, Any]]:
     tps. This is the source for both the leaderboard's ``Raw tok/s``
     column and the standalone Hardware-health table — pulling once and
     sharing avoids re-reading the same JSONL twice per render."""
-    sanity_dir = repo / "benchmark" / "sanity"
+    sanity_dir = repo / "dev_benchmark" / "sanity"
     if not sanity_dir.exists():
         return {}
     jsonl_files = sorted(sanity_dir.glob("SANITY_*.jsonl"))
@@ -922,7 +922,7 @@ def _load_sanity_raw_tps(repo: pathlib.Path) -> dict[str, float]:
     prefill cost, multi-turn turns, and reasoning-token waste). Both
     matter; the bench number measures task efficiency, this measures
     the model's actual decode speed."""
-    sanity_dir = repo / "benchmark" / "sanity"
+    sanity_dir = repo / "dev_benchmark" / "sanity"
     if not sanity_dir.exists():
         return {}
     jsonl_files = sorted(sanity_dir.glob("SANITY_*.jsonl"))
@@ -1516,7 +1516,7 @@ def _repo_root() -> pathlib.Path:
     contains ``benchmark/``). Works for editable + installed wheels."""
     here = pathlib.Path(__file__).resolve()
     for parent in [here, *here.parents]:
-        if (parent / "benchmark").is_dir():
+        if (parent / "dev_benchmark").is_dir():
             return parent
     # Fallback for unusual layouts.
     return here.parents[3]

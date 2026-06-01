@@ -197,7 +197,7 @@ def _cmd_bench(argv: list[str]) -> int:
         # / ``--no-warmup``); duplicating its argparse here would just
         # mean two places to update on a future flag.
         import subprocess
-        script = repo / "benchmark" / "run_flat_bench.py"
+        script = repo / "dev_benchmark" / "run_flat_bench.py"
         if not script.is_file():
             print(f"bench script missing at {script}", file=sys.stderr)
             return 1
@@ -205,7 +205,7 @@ def _cmd_bench(argv: list[str]) -> int:
 
     if verb == "timing":
         import subprocess
-        script = repo / "benchmark" / "timing" / "bench.py"
+        script = repo / "dev_benchmark" / "timing" / "bench.py"
         if not script.is_file():
             print(f"timing bench missing at {script}", file=sys.stderr)
             return 1
@@ -251,7 +251,7 @@ def _repo_root() -> Path:
     sibling."""
     here = Path(__file__).resolve()
     for parent in here.parents:
-        if (parent / "benchmark").is_dir():
+        if (parent / "dev_benchmark").is_dir():
             return parent
     # Fall back to the package's package-root sibling — useful for
     # editable installs where ``__file__`` lives under ``src/``.

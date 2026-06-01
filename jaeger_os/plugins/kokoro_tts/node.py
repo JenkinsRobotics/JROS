@@ -486,6 +486,51 @@ def _resolve_live_device(sd) -> int | None:
     return None
 
 
+def _bounded_play(sd, audio, *, device, samplerate):
+    """Call ``sd.play`` + ``sd.wait`` with a wall-clock timeout.
+
+    0.2.6: ``sd.wait()`` blocks indefinitely. When CoreAudio loses the
+    backing device mid-stream (the ``PaMacCore (AUHAL) Error on line
+    2747 ... Unspecified Audio Hardware Error`` case), the callback
+    thread stops draining but ``wait()`` never returns. The TTS tool
+    call hangs, the agent loop blocks because tools are synchronous,
+    and the operator's interrupts / steers queue but can't fire until
+    the tool comes back. Symptom: ``> tool : text_to_speech`` clock
+    climbs past 60s and the TUI is unresponsive.
+
+    Bound the wait to ``audio_length + 5s`` (5s of slop for buffer
+    drain). If we hit the cap, call ``sd.stop()`` to force-cancel and
+    raise so the outer ``except`` triggers the reinit path. Worst
+    case: a TTS line gets cut a few seconds early — far better than
+    hanging the agent.
+    """
+    sd.play(audio, samplerate=samplerate, device=device)
+    audio_len_s = len(audio) / float(samplerate)
+    timeout_s = max(2.0, audio_len_s + 5.0)
+    import time as _time
+    deadline = _time.monotonic() + timeout_s
+    while True:
+        active = False
+        try:
+            stream = getattr(sd, "_last_callback", None)
+            active = bool(stream and stream.stream and stream.stream.active)
+        except Exception:
+            active = False
+        if not active:
+            return
+        if _time.monotonic() > deadline:
+            try:
+                sd.stop()
+            except Exception:
+                pass
+            raise RuntimeError(
+                f"sd.wait() exceeded {timeout_s:.1f}s for "
+                f"{audio_len_s:.1f}s of audio — likely a hung CoreAudio "
+                f"stream (PaMacCore AUHAL). Aborted playback."
+            )
+        _time.sleep(0.05)
+
+
 def _play_audio_with_live_device(sd, audio, reference_buffer=None):
     """Synchronous play. Pushes audio to the AEC reference buffer (if
     supplied) so STT can cancel echo even on sync paths."""
@@ -499,10 +544,13 @@ def _play_audio_with_live_device(sd, audio, reference_buffer=None):
 
     device = _resolve_live_device(sd)
     try:
-        sd.play(audio, samplerate=KOKORO_SAMPLE_RATE, device=device)
-        sd.wait()
+        _bounded_play(sd, audio, device=device, samplerate=KOKORO_SAMPLE_RATE)
         return device
     except Exception as first_exc:
+        try:
+            sd.stop()
+        except Exception:
+            pass
         try:
             sd._terminate()
             sd._initialize()
@@ -510,10 +558,14 @@ def _play_audio_with_live_device(sd, audio, reference_buffer=None):
             pass
         device = _resolve_live_device(sd)
         try:
-            sd.play(audio, samplerate=KOKORO_SAMPLE_RATE, device=device)
-            sd.wait()
+            _bounded_play(sd, audio, device=device,
+                          samplerate=KOKORO_SAMPLE_RATE)
             return device
         except Exception as second_exc:
+            try:
+                sd.stop()
+            except Exception:
+                pass
             return {
                 "spoken": False,
                 "reason": f"playback failed after reinit: {second_exc}",

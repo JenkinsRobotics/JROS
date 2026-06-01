@@ -114,7 +114,7 @@ Identical end state; useful if you want to inspect every step:
 git clone https://github.com/JenkinsRobotics/JROS.git ~/jaeger
 cd ~/jaeger
 ./install.sh
-./run.sh --setup
+./run.sh                # first launch auto-fires the wizard
 ```
 
 ---
@@ -125,7 +125,18 @@ After the install completes:
 
 ```bash
 cd ~/jaeger
-./run.sh --setup        # first-time wizard
+./run.sh                # first launch — wizard auto-fires
+# or, with a named instance:
+./run.sh --instance lilith
+```
+
+There is no `--setup` flag. JROS detects on launch that no instance
+exists for the given `--instance` name (or for the default instance)
+and fires the wizard automatically. To re-run the wizard against an
+existing instance, use `--force`:
+
+```bash
+./run.sh --instance lilith --force
 ```
 
 The wizard walks through:

@@ -1,51 +1,76 @@
 #!/usr/bin/env bash
 #
-# JROS dev-instance shim. Source this from your shell (or from another
-# script) to point ``JAEGER_INSTANCE_DIR`` at the in-repo sandbox so
-# all your dev runs land in ``sandbox/jros-dev/`` instead of the bundled
-# ``src/jaeger_os/instance/default/`` skeleton.
+# JROS sandbox shim. Source this from your shell to make the in-repo
+# ``sandbox/`` directory behave as a full miniature JROS install:
 #
-# Why this matters
-# ----------------
-# The bundled skeleton is what ``pip install jaeger-os`` ships. If we
-# let dev runs write into it, those writes (memory, logs, authored
-# skills, audit trails) accumulate inside the repo's source tree and
-# travel into the next wheel. The 0.1.0 release shipped 2.7 MB of dev
-# junk this way; HYGIENE-1..5 in docs/ROADMAP_0.2.0.md fixes the
-# bundle-time leak, and this shim keeps it from re-accumulating.
+#   <repo>/sandbox/
+#   ├── jaeger_os/        ← symlink to ../jaeger_os (live edits show up)
+#   └── .jaeger_os/       ← sandbox's own operator state
+#       └── instances/jros-dev/
+#
+# Mechanism
+# ---------
+# 0.2.6 dropped the old ``~/.jaeger/`` runtime location in favour of
+# ``<install_root>/.jaeger_os/``. The runtime reads ``$JAEGER_HOME``
+# to find the install root; this script just points $JAEGER_HOME at
+# the sandbox dir. Everything else falls out naturally — instances,
+# models cache, jaeger.env, all land under sandbox/.jaeger_os/.
 #
 # Usage
 # -----
 #   source scripts/dev_env.sh
-#   jaeger start          # writes to sandbox/jros-dev/, not the bundle
+#   ./run.sh                   # writes to sandbox/.jaeger_os/, not your real install
+#   ./run.sh setup jros-dev    # creates the sandbox's test instance
 #
-# Or run it as a one-shot wrapper:
+# Or one-shot:
 #
-#   scripts/dev_env.sh jaeger start
-#   scripts/dev_env.sh jaeger bench run
+#   scripts/dev_env.sh ./run.sh
+#   scripts/dev_env.sh ./run.sh setup jros-dev
 #
-# When sourced WITHOUT arguments it just exports the var and prints
-# the path; when executed WITH arguments it runs them in a subshell
-# with the var set.
+# The sandbox tree is gitignored (see .gitignore — both ``sandbox/``
+# and ``.jaeger_os/`` are excluded), so dev work never travels in a
+# commit.
 
 # Resolve the repo root from wherever this script lives.
 _jros_repo="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/.." && pwd)"
+_sandbox="$_jros_repo/sandbox"
 
-# The dev instance lives under sandbox/jros-dev/. The whole sandbox/
-# tree is gitignored (see the root .gitignore), so this never leaks
-# into commits.
-export JAEGER_INSTANCE_DIR="$_jros_repo/sandbox/jros-dev"
-mkdir -p "$JAEGER_INSTANCE_DIR"
+# Idempotently set up the sandbox's framework symlink so the resolver
+# treats sandbox/ as a full install rather than a partial one. The
+# operator's existing edits in <repo>/jaeger_os/ are picked up live
+# through the symlink — no second checkout to keep in sync.
+mkdir -p "$_sandbox"
+if [[ ! -e "$_sandbox/jaeger_os" ]]; then
+    ln -s "../jaeger_os" "$_sandbox/jaeger_os"
+fi
+
+# Operator state goes alongside the framework symlink at
+# sandbox/.jaeger_os/. The runtime creates instances/, models/, etc.
+# on demand.
+mkdir -p "$_sandbox/.jaeger_os/instances"
+
+# Point everything at the sandbox: JAEGER_HOME drives install_root()
+# in the python runtime; PYTHONPATH lets ``import jaeger_os`` resolve
+# through the sandbox's symlink.
+export JAEGER_HOME="$_sandbox"
+case ":${PYTHONPATH:-}:" in
+    *":$_sandbox:"*) ;;
+    *) export PYTHONPATH="$_sandbox${PYTHONPATH:+:$PYTHONPATH}" ;;
+esac
 
 if [[ "${BASH_SOURCE[0]:-}" != "${0}" ]]; then
-    # Sourced — leave the export in the caller's shell.
-    printf '[dev_env] JAEGER_INSTANCE_DIR=%s\n' "$JAEGER_INSTANCE_DIR" >&2
+    # Sourced — leave the exports in the caller's shell.
+    printf '[dev_env] JAEGER_HOME=%s\n' "$JAEGER_HOME" >&2
+    printf '[dev_env] sandbox layout:\n  %s/jaeger_os    -> ../jaeger_os\n  %s/.jaeger_os/\n' \
+        "$_sandbox" "$_sandbox" >&2
 else
-    # Executed — run the rest of argv with the var set.
+    # Executed — run the rest of argv with the env set.
     if [[ $# -eq 0 ]]; then
-        printf 'usage: source %s   (export the var)\n' "${BASH_SOURCE[0]:-$0}" >&2
-        printf '   or: %s <cmd> [args...]   (run cmd with the var set)\n' "${BASH_SOURCE[0]:-$0}" >&2
-        printf 'JAEGER_INSTANCE_DIR would be: %s\n' "$JAEGER_INSTANCE_DIR" >&2
+        printf 'usage: source %s         (export the vars into your shell)\n' \
+            "${BASH_SOURCE[0]:-$0}" >&2
+        printf '   or: %s <cmd> [args…]   (run cmd with the env set)\n' \
+            "${BASH_SOURCE[0]:-$0}" >&2
+        printf 'JAEGER_HOME would be: %s\n' "$JAEGER_HOME" >&2
         exit 64
     fi
     exec "$@"

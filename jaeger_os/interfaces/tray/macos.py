@@ -143,6 +143,26 @@ def _make_actions(instance: str | None) -> TrayActions:
         cmd = " ".join(jaeger + (["--instance", instance] if instance else []))
         _open_terminal_running(cmd)
 
+    def open_voice() -> None:
+        # 0.2.6: launch the voice loop in a new Terminal window so the
+        # operator sees its boot output (model load, AEC status, "say
+        # 'ok jaeger'" prompt). The voice loop has its own argparse
+        # and honours --instance the same way the TUI does. Default
+        # behaviour: wake-word required, AEC barge-in when speexdsp
+        # is installed.
+        cmd_parts = [
+            "python", "-m", "jaeger_os.plugins.voice_loop",
+            *( ["--instance", instance] if instance else [] ),
+        ]
+        _open_terminal_running(" ".join(cmd_parts))
+
+    def open_gui() -> None:
+        # Placeholder until the PyQt6 floating chat lands. Wired to a
+        # no-op now so the dispatcher doesn't crash on a stray click
+        # (the menu entry is greyed in base.menu_items_for, but
+        # defence-in-depth).
+        pass
+
     def open_web() -> None:
         # Disabled in the menu today; the handler is registered so the
         # day it lights up we don't have to touch the wiring.
@@ -162,7 +182,10 @@ def _make_actions(instance: str | None) -> TrayActions:
 
     return TrayActions(
         start=start, stop=stop, restart=restart,
-        open_tui=open_tui, open_web=open_web,
+        open_tui=open_tui,
+        open_voice=open_voice,
+        open_gui=open_gui,
+        open_web=open_web,
         about=about, quit_tray=quit_tray,
     )
 

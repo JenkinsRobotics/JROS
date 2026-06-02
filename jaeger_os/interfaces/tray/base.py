@@ -152,16 +152,33 @@ def menu_items_for(state: TrayState) -> list[MenuItem]:
         MenuItem(label="Stop Jaeger OS",    action="stop",    enabled=running),
         MenuItem(label="Restart Jaeger OS", action="restart", enabled=running),
         SEPARATOR,
-        # 'Open TUI' is always live: with the daemon running it's
-        # `jaeger attach` (Phase 2); without, it's the standalone TUI.
-        # The action handler picks the right invocation. A PID-file
-        # check in the handler prevents a second TUI from spawning if
-        # one is already up — clicking again just brings the existing
-        # Terminal window to the front.
-        MenuItem(label="Open TUI",            action="open_tui"),
-        # Web dashboard not built yet — disabled placeholder so users
-        # see it's coming.
-        MenuItem(label="Open Web Dashboard",  action="open_web", enabled=False),
+        # 0.2.6: every client launcher lives in this group. Each one
+        # is a separate process; the action handler in ``macos.py``
+        # spawns the right subprocess and (for terminal-based ones)
+        # opens / focuses Terminal.app. Greyed entries are intentional
+        # placeholders for surfaces that are landing in a future
+        # release — they let operators see what's coming without
+        # promising it works today.
+        #
+        # 'Open Chat (TUI)' is always live: when the daemon is up the
+        # handler attaches via ``rich_tui`` (single shared model);
+        # otherwise it falls back to the standalone in-process TUI. A
+        # PID-file check prevents a second TUI from spawning if one is
+        # already up — clicking again just brings that Terminal window
+        # to the front.
+        MenuItem(label="Open Chat (TUI)",   action="open_tui"),
+        # Voice launcher. Spawns ``python -m jaeger_os.plugins.voice_loop``
+        # with the active instance pinned. Wake-word required, AEC
+        # barge-in when speexdsp is available.
+        MenuItem(label="Open Voice",        action="open_voice"),
+        # Floating chat window (PyQt6). Disabled placeholder until the
+        # GUI lands — see the 0.3.0 / GUI work in dev_docs/.
+        MenuItem(label="Open Chat (GUI)",   action="open_gui",
+                 enabled=False),
+        # Web dashboard — separate future surface (browser-based
+        # remote control). Not in active design yet.
+        MenuItem(label="Open Web Dashboard", action="open_web",
+                 enabled=False),
         SEPARATOR,
         MenuItem(label="About Jaeger OS",  action="about"),
         # "Quit Jaeger OS" tears EVERYTHING down — daemon, every
@@ -225,14 +242,23 @@ def _state_from_status(status: dict[str, Any]) -> TrayState:
 
 @dataclass(frozen=True)
 class TrayActions:
-    """The six callbacks the menu can fire. ``dispatch`` is the
+    """The callbacks the menu can fire. ``dispatch`` is the
     indirection the GUI uses so it doesn't have to bind by identity:
     a menu item carries the action name as a string, the dispatcher
-    routes it to the right closure."""
+    routes it to the right closure.
+
+    0.2.6: added ``open_voice`` (launches the voice loop) and
+    ``open_gui`` (placeholder for the PyQt6 floating chat — landing
+    in a later release). Disabled menu items still need a callback
+    bound so the dispatcher doesn't crash on a programmer-error
+    click on a non-enabled entry; the placeholders are no-ops.
+    """
     start: Callable[[], None]
     stop: Callable[[], None]
     restart: Callable[[], None]
     open_tui: Callable[[], None]
+    open_voice: Callable[[], None]
+    open_gui: Callable[[], None]
     open_web: Callable[[], None]
     quit_tray: Callable[[], None]
     about: Callable[[], None] | None = None
@@ -247,6 +273,8 @@ class TrayActions:
             "stop": self.stop,
             "restart": self.restart,
             "open_tui": self.open_tui,
+            "open_voice": self.open_voice,
+            "open_gui": self.open_gui,
             "open_web": self.open_web,
             "quit_tray": self.quit_tray,
             "about": self.about,

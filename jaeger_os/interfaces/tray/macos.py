@@ -90,6 +90,30 @@ def _activate_terminal() -> None:
     _spawn(["osascript", "-e", 'tell application "Terminal" to activate'])
 
 
+def _daemon_socket_present_for(instance: str | None) -> bool:
+    """True when the daemon socket exists for the given instance —
+    cheap proxy for 'daemon is running and accepting connections'.
+
+    Used by ``open_voice`` to decide whether to launch the voice loop
+    in --attach mode (saves loading a second ~16 GB model) or in the
+    standalone path (loads its own client).
+
+    Best-effort: any import / resolution failure returns False so the
+    caller falls back to standalone — never a crash, never a fake
+    attach attempt against a missing daemon."""
+    try:
+        from pathlib import Path
+
+        from jaeger_os.core.instance.instance import (
+            default_instance_name, resolve_instance_dir,
+        )
+        name = instance or default_instance_name()
+        sock = Path(resolve_instance_dir(name)) / "run" / "jaeger.sock"
+        return sock.exists()
+    except Exception:  # noqa: BLE001 — best-effort detection
+        return False
+
+
 def _existing_tui_pid_for(instance: str | None) -> int | None:
     """Check the per-instance TUI PID file. Returns the live PID if a
     TUI is already running, or ``None`` when the slot is free. Best-
@@ -150,10 +174,20 @@ def _make_actions(instance: str | None) -> TrayActions:
         # and honours --instance the same way the TUI does. Default
         # behaviour: wake-word required, AEC barge-in when speexdsp
         # is installed.
+        #
+        # Auto-attach when the daemon is up: if the socket exists for
+        # this instance, pass --attach so voice_loop skips loading its
+        # own LLM client and routes turns through the daemon's
+        # ``chat.send``. Saves ~16 GB RAM. When the daemon isn't
+        # running, fall back to the standalone path (voice_loop loads
+        # its own model). The operator sees which mode via the boot
+        # banner the voice loop prints.
         cmd_parts = [
             "python", "-m", "jaeger_os.plugins.voice_loop",
             *( ["--instance", instance] if instance else [] ),
         ]
+        if _daemon_socket_present_for(instance):
+            cmd_parts.append("--attach")
         _open_terminal_running(" ".join(cmd_parts))
 
     def open_gui() -> None:

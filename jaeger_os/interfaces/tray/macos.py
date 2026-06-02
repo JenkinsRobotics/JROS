@@ -22,7 +22,6 @@ from __future__ import annotations
 
 import argparse
 import os
-import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -44,15 +43,32 @@ from jaeger_os.interfaces.tray.base import (
 # ── subprocess helpers ────────────────────────────────────────────
 
 
+def _repo_root() -> Path:
+    """Return the JROS repo root (parent of ``jaeger_os/``).
+
+    This module lives at ``<repo>/jaeger_os/interfaces/tray/macos.py``,
+    so three parents up lands on the repo root that owns ``run.sh``."""
+    return Path(__file__).resolve().parents[3]
+
+
 def _jaeger_executable() -> list[str]:
-    """How to spawn the ``jaeger`` CLI from a GUI subprocess. Prefer a
-    ``jaeger`` on PATH (installed entry point); fall back to running
-    the package via the current interpreter so a development checkout
-    works without ``pip install -e .``."""
-    on_path = shutil.which("jaeger")
-    if on_path:
-        return [on_path]
-    return [sys.executable, "-m", "jaeger_os"]
+    """How to spawn the JROS CLI from a GUI subprocess.
+
+    0.2.6: the canonical entry point is ``./run.sh`` in the repo root.
+    It sets ``PYTHONPATH`` to the repo (required for ``import
+    jaeger_os`` to work in fresh child shells), picks the venv's
+    Python, and forwards all args to ``jaeger_os.run``. Earlier
+    versions of this helper preferred ``shutil.which('jaeger')`` —
+    that's a 0.2.2-era pip console-script and now points at a layout
+    that no longer exists. Calling it from the tray would crash with
+    ``ModuleNotFoundError: jaeger_os`` because the AppleScript ``do
+    script`` path starts a fresh Terminal shell that inherits no
+    ``PYTHONPATH`` from us.
+
+    Returning ``run.sh`` is robust across both cases: the tray's
+    own ``subprocess.Popen`` and the AppleScript path both end up
+    invoking a shell wrapper that handles PYTHONPATH explicitly."""
+    return [str(_repo_root() / "run.sh")]
 
 
 def _spawn(args: list[str], *, env: dict[str, str] | None = None) -> None:
@@ -182,13 +198,24 @@ def _make_actions(instance: str | None) -> TrayActions:
         # running, fall back to the standalone path (voice_loop loads
         # its own model). The operator sees which mode via the boot
         # banner the voice loop prints.
-        cmd_parts = [
-            "python", "-m", "jaeger_os.plugins.voice_loop",
-            *( ["--instance", instance] if instance else [] ),
-        ]
+        # Fresh Terminal shells inherit no PYTHONPATH from us, so we
+        # have to set it inline before invoking python. Using the
+        # venv's python explicitly (vs ``python`` on PATH) so the
+        # voice loop's deps (Whisper, Kokoro, speexdsp) resolve.
+        repo = _repo_root()
+        venv_py = repo / ".venv" / "bin" / "python"
+        py = str(venv_py) if venv_py.exists() else "python3"
+        extra = []
+        if instance:
+            extra += ["--instance", instance]
         if _daemon_socket_present_for(instance):
-            cmd_parts.append("--attach")
-        _open_terminal_running(" ".join(cmd_parts))
+            extra.append("--attach")
+        cmd = (
+            f"cd {repo} && PYTHONPATH={repo} "
+            f"{py} -m jaeger_os.plugins.voice_loop"
+            + ("" if not extra else " " + " ".join(extra))
+        )
+        _open_terminal_running(cmd)
 
     def open_gui() -> None:
         # Placeholder until the PyQt6 floating chat lands. Wired to a

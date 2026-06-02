@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate ``docs/agent_contract.md`` from ``core/prompts/rules.py``.
+"""Generate ``jaeger_os/docs/agent_contract.md`` from ``core/prompts/rules.py``.
 
 The agent's behavioural contract — the literal text the model sees on
 every turn — lives in ``rules.py`` as a handful of plain string
@@ -8,15 +8,15 @@ drift away from the natural place to ask "what does Jaeger HAVE to
 do?" (a doc).
 
 This script is the single source of truth: re-run it after any change
-to ``rules.py`` and ``docs/agent_contract.md`` regenerates. CI can
-re-run it and diff to catch drift (see
-``dev_tests/jaeger_os/core/test_agent_contract_doc.py``).
+to ``rules.py`` and ``jaeger_os/docs/agent_contract.md`` regenerates.
+CI can re-run it and diff to catch drift (see
+``dev_tests/jaeger_os/core/test_polish_group5.py``).
 
 Usage:
     dev_scripts/generate_agent_contract.py            # write the doc
     dev_scripts/generate_agent_contract.py --check    # exit 1 if stale
 
-POLISH-5 in docs/ROADMAP_0.2.0.md.
+POLISH-5 in dev_docs/ROADMAP_0.2.0.md.
 """
 
 from __future__ import annotations
@@ -26,8 +26,8 @@ import sys
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
-RULES_PATH = REPO / "src" / "jaeger_os" / "core" / "prompts" / "rules.py"
-DOC_PATH = REPO / "docs" / "agent_contract.md"
+RULES_PATH = REPO / "jaeger_os" / "core" / "prompts" / "rules.py"
+DOC_PATH = REPO / "jaeger_os" / "docs" / "agent_contract.md"
 
 
 # Order matches how ``assemble_prompt`` weaves these into the final

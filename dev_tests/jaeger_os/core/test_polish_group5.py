@@ -216,7 +216,7 @@ def test_skill_view_auto_loads_required_toolsets(monkeypatch, tmp_path):
 def test_agent_contract_script_writes_and_check_passes():
     """End-to-end: run the generator, then run ``--check`` — clean."""
     script = REPO / "dev_scripts" / "generate_agent_contract.py"
-    doc = REPO / "docs" / "agent_contract.md"
+    doc = REPO / "jaeger_os" / "docs" / "agent_contract.md"
     # Write.
     r = subprocess.run([sys.executable, str(script)],
                        capture_output=True, text=True, timeout=15)
@@ -233,7 +233,7 @@ def test_agent_contract_check_detects_staleness(tmp_path, monkeypatch):
     """If the doc on disk doesn't match the rendered output,
     ``--check`` should exit 1 and say so."""
     script = REPO / "dev_scripts" / "generate_agent_contract.py"
-    doc = REPO / "docs" / "agent_contract.md"
+    doc = REPO / "jaeger_os" / "docs" / "agent_contract.md"
     # Stash, scribble, restore.
     original = doc.read_text(encoding="utf-8")
     doc.write_text("stale content\n", encoding="utf-8")
@@ -250,7 +250,7 @@ def test_agent_contract_includes_every_rule_section():
     """The generated doc must mention every rule constant the
     assemble pipeline references — otherwise a new constant
     landing in rules.py would silently miss the doc."""
-    doc = (REPO / "docs" / "agent_contract.md").read_text(encoding="utf-8")
+    doc = (REPO / "jaeger_os" / "docs" / "agent_contract.md").read_text(encoding="utf-8")
     for name in (
         "JAEGER_OS_CONTEXT",
         "MANDATORY_TOOL_RULES",

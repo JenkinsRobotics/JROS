@@ -196,17 +196,84 @@ The 0.3.0 line, ordered. Each item lists what it is, why, scope, fit.
 
 ### Tier 1 — must-ship in 0.3.0
 
-#### 1.1 PyQt6 GUI MVP
-- **Why:** The third client surface promised in the daemon/attach
-  refactor. TUI + voice + GUI = the trio we said 0.2.0 would enable.
-- **Shape:** Floating chat window, daemon-attach by default,
-  copy/paste, scrollback, slash commands. **No** rich markdown render,
-  no inline tool-call visualizations, no avatar art — that's 0.4.x.
-- **Surface preserved:** TUI stays the default, never rewired. (See
-  the [[feedback-preserve-0.1.0-surfaces]] standing rule.)
-- **Risk:** Qt sometimes fights with macOS focus. Walk the flow on a
-  fresh wizard install before claiming done; don't ship on inspection.
-- **Effort:** ~2 weeks.
+#### 1.1 Swift + SwiftUI desktop app — **the 0.3.0 headline**
+
+**Reference architecture: Ollama Desktop.** Open-source, single-binary
+Mac-native app, Swift UI on top of a separate compute backend, talks
+to it over a local socket. Tray icon + window + model lifecycle, no
+Terminal in sight. Same shape Claude Desktop and ChatGPT Desktop use,
+but proven in an open-source context with constraints close to ours.
+Our daemon is the equivalent of their `ollama serve`; our Swift app
+replaces what they call `Ollama.app`. **We are not inventing this
+pattern. We are adopting a battle-tested one.**
+
+- **Why:** The 0.2.x tray-spawns-Terminal model is fundamentally
+  fragile. Every "Open TUI / Open Voice" patch we shipped in 0.2.6
+  was working around the architectural fact that rumps can't open
+  windows, so we forward env vars to AppleScript-spawned shells.
+  That dead-ends. A native Mac app owns its tray icon + chat window
+  + voice surface in **one process** and talks to the existing Python
+  daemon over the socket.
+- **Why Swift (vs PyQt6 / Tauri / Electron):**
+  - **Smallest footprint:** ~10 MB binary, ~40 MB RAM idle. Compare
+    Electron's ~150 MB / 250+ MB.
+  - **Real Metal access** — not just "the UI renders via Metal" (which
+    every stack gets for free on macOS) but direct `MTLDevice`,
+    Metal Performance Shaders, and the **ANE (Apple Neural Engine)**.
+  - **Audio rebuild as a side-effect:** AVAudioEngine replaces
+    `sounddevice → PortAudio → CoreAudio`. The wedging-CoreAudio
+    bug class (BenQ-stuck-AUHAL, etc.) doesn't exist with the native
+    framework. Voice processing mode brings free hardware AEC —
+    likely deletes the speexdsp dependency.
+  - **CoreML-accelerated Whisper:** whisper.cpp's CoreML variant
+    runs the encoder on the ANE, **2-3× faster** than pywhispercpp.
+    Two-pass `base.en + medium.en` could collapse to single-pass
+    `large-v3` at the same wall time.
+  - **Native AirPods / Bluetooth routing:** AVAudioSession route
+    notifications handle hot-unplug, mid-call connect, etc. — the
+    current Python audio loop has none of this.
+  - **AVSpeechSynthesizer / SFSpeechRecognizer** become available
+    as Apple-native STT/TTS options alongside Whisper / Kokoro.
+- **What this kills:**
+  - rumps tray (replaced by `NSStatusItem`)
+  - prompt_toolkit + rich-tui (replaced by SwiftUI chat surface)
+  - voice_loop's Terminal-flow + speexdsp + half of the AEC code
+  - all of `_open_terminal_running` / `_shell_env_prefix` etc. in
+    `interfaces/tray/macos.py` — the whole shell-spawn dance
+- **What the daemon does:** nothing changes. The Python agent core
+  stays exactly as it is. Swift app connects via the existing
+  `chat.send` / `chat.subscribe` / `status.snapshot` verbs. The
+  protocol you already built is the right interface.
+- **Cross-platform later:** PySide 6 (Qt) stays in the strategy doc
+  as the *future* fallback if/when JROS needs a Linux client for a
+  non-JP01 reason. Mac-first means Mac-deep first. JP01 itself
+  doesn't need a UI on the Jetson side — the Jetson is a sensor +
+  motor I/O node, the brain stays on the operator's Mac.
+- **Shape (MVP):**
+  - `JaegerOS.app` bundle in Applications
+  - Tray icon (`NSStatusItem`) with: Open Chat / Open Voice /
+    Start Daemon / Stop Daemon / About / Quit
+  - Chat window (`NSWindow` + SwiftUI `View`) with:
+    markdown rendering, code-block highlighting, scrollback,
+    `❯` prompt input, status bar (model · ctx % · turns), slash
+    commands. Same visual rhythm as today's rich-tui.
+  - Voice push-to-talk panel (AVAudioEngine + whisper.cpp.coreml
+    + Kokoro called via subprocess for v1, native AVSpeechSynth in
+    v2). Voice processing mode for AEC.
+  - Daemon lifecycle: `Process` spawns/stops the Python daemon,
+    waits for socket, shows boot progress.
+- **Effort:** ~5-6 weeks for MVP. Real work — but it deletes more
+  code than it adds, and retires the entire shell-spawn-Terminal
+  class of bugs permanently.
+- **Surface preserved:** Existing TUI (`./run.sh --instance NAME`)
+  stays as-is. CLI surface unchanged. Power users on a remote SSH
+  session still use the TUI. The desktop app is the **default for
+  Mac operators**, not the only surface. (See the
+  [[feedback-preserve-0.1.0-surfaces]] standing rule.)
+- **Risk:** Swift is a second language in the project. Mitigation:
+  the Swift code is purely UI + AVAudioEngine plumbing. All agent
+  logic, tools, memory, skills stay in Python. Anyone who knows
+  the Python side never needs to touch Swift.
 
 #### 1.2 Persona Packs at setup
 - **Why:** Lower the cold-start cliff for new users; show that JROS is

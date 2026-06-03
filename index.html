@@ -479,6 +479,36 @@
     border: 1px solid rgba(88, 166, 255, 0.25);
     border-radius: 999px;
   }
+  .feature .pill.dev {
+    color: var(--warn);
+    background: rgba(210, 153, 34, 0.08);
+    border-color: rgba(210, 153, 34, 0.30);
+  }
+
+  /* "On deck" sub-divider — between current capabilities and dev cards. */
+  .ondeck-divider {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    margin: 56px 0 24px;
+    color: var(--accent);
+    font-family: var(--mono);
+    font-size: 12px;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+  }
+  .ondeck-divider::before,
+  .ondeck-divider::after {
+    content: "";
+    flex: 1;
+    height: 1px;
+    background: linear-gradient(90deg, transparent, var(--border2), transparent);
+  }
+  .feature.dev {
+    border-style: dashed;
+    background: rgba(13, 17, 23, 0.5);
+  }
+  .feature.dev .ico { color: var(--warn); filter: drop-shadow(0 0 4px rgba(210,153,34,0.25)); }
 
   /* ── Architecture diagram ──────────────────────────────────────── */
   .arch {
@@ -921,6 +951,32 @@
         <span class="pill">Mac · Jetson · ESP32</span>
       </div>
     </div>
+
+    <!-- On-deck — brain-side capabilities in active development -->
+    <div class="ondeck-divider"><span>// on deck — in active development</span></div>
+
+    <div class="feature-grid">
+      <div class="feature dev">
+        <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+        <h3>Enhanced sensory inputs</h3>
+        <p>Beyond a mic and a single camera. Multi-camera vision, microphone arrays for direction-of-arrival, depth sensors, IMU fusion — so the brain perceives the world from more angles with more signal.</p>
+        <span class="pill dev">vision · audio · IMU</span>
+      </div>
+
+      <div class="feature dev">
+        <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><polyline points="3.27 6.96 12 12.01 20.73 6.96"/><line x1="12" y1="22.08" x2="12" y2="12"/></svg>
+        <h3>Spatial awareness + world sim</h3>
+        <p>Proprioception across the full body and the environment around it. A simulation of the world runs in parallel with the real one, so the agent can plan, predict, and rehearse before acting.</p>
+        <span class="pill dev">proprioception · world model</span>
+      </div>
+
+      <div class="feature dev">
+        <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="3" r="2.5"/><circle cx="6" cy="21" r="2.5"/><circle cx="18" cy="12" r="2.5"/><path d="M6 5.5v13"/><path d="M8.5 12H12a3.5 3.5 0 0 0 3.5-3.5"/><path d="M8.5 12H12a3.5 3.5 0 0 1 3.5 3.5"/></svg>
+        <h3>Reinforcement + evolutionary skill learning</h3>
+        <p>Skills aren't only authored — they're learned. Agents try variants in simulation, keep what works, evolve the rest. The skill library grows by selection, not just by code.</p>
+        <span class="pill dev">RL · evolution · sim</span>
+      </div>
+    </div>
   </div>
 </section>
 
@@ -962,29 +1018,36 @@
 <section id="jaegers">
   <div class="wrap">
     <div class="eyebrow">// reference jaegers</div>
-    <h2 class="h">From desktop to drone, the same brain.</h2>
-    <p class="sub">A new Jaeger is a config file plus a logic node — not a fork of the runtime. The strategy: agent first, body second.</p>
+    <h2 class="h">From desktop to chassis, the same brain throughout.</h2>
+    <p class="sub">A new Jaeger is a config file plus a logic node — not a fork of the runtime. Each body grows from the last; the brain stays one.</p>
 
     <div class="jaegers">
       <div class="jaeger">
         <span class="status live">live</span>
         <h3>Lilith</h3>
         <div class="form">digital · macOS · in-process LLM</div>
-        <p>The reference digital Jaeger. Proves the agent layer end-to-end before JP01 inherits it. Adjustable personality. Runs on any Apple Silicon Mac.</p>
+        <p>The reference digital Jaeger. Proves the agent layer end-to-end before any chassis inherits it. Adjustable personality. Runs on any Apple Silicon Mac.</p>
       </div>
 
       <div class="jaeger">
         <span class="status dev">building</span>
         <h3>JP01</h3>
-        <div class="form">drone · Mac + Jetson + Teensy + ESP32</div>
-        <p>The first hardware Jaeger. LED face panel, servos, cameras, mics. Inherits Lilith's agent unchanged, adds the hardware middleware on top.</p>
+        <div class="form">prototype · LED face · stereo camera · mics · servos</div>
+        <p>The first hardware Jaeger. LED face panel, stereo camera, microphone array, servos. Inherits Lilith's agent unchanged — the chassis grows around the brain that already works.</p>
       </div>
 
-      <div class="jaeger" style="opacity: 0.7;">
+      <div class="jaeger">
+        <span class="status dev">experimental</span>
+        <h3>JX01</h3>
+        <div class="form">experimental · improved torso + neck · dual arms</div>
+        <p>Refines JP01's chassis with improved torso and neck mechanics and adds dual-arm manipulation — the first Jaeger that can grasp and move objects, not just observe them.</p>
+      </div>
+
+      <div class="jaeger" style="opacity: 0.85;">
         <span class="status dev">spec</span>
-        <h3>Future Jaegers</h3>
-        <div class="form">humanoid · companion · workstation</div>
-        <p>Each future body is a hardware-node profile plus a permission grant. The brain code doesn't change. That's the contract.</p>
+        <h3>JX02</h3>
+        <div class="form">biped · walking platform</div>
+        <p>Builds on JX01's upper body with bipedal locomotion. The first Jaeger that moves through space under its own agency.</p>
       </div>
     </div>
   </div>

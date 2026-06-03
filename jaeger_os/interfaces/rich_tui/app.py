@@ -25,7 +25,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
-from prompt_toolkit.formatted_text import ANSI
+from prompt_toolkit.formatted_text import ANSI, merge_formatted_text
 from rich.console import Console
 from rich.panel import Panel
 from rich.padding import Padding
@@ -185,6 +185,13 @@ def _start_subscriber(sock_path: Path, console: Console,
         except OSError:
             return
         framer = P.Framer()
+        # chat.subscribe is only registered AFTER the daemon's boot
+        # worker finishes (see chat_ops.register_chat_ops). The booting
+        # stubs only carry chat.send / chat.history / status.snapshot.
+        # If we connected during that window we'll get back "unknown
+        # op: chat.subscribe" — wait a beat and retry instead of
+        # bailing, so the user gets live events the moment boot completes.
+        subscribe_retries_left = 5
         try:
             while not stop.is_set():
                 try:
@@ -198,6 +205,19 @@ def _start_subscriber(sock_path: Path, console: Console,
                     if isinstance(msg, P.Event):
                         _print_event(msg)
                     elif isinstance(msg, P.Response) and not msg.ok:
+                        if (
+                            "unknown op" in (msg.error or "").lower()
+                            and subscribe_retries_left > 0
+                        ):
+                            subscribe_retries_left -= 1
+                            if stop.wait(1.5):
+                                return
+                            try:
+                                sock.sendall(P.encode(P.Request(
+                                    id=1, op="chat.subscribe")))
+                            except OSError:
+                                return
+                            continue
                         console.print(f"  [red][subscriber] error:[/red] {msg.error}")
                         return
         finally:
@@ -379,7 +399,9 @@ def run(*, sock_path: Path, session_key: str = "rich-tui") -> int:
         while True:
             text = read_prompt(
                 session,
-                message=lambda: _format_status_bar(state) + _format_prompt(),
+                message=lambda: merge_formatted_text(
+                    [_format_status_bar(state), _format_prompt()]
+                ),
             )
             if text is None:
                 # Ctrl-D / EOF — quit cleanly.

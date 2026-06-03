@@ -18,7 +18,10 @@ What it deliberately does NOT own
   - the agent loop (Phase 2)
   - the actual fork target — :func:`real_forker` from ``lifecycle.py``
     does the os-level dance; we just hand it a ``serve`` callable
-  - tray UI: that's a separate client (Phase 1.6)
+  - menu-bar tray: removed in 0.2.6, replaced by the Swift desktop
+    app in 0.3.0 (Ollama Desktop-style native app — one process owns
+    the tray icon + chat window + voice surface, talks to this daemon
+    over the same Unix socket).
 """
 
 from __future__ import annotations
@@ -45,7 +48,7 @@ from jaeger_os.daemon.server import Server
 # lifecycle: ``setup``, ``instance``, ``migrate`` (and the
 # upcoming ``backup``, ``restore``, ``update``).
 SUBCOMMANDS: frozenset[str] = frozenset({
-    "start", "stop", "status", "restart", "tray", "bench",
+    "start", "stop", "status", "restart", "bench",
     "attach", "rich-tui",
     "setup", "instance", "migrate",
     "backup", "restore", "update",
@@ -57,8 +60,13 @@ def is_daemon_subcommand(argv: Sequence[str]) -> bool:
     """``main.py`` calls this on ``sys.argv[1:]`` — True if the first
     word is one of our subcommands. ``--instance`` and the like are
     parsed AFTER the dispatch, so a flag-first argv falls through to
-    the legacy path (we never had ``--start`` etc. before this)."""
-    return len(argv) >= 1 and argv[0] in SUBCOMMANDS
+    the legacy path (we never had ``--start`` etc. before this).
+
+    Also returns True for the removed-but-still-recognized ``tray``
+    name so :func:`dispatch` can print a removal notice instead of
+    letting the word slip through to the legacy ``prompt`` parser
+    (where it would silently become a one-shot prompt of "tray")."""
+    return len(argv) >= 1 and (argv[0] in SUBCOMMANDS or argv[0] == "tray")
 
 
 def dispatch(argv: Sequence[str]) -> int:
@@ -67,17 +75,28 @@ def dispatch(argv: Sequence[str]) -> int:
     if not argv:
         _print_usage()
         return 2
+    # 0.2.6: the menu-bar tray was removed (the Swift desktop app
+    # replaces it in 0.3.0). Print a clear notice instead of letting
+    # the bare word slip through to the legacy parser.
+    if argv[0] == "tray":
+        print(
+            "jaeger tray was removed in 0.2.6. The Swift desktop app\n"
+            "(in 0.3.0) replaces it with a single-process native UI:\n"
+            "tray icon + chat window + voice surface in one app.\n"
+            "\n"
+            "Until then, use the TUI directly:\n"
+            "    ./run.sh --instance NAME            (standalone)\n"
+            "    ./run.sh attach --instance NAME      (daemon-attached)\n"
+            "    ./run.sh rich-tui --instance NAME    (daemon-attached, rich UI)\n",
+            file=sys.stderr,
+        )
+        return 2
     # Peel off ``bench`` BEFORE the lifecycle argparse — bench has its
     # own sub-verbs (``run`` / ``timing``) and its own flags
     # (``--tags`` / ``--limit`` / ``--ids``) that don't belong in the
     # lifecycle parser.
     if argv[0] == "bench":
         return _cmd_bench(list(argv[1:]))
-    # Same for ``tray`` — the tray module has its own argparse
-    # (``--instance`` / ``--poll-s`` / ``--kill-others``) and any
-    # flag we add to it later shouldn't have to be re-declared here.
-    if argv[0] == "tray":
-        return _cmd_tray_argv(list(argv[1:]))
     # ``attach`` is a streaming client — peel it off here so its
     # ``--instance`` / ``--session`` flags don't have to be re-declared
     # in the lifecycle parser below.
@@ -132,13 +151,6 @@ def dispatch(argv: Sequence[str]) -> int:
     parser.add_argument("subcommand", choices=sorted(SUBCOMMANDS))
     parser.add_argument("--instance", default=None,
                         help="Instance name (default: $JAEGER_INSTANCE_NAME or 'default').")
-    # Tray autolaunch — on by default for `jaeger start` / `restart` on
-    # macOS (where rumps works); ``--no-tray`` opts out for headless
-    # boxes or scripted starts.
-    parser.add_argument("--tray", dest="tray", action="store_true",
-                        default=None, help="Autolaunch the menu-bar tray (default on macOS).")
-    parser.add_argument("--no-tray", dest="tray", action="store_false",
-                        help="Skip the tray (headless / scripted starts).")
     parser.add_argument("-h", "--help", action="store_true")
     args = parser.parse_args(argv)
 
@@ -150,17 +162,13 @@ def dispatch(argv: Sequence[str]) -> int:
     lifecycle = Lifecycle(paths=paths)
 
     if args.subcommand == "start":
-        return _cmd_start(lifecycle, instance=args.instance,
-                          want_tray=_want_tray(args.tray))
+        return _cmd_start(lifecycle, instance=args.instance)
     if args.subcommand == "stop":
         return _cmd_stop(lifecycle)
     if args.subcommand == "status":
         return _cmd_status(lifecycle)
     if args.subcommand == "restart":
-        return _cmd_restart(lifecycle, instance=args.instance,
-                            want_tray=_want_tray(args.tray))
-    if args.subcommand == "tray":
-        return _cmd_tray(args.instance)
+        return _cmd_restart(lifecycle, instance=args.instance)
     _print_usage()
     return 2
 
@@ -258,43 +266,6 @@ def _repo_root() -> Path:
     return here.parents[3]
 
 
-def _cmd_tray(instance: str | None) -> int:
-    """``jaeger tray`` (no extra args) — back-compat helper used by
-    the lifecycle argparse path that doesn't peel argv itself. The
-    new entry is :func:`_cmd_tray_argv`, which forwards every flag
-    to the tray module's own argparse."""
-    extra: list[str] = []
-    if instance:
-        extra = ["--instance", instance]
-    return _cmd_tray_argv(extra)
-
-
-def _cmd_tray_argv(argv: list[str]) -> int:
-    """``jaeger tray …`` — hand every remaining flag to the tray
-    module's argparse. The tray owns ``--instance`` / ``--poll-s``
-    / ``--kill-others``; adding a new flag there should not require
-    a duplicate declaration here."""
-    if sys.platform != "darwin":
-        print("jaeger tray is macOS-only today (rumps).", file=sys.stderr)
-        return 2
-    try:
-        from jaeger_os.interfaces.tray.macos import main as tray_main
-    except ImportError as exc:
-        print(f"jaeger tray needs rumps — pip install rumps  ({exc})",
-              file=sys.stderr)
-        return 1
-    return tray_main(argv)
-
-
-def _want_tray(flag: bool | None) -> bool:
-    """Resolve the tray autolaunch decision. Explicit ``--tray`` /
-    ``--no-tray`` wins; otherwise default to True on macOS (where
-    rumps is supported) and False everywhere else."""
-    if flag is not None:
-        return flag
-    return sys.platform == "darwin"
-
-
 # ── path resolution ────────────────────────────────────────────────
 
 
@@ -315,8 +286,7 @@ def _resolve_paths(instance_name: str | None) -> LifecyclePaths:
 
 
 def _cmd_start(lifecycle: Lifecycle, *,
-               instance: str | None = None,
-               want_tray: bool = False) -> int:
+               instance: str | None = None) -> int:
     """``jaeger start`` — fork the daemon into the background.
 
     The daemon's child branch loads the model + builds the agent
@@ -325,85 +295,16 @@ def _cmd_start(lifecycle: Lifecycle, *,
     are live and any client (TUI / attach / GUI) can drive the agent
     that just booted.
 
-    When ``want_tray`` is True we also fire-and-forget a menu-bar
-    tray process so the user gets a visible 🤖 indicator. The tray
-    is dumb — it just polls ``Lifecycle.status()`` and shells out to
-    ``jaeger`` for click handlers; a crash there can't take the
-    daemon down.
+    0.2.6: the menu-bar tray was removed in this release; the Swift
+    desktop app that replaces it in 0.3.0 owns its own lifecycle.
     """
-    # ``real_forker`` is a subprocess-based spawner now (see the
-    # function's docstring for why). It takes the instance name
-    # directly so the spawned child knows which one to boot.
     forker = real_forker(paths=lifecycle.paths, instance_name=instance)
     result = lifecycle.start(forker=forker)
     if not result.ok:
         print(result.message, file=sys.stderr)
         return 1
     print(result.message)
-    if want_tray:
-        _spawn_tray(instance)
     return 0
-
-
-def _spawn_tray(instance: str | None) -> None:
-    """Fork the menu-bar tray as a detached process. Best-effort —
-    a tray-import failure (no ``rumps`` installed, not on macOS,
-    etc.) is logged to stderr but never blocks the daemon start.
-
-    The tray is its OWN process, not a daemon child, so a tray
-    crash leaves the daemon untouched and vice versa."""
-    import shutil
-    import subprocess
-    if sys.platform != "darwin":
-        # Other platforms have no tray adapter yet — silent skip.
-        return
-    # Skip if rumps isn't installed; running the tray module would
-    # just error and confuse the user.
-    try:
-        import importlib.util
-        if importlib.util.find_spec("rumps") is None:
-            print("[jaeger] tray skipped — install rumps to enable: "
-                  "pip install rumps", file=sys.stderr)
-            return
-    except Exception:  # noqa: BLE001
-        return
-    # Tray singleton — don't spawn a duplicate if one is already in
-    # the menu bar. Previously every ``jaeger start`` / ``restart``
-    # left a stale icon behind; the slot file gates that.
-    try:
-        from pathlib import Path as _Path
-
-        from jaeger_os.core.instance.instance import (
-            default_instance_name as _default, resolve_instance_dir as _resolve,
-        )
-        from jaeger_os.interfaces.tray.singleton import existing_tray_pid
-        _name = instance or _default()
-        _run_dir = _Path(_resolve(_name)) / "run"
-        if existing_tray_pid(_run_dir) is not None:
-            # Already up — silent skip. The user can see the icon
-            # already; no need for a "tray skipped" line.
-            return
-    except Exception:  # noqa: BLE001 — slot check is advisory
-        pass
-    # Prefer the installed `jaeger` entry point; fall back to running
-    # the tray module via the current interpreter (dev checkout).
-    jaeger = shutil.which("jaeger")
-    if jaeger:
-        cmd = [jaeger, "tray"]
-    else:
-        cmd = [sys.executable, "-m", "jaeger_os.interfaces.tray.macos"]
-    if instance:
-        cmd += ["--instance", instance]
-    try:
-        subprocess.Popen(
-            cmd,
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            start_new_session=True,
-        )
-    except Exception as exc:  # noqa: BLE001
-        print(f"[jaeger] tray failed to launch: {exc}", file=sys.stderr)
 
 
 def _agent_serve_factory(paths: LifecyclePaths, *, instance_name: str | None = None):
@@ -552,15 +453,14 @@ def _cmd_status(lifecycle: Lifecycle) -> int:
 
 
 def _cmd_restart(lifecycle: Lifecycle, *,
-                 instance: str | None = None,
-                 want_tray: bool = False) -> int:
-    """Convenience verb — stop, then start. Used by the tray's Restart
-    menu item. We don't do anything clever about handing the new daemon
-    the old daemon's state; ``stop`` cleans up and ``start`` runs fresh."""
+                 instance: str | None = None) -> int:
+    """Convenience verb — stop, then start. We don't do anything clever
+    about handing the new daemon the old daemon's state; ``stop`` cleans
+    up and ``start`` runs fresh."""
     stop_rc = _cmd_stop(lifecycle)
     if stop_rc != 0:
         return stop_rc
-    return _cmd_start(lifecycle, instance=instance, want_tray=want_tray)
+    return _cmd_start(lifecycle, instance=instance)
 
 
 def _live_status(lifecycle: Lifecycle) -> dict | None:
@@ -582,7 +482,7 @@ def _live_status(lifecycle: Lifecycle) -> dict | None:
 
 def _print_usage() -> None:
     print(
-        "Usage: jaeger {start|stop|status|restart|kill|health|tray|bench} "
+        "Usage: jaeger {start|stop|status|restart|kill|health|bench} "
         "[--instance NAME]\n"
         "\n"
         "  start    Bring the daemon up in the background.\n"
@@ -595,7 +495,6 @@ def _print_usage() -> None:
         "  health   Runtime substrate probe (post-boot diagnostics).\n"
         "           Pairs with ``--doctor`` which checks deps BEFORE\n"
         "           boot. ``--deep`` adds live agent-loop turns.\n"
-        "  tray     Run the macOS menu-bar tray (foreground).\n"
         "  bench    Run a JROS benchmark — `jaeger bench run|timing`.\n"
         "\n"
         "Run ``jaeger`` with no subcommand to launch the in-process TUI"

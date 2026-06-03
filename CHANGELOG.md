@@ -5,6 +5,53 @@ understanding that pre-1.0 minor bumps may carry breaking changes.
 
 ## `0.2.6` — 2026-05-31
 
+### Late additions (2026-06-02 — final polish before ship)
+
+**Menu-bar tray removed.** The 0.2.0–0.2.6 tray (rumps + AppleScript
+shell-spawn for the TUI/voice surfaces) was a dead-end architecture
+— the operator's terminal env couldn't survive the AppleScript hop,
+patches kept stacking, and the rich-tui surface it landed in had
+its own bugs. Removed cleanly to keep 0.2.6 small and honest. **The
+0.3.0 release pivots to a Swift + SwiftUI native desktop app** (one
+process owns the tray icon + chat window + voice surface, talks to
+this daemon over the same Unix socket — Ollama Desktop's pattern),
+which unlocks AVAudioEngine for robust audio, retires the speexdsp
+dependency via built-in voice-processing AEC, and opens ANE access
+for CoreML-accelerated Whisper (2–3× faster). See
+[`dev_docs/odysseus_review_and_0.3.0_plan.md`](dev_docs/odysseus_review_and_0.3.0_plan.md)
+for the full pivot.
+
+`./run.sh tray` now prints a clear removal notice + points operators
+at the working TUI surfaces:
+
+- `./run.sh --instance NAME` — standalone in-process TUI
+- `./run.sh attach --instance NAME` — daemon-attached, line mode
+- `./run.sh rich-tui --instance NAME` — daemon-attached, rich UI
+
+**Other late polish:**
+
+- `interfaces/tray/` module + 3 tray tests deleted; `tray` /
+  `--tray` / `--no-tray` flags + `_cmd_tray` / `_cmd_tray_argv` /
+  `_want_tray` / `_spawn_tray` helpers stripped from
+  `daemon/cli.py`.
+- `interfaces/rich_tui/app.py` — fixed an ANSI+ANSI crash on the
+  first prompt render (`message=lambda: a + b` → `merge_formatted_text`)
+  and added a 5-attempt retry to the `chat.subscribe` subscriber so
+  it survives the daemon's ~5s boot window instead of bailing on
+  the first "unknown op" reply.
+- Documentation: agent contract moved from `docs/agent_contract.md`
+  to `jaeger_os/docs/agent_contract.md` (framework-internal material
+  belongs with the package). Fixed two stale 0.2.2-layout paths in
+  `dev_scripts/generate_agent_contract.py` that would have re-bitrotted
+  on the next regeneration. New dev_docs: `odysseus_review_and_0.3.0_plan.md`
+  (Swift pivot) and `skill_sharing_pipeline.md` (proposed 0.3.0
+  runtime-tier skill-sharing model — agent → shared → official).
+- Landing site shipped on a `gh-pages` orphan branch
+  (`https://jenkinsrobotics.github.io/JROS/` after Pages settings
+  point at the branch).
+
+---
+
 **Layout unification + wizard polish.** The biggest single release
 since the 0.2.3 distribution overhaul. Two sibling directories at
 the install root:

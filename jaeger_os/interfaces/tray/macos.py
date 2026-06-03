@@ -51,6 +51,32 @@ def _repo_root() -> Path:
     return Path(__file__).resolve().parents[3]
 
 
+def _shell_env_prefix() -> str:
+    """Build a ``KEY=value KEY=value `` prefix string for AppleScript
+    ``do script`` commands so the spawned Terminal carries our context.
+
+    Terminal.app's AppleScript ``do script`` opens a brand-new login
+    shell that DOES NOT inherit our environment (macOS isolates it).
+    Without this, a sandbox-flavored tray would open a parent-flavored
+    TUI: the spawned shell wouldn't see ``JAEGER_HOME`` and would
+    resolve ``--instance NAME`` against the parent install's empty
+    state, firing the setup wizard instead of attaching to the running
+    sandbox instance.
+
+    Only forward variables we *deliberately* set (JAEGER_HOME /
+    JAEGER_INSTANCE_NAME). PATH / HOME / etc. come from the user's
+    shell profile in the new Terminal; leave them alone."""
+    forwarded = []
+    for var in ("JAEGER_HOME", "JAEGER_INSTANCE_NAME"):
+        val = os.environ.get(var)
+        if val:
+            # POSIX-safe escape — single-quote and double up any '
+            # in the value so spaces and odd chars survive the shell.
+            escaped = "'" + val.replace("'", "'\"'\"'") + "'"
+            forwarded.append(f"{var}={escaped}")
+    return (" ".join(forwarded) + " ") if forwarded else ""
+
+
 def _jaeger_executable() -> list[str]:
     """How to spawn the JROS CLI from a GUI subprocess.
 
@@ -180,7 +206,11 @@ def _make_actions(instance: str | None) -> TrayActions:
         # (Phase 2 wires it). Until then, ``jaeger`` standalone is the
         # in-process TUI — same agent, fresh process. We use the same
         # command in both cases; the binary picks the right path.
-        cmd = " ".join(jaeger + (["--instance", instance] if instance else []))
+        # Prefix JAEGER_HOME etc. so a sandbox-flavored tray launches a
+        # sandbox-flavored TUI (see _shell_env_prefix).
+        cmd = _shell_env_prefix() + " ".join(
+            jaeger + (["--instance", instance] if instance else [])
+        )
         _open_terminal_running(cmd)
 
     def open_voice() -> None:
@@ -211,7 +241,7 @@ def _make_actions(instance: str | None) -> TrayActions:
         if _daemon_socket_present_for(instance):
             extra.append("--attach")
         cmd = (
-            f"cd {repo} && PYTHONPATH={repo} "
+            f"cd {repo} && {_shell_env_prefix()}PYTHONPATH={repo} "
             f"{py} -m jaeger_os.plugins.voice_loop"
             + ("" if not extra else " " + " ".join(extra))
         )

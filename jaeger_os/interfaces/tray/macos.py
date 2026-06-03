@@ -202,17 +202,19 @@ def _make_actions(instance: str | None) -> TrayActions:
         if _existing_tui_pid_for(instance) is not None:
             _activate_terminal()
             return
-        # When the daemon is up, the right verb is ``jaeger attach``
-        # — a standalone ``./run.sh --instance NAME`` tries to boot a
+        # When the daemon is up, the right verb is ``jaeger rich-tui``
+        # — the daemon-attached Rich UI. NOT ``jaeger attach``, which
+        # is the headless streaming client (a line-mode pipe surface
+        # for scripts, not what a user clicking "Open TUI" expects).
+        # Standalone ``./run.sh --instance NAME`` would try to boot a
         # SECOND in-process LLM for the same instance, which the
-        # per-instance file lock correctly refuses. Mirror the choice
-        # ``open_voice`` already makes: auto-attach when the socket
-        # is present, fall through to standalone otherwise.
+        # per-instance file lock correctly refuses — so we MUST use
+        # the daemon-attached path when the socket is present.
         # Prefix JAEGER_HOME etc. so a sandbox-flavored tray launches a
         # sandbox-flavored TUI (see _shell_env_prefix).
         parts = list(jaeger)
         if _daemon_socket_present_for(instance):
-            parts.append("attach")
+            parts.append("rich-tui")
         if instance:
             parts += ["--instance", instance]
         cmd = _shell_env_prefix() + " ".join(parts)

@@ -203,14 +203,19 @@ def _make_actions(instance: str | None) -> TrayActions:
             _activate_terminal()
             return
         # When the daemon is up, the right verb is ``jaeger attach``
-        # (Phase 2 wires it). Until then, ``jaeger`` standalone is the
-        # in-process TUI — same agent, fresh process. We use the same
-        # command in both cases; the binary picks the right path.
+        # — a standalone ``./run.sh --instance NAME`` tries to boot a
+        # SECOND in-process LLM for the same instance, which the
+        # per-instance file lock correctly refuses. Mirror the choice
+        # ``open_voice`` already makes: auto-attach when the socket
+        # is present, fall through to standalone otherwise.
         # Prefix JAEGER_HOME etc. so a sandbox-flavored tray launches a
         # sandbox-flavored TUI (see _shell_env_prefix).
-        cmd = _shell_env_prefix() + " ".join(
-            jaeger + (["--instance", instance] if instance else [])
-        )
+        parts = list(jaeger)
+        if _daemon_socket_present_for(instance):
+            parts.append("attach")
+        if instance:
+            parts += ["--instance", instance]
+        cmd = _shell_env_prefix() + " ".join(parts)
         _open_terminal_running(cmd)
 
     def open_voice() -> None:

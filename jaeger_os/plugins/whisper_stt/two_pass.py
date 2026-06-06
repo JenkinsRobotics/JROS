@@ -34,6 +34,7 @@ from ._base import (
     DEFAULT_WAKE_PHRASES,
     _MicStream,
     _find_wake_in_text,
+    is_non_speech_marker,
     _warm_stt,
 )
 
@@ -83,7 +84,18 @@ class _VadWorker(threading.Thread):
         self.on_speech_detected = None
         self._barge_fired = False
         # Exposed so the parent node can check whether speech is in progress
-        # before expiring the follow-up window.
+        # before expiring the follow-up window.  Two signals:
+        #   in_utterance — RAW VAD signal: True from the first speech
+        #                  frame until SILENCE_HANGOVER_MS of silence.
+        #                  Used by ``next_phrase`` to refuse to expire
+        #                  the follow-up window while ANY speech is
+        #                  in progress, even speech that hasn't yet
+        #                  crossed MIN_SPEECH_MS.  Catches utterances
+        #                  starting right at the deadline.
+        #   in_speech    — Confidence-gated: only True once we have
+        #                  ``min_speech_blocks`` of voice.  Kept for
+        #                  the barge-in path (sub-50 ms latency).
+        self.in_utterance = False
         self.in_speech = False
 
     def _is_speech(self, chunk: np.ndarray) -> bool:
@@ -130,7 +142,9 @@ class _VadWorker(threading.Thread):
             else:
                 pre_roll.append(chunk)
 
-            self.in_speech = in_speech and speech_blocks >= self.min_speech_blocks
+            # Publish both signals — see __init__ for the contract.
+            self.in_utterance = in_speech and silent_blocks < self.silence_blocks_to_end
+            self.in_speech = self.in_utterance and speech_blocks >= self.min_speech_blocks
 
             # Low-latency barge-in hook — fires once per phrase as soon
             # as we've seen `barge_in_blocks` of sustained voice. Lower
@@ -163,6 +177,7 @@ class _VadWorker(threading.Thread):
                 silent_blocks = 0
                 in_speech = False
                 self.in_speech = False
+                self.in_utterance = False
                 self._barge_fired = False
                 pre_roll.clear()
 
@@ -197,6 +212,8 @@ class WhisperSTTTwoPass:
         input_device: Any = None,
         aec: Any = None,
         far_end_buffer: Any = None,
+        audio_backend: str = "avaudio",
+        voice_processing: bool | None = None,
     ) -> None:
         from pywhispercpp.model import Model as STTModel
 
@@ -231,6 +248,8 @@ class WhisperSTTTwoPass:
             sample_rate=sample_rate, frame_samples=frame_samples,
             max_queue_frames=mic_queue_max_frames, device=input_device,
             aec=aec, far_end_buffer=far_end_buffer,
+            audio_backend=audio_backend,
+            voice_processing=voice_processing,
         )
         self._phrase_q: queue.Queue[tuple[np.ndarray, str]] = queue.Queue()
         self._stop = threading.Event()
@@ -272,9 +291,20 @@ class WhisperSTTTwoPass:
 
     @property
     def in_speech(self) -> bool:
-        """True when VAD says the user is actively speaking. Used by the
-        voice loop for barge-in detection."""
+        """True when VAD says the user is actively speaking (sustained
+        past MIN_SPEECH_MS).  Used by the voice loop for barge-in
+        detection."""
         return self._worker.in_speech
+
+    @property
+    def in_utterance(self) -> bool:
+        """RAW VAD signal — True from the first speech frame until
+        SILENCE_HANGOVER_MS of silence.  Used by ``next_phrase`` to
+        refuse to expire the follow-up window mid-utterance, even for
+        speech that hasn't yet crossed the MIN_SPEECH_MS confidence
+        threshold (catches utterances starting right at the deadline).
+        """
+        return self._worker.in_utterance
 
     def set_on_speech_detected(self, callback) -> None:
         """Install a callback fired by the VAD thread the moment sustained
@@ -303,26 +333,53 @@ class WhisperSTTTwoPass:
         """Block (up to `timeout` s) waiting for the next committed user
         phrase. Returns the transcript string, or None on timeout."""
         while not self._stop.is_set():
-            if (
-                self._state == "FOLLOWUP"
-                and time.time() > self._followup_deadline
-                and not self._worker.in_speech
-            ):
-                self._state = "WAKE"
-
             try:
                 audio, fast_text = self._phrase_q.get(timeout=timeout)
             except queue.Empty:
+                # No phrase pending — ONLY now is it safe to expire the
+                # follow-up window.  Doing it before ``get`` lost a race
+                # where ``_VadWorker`` finalized a phrase that straddled
+                # the deadline and we'd then misclassify it as WAKE-mode
+                # below.  Triple-guard so we also wait out any in-progress
+                # utterance (raw VAD signal) AND any final phrase that
+                # hasn't been popped off the queue yet.
+                if (
+                    self._state == "FOLLOWUP"
+                    and time.time() > self._followup_deadline
+                    and not self._worker.in_utterance
+                    and self._phrase_q.empty()
+                ):
+                    self._state = "WAKE"
                 return None
 
             command: str | None = None
 
+            # Whisper non-speech markers ([BLANK_AUDIO], (beep), (music), …)
+            # get dropped in modes where ANY transcribed phrase counts as
+            # a command — otherwise the agent burns a turn replying to its
+            # own playback tail or to a click.  Wake-required mode passes
+            # through unchanged because the wake matcher already rejects
+            # marker text.
+            if not self.require_wake_word or self._state == "FOLLOWUP":
+                if is_non_speech_marker(fast_text):
+                    print(f"[skipped — non-speech: {fast_text!r}]", flush=True)
+                    continue
+
             if not self.require_wake_word:
                 print(f"[heard]  {fast_text!r}", flush=True)
                 command = self._accurate_transcribe(audio).strip() or fast_text
+                # Re-check after accurate pass — markers can survive the
+                # fast pass and surface only on the accurate model.
+                if is_non_speech_marker(command):
+                    print(f"[skipped — non-speech: {command!r}]", flush=True)
+                    continue
             elif self._state == "FOLLOWUP":
                 print(f"[heard]  {fast_text!r}", flush=True)
                 command = self._accurate_transcribe(audio).strip() or fast_text
+                if is_non_speech_marker(command):
+                    print(f"[follow-up skipped — non-speech: {command!r}]",
+                          flush=True)
+                    continue
                 print(f"[follow-up] {command!r}", flush=True)
             else:
                 matched, remainder = self._find_wake(fast_text)

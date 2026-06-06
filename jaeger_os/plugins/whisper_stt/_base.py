@@ -37,6 +37,41 @@ def _normalize(text: str) -> str:
     return re.sub(r"[^a-z0-9 ]+", " ", text.lower()).strip()
 
 
+# Whisper-emitted non-speech markers we want to suppress in modes
+# where any transcribed phrase counts as a command (follow-up window,
+# no-wake-word mode).  Stored as the *inner* token (no brackets) — the
+# wrapper is stripped before checking so the same set works whether
+# Whisper transcribes "[BLANK_AUDIO]" or bare "blank_audio".  Real
+# wrapped responses like "(yes)" or "[no]" pass through to the LLM as
+# legitimate commands.
+_NON_SPEECH_MARKERS = frozenset({
+    "blank_audio", "no_speech", "beep", "beeping",
+    "music", "applause", "laughter", "sigh", "sniff",
+    "breathing", "background noise", "silence",
+})
+_WRAPPED_MARKER_RE = re.compile(r"^\s*[\[\(]([^\]\)]{1,40})[\]\)]\s*[.!,?]*\s*$")
+
+
+def is_non_speech_marker(text: str) -> bool:
+    """True if Whisper transcribed silence / noise rather than real
+    speech.
+
+    Strips bracket/paren wrappers (if present) and matches the inner
+    token against the known-marker allowlist.  Free text and wrapped
+    real words like "(yes)" / "[no]" are treated as legitimate
+    commands.  Empty / whitespace input is also non-speech.
+    """
+    s = (text or "").strip()
+    if not s:
+        return True
+    m = _WRAPPED_MARKER_RE.match(s)
+    if m:
+        inner = m.group(1).lower().strip(".!?, ")
+        return inner in _NON_SPEECH_MARKERS
+    lowered = s.lower().strip(".!?, ")
+    return lowered in _NON_SPEECH_MARKERS
+
+
 def _find_wake_in_text(
     text: str,
     wake_phrases: tuple[str, ...],
@@ -121,15 +156,59 @@ class _MicStream:
         device: Any = None,
         aec: Any = None,
         far_end_buffer: Any = None,
+        audio_backend: str = "avaudio",
+        voice_processing: bool | None = None,
     ) -> None:
-        import sounddevice as sd  # deferred — plugin owns the import
-
         self.sample_rate = sample_rate
         self.frame_samples = frame_samples
         self.q: queue.Queue[np.ndarray] = queue.Queue(maxsize=max_queue_frames)
         self.paused = False
         self.aec = aec
         self.far_end_buffer = far_end_buffer
+        self.audio_backend = audio_backend
+
+        # 0.3.0: prefer AVAudioEngine via the avaudio_io bridge — kills
+        # the PortAudio wedging bug class on macOS.  Falls back to
+        # sounddevice transparently when the bridge can't load (non-
+        # macOS, missing pyobjc-framework-AVFoundation, etc.) or when
+        # the operator explicitly asks for the portaudio path via
+        # ``--audio-backend portaudio``.
+        if audio_backend == "avaudio":
+            # Resolve the voice_processing default:
+            #   • Operator-supplied value wins, always (None → auto).
+            #   • Speexdsp AEC wired → voice_processing OFF so the
+            #     operator's pipeline sees raw samples.  Stacking two
+            #     AECs would double-cancel + add latency.
+            #   • Otherwise → voice_processing ON.  Apple's pre-canned
+            #     pipeline (AEC + NS + AGC) is what FaceTime uses, runs
+            #     for free on macOS, and was validated in
+            #     dev_tools/audio_smoke/voice_assistant_avaudio.py
+            #     as the fix for agent-
+            #     hears-itself when the mic stays open during TTS.
+            #     Mic-pause mode also benefits (NS + AGC improve
+            #     Whisper accuracy in noisy rooms).
+            if voice_processing is None:
+                voice_processing = aec is None
+            try:
+                from jaeger_os.plugins.avaudio_io import InputStream as _AVInputStream
+                self._stream = _AVInputStream(
+                    samplerate=sample_rate,
+                    channels=1,
+                    dtype="float32",
+                    blocksize=frame_samples,
+                    callback=self._cb,
+                    voice_processing=voice_processing,
+                )
+                if voice_processing:
+                    print("[mic] avaudio voice_processing=on "
+                          "(Apple-native AEC + NS + AGC)",
+                          flush=True)
+                return
+            except Exception as exc:  # noqa: BLE001
+                print(f"[mic] avaudio backend unavailable ({exc}); "
+                      "falling back to sounddevice", file=sys.stderr, flush=True)
+
+        import sounddevice as sd  # deferred — plugin owns the import
         self._stream = sd.InputStream(
             device=device,
             samplerate=sample_rate,

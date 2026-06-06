@@ -46,6 +46,7 @@ from ._base import (
     DEFAULT_WAKE_PHRASES,
     _MicStream,
     _find_wake_in_text,
+    is_non_speech_marker,
     _normalize,
     _warm_stt,
 )
@@ -81,6 +82,8 @@ class WhisperSTTContinuous:
         input_device: Any = None,
         aec: Any = None,
         far_end_buffer: Any = None,
+        audio_backend: str = "avaudio",
+        voice_processing: bool | None = None,
     ) -> None:
         from pywhispercpp.model import Model as STTModel
 
@@ -115,6 +118,8 @@ class WhisperSTTContinuous:
             sample_rate=sample_rate, frame_samples=self._frame_samples,
             max_queue_frames=mic_queue_max_frames, device=input_device,
             aec=aec, far_end_buffer=far_end_buffer,
+            audio_backend=audio_backend,
+            voice_processing=voice_processing,
         )
 
         self._stop = threading.Event()
@@ -126,6 +131,13 @@ class WhisperSTTContinuous:
         self._current_text = ""
         self._last_committed_text = ""
         self._in_speech = False
+        # Wall-clock time the current phrase opened (first energy frame
+        # of a new utterance).  Snapshotted so ``_commit`` can tell
+        # whether a phrase that ends AFTER the follow-up deadline began
+        # INSIDE the window — if the user started speaking before the
+        # deadline they shouldn't be punished by a slow tail.  Reset
+        # to 0 between phrases.
+        self._phrase_started_at = 0.0
 
         self._state = "WAKE"  # "WAKE" | "FOLLOWUP"
         self._followup_deadline = 0.0
@@ -165,6 +177,15 @@ class WhisperSTTContinuous:
     def in_speech(self) -> bool:
         """True when an unclosed phrase is buffered. Used by the voice loop
         for barge-in detection."""
+        return self._in_speech
+
+    @property
+    def in_utterance(self) -> bool:
+        """RAW signal — True from the first energy frame until the
+        phrase closes.  For continuous mode this is identical to
+        ``in_speech`` (energy-based segmentation has no separate
+        confidence stage); kept as a property so call sites can use
+        the same API across two_pass and continuous."""
         return self._in_speech
 
     def set_on_speech_detected(self, callback) -> None:
@@ -246,15 +267,22 @@ class WhisperSTTContinuous:
                 rms = float(np.sqrt(np.mean(np.square(mono)))) if mono.size else 0.0
                 if rms >= self.energy_threshold:
                     self._last_activity = time.monotonic()
-                    if not self._in_speech and self._on_speech_detected is not None \
-                            and not self._speech_hook_fired:
-                        # First energy crossing of this phrase — fire
-                        # barge-in callback before any transcription work.
-                        self._speech_hook_fired = True
-                        try:
-                            self._on_speech_detected()
-                        except Exception:
-                            pass
+                    if not self._in_speech:
+                        # Phrase opening — snapshot the wall-clock time
+                        # so ``_commit`` can tell whether this phrase
+                        # began inside the follow-up window even if it
+                        # closes after the deadline.
+                        self._phrase_started_at = time.time()
+                        if self._on_speech_detected is not None \
+                                and not self._speech_hook_fired:
+                            # First energy crossing of this phrase —
+                            # fire barge-in callback before any
+                            # transcription work.
+                            self._speech_hook_fired = True
+                            try:
+                                self._on_speech_detected()
+                            except Exception:
+                                pass
                     self._in_speech = True
         except queue.Empty:
             return
@@ -298,6 +326,11 @@ class WhisperSTTContinuous:
         )
 
     def _close_phrase(self) -> None:
+        # Snapshot the open time before we reset the per-phrase state,
+        # so ``_commit`` can decide the follow-up gate based on when
+        # the phrase BEGAN, not when it ended.
+        phrase_started_at = self._phrase_started_at
+
         audio = self._current_phrase_audio()
         text = self._transcribe(audio) if audio is not None else self._current_text
         text = (text or "").strip()
@@ -306,15 +339,41 @@ class WhisperSTTContinuous:
         self._in_speech = False
         # Re-arm the barge-in hook for the next phrase.
         self._speech_hook_fired = False
+        self._phrase_started_at = 0.0
         if not text:
             return
         if SequenceMatcher(None, text, self._last_committed_text).ratio() \
                 >= self.duplicate_similarity:
             return
         self._last_committed_text = text
-        self._commit(text)
+        self._commit(text, phrase_started_at=phrase_started_at)
 
-    def _commit(self, text: str) -> None:
+    def _commit(self, text: str, *, phrase_started_at: float = 0.0) -> None:
+        # Phrase qualifies as a follow-up if it ended in window OR if
+        # it BEGAN in window.  The "began in window" branch closes the
+        # commit-time race demos surfaced — without it, a phrase that
+        # straddles the deadline (user spoke at t=9s with a 10 s
+        # window, phrase commits at t=11 s) gets misclassified as
+        # WAKE-mode and rejected even though the user was clearly
+        # still in conversation.
+        in_followup_window = self._state == "FOLLOWUP" and (
+            time.time() <= self._followup_deadline
+            or (
+                phrase_started_at > 0
+                and phrase_started_at <= self._followup_deadline
+            )
+        )
+
+        # Drop Whisper non-speech markers ([BLANK_AUDIO], (beep), …) in
+        # modes where ANY committed phrase counts as a command, so the
+        # agent doesn't burn a turn replying to its own playback tail
+        # or to a click.  Wake-word mode passes through unchanged — the
+        # wake matcher already rejects marker text downstream.
+        marker_drop = not self.require_wake_word or in_followup_window
+        if marker_drop and is_non_speech_marker(text):
+            print(f"[skipped — non-speech: {text!r}]", flush=True)
+            return
+
         # ``require_wake_word`` off → every committed phrase is a turn.
         # The legacy ``[heard]`` line stays so existing logs / tests
         # don't change shape.
@@ -324,7 +383,7 @@ class WhisperSTTContinuous:
             return
         # In the follow-up window the previous turn already gated the
         # mic; this phrase rides through without a wake word.
-        if self._state == "FOLLOWUP" and time.time() <= self._followup_deadline:
+        if in_followup_window:
             print(f"[follow-up]  {text!r}", flush=True)
             self._state = "WAKE"
             self._committed_q.put(text)

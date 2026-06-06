@@ -9,6 +9,18 @@ raise. The real engines are exercised in
 
 from __future__ import annotations
 
+# Self-bootstrap: when the skill loader invokes this file as a
+# subprocess (`python smoke_test.py`), CWD is the skill folder and
+# the repo root may not be on ``sys.path``.  Walk four parents up
+# (tests/ → macos_computer_v1/ → skills/ → jaeger_os/ → repo root)
+# and prepend it so the ``from jaeger_os.skills...`` imports below
+# resolve.
+import os.path as _osp
+import sys as _sys
+_REPO = _osp.dirname(_osp.dirname(_osp.dirname(_osp.dirname(_osp.dirname(_osp.abspath(__file__))))))
+if _REPO not in _sys.path:
+    _sys.path.insert(0, _REPO)
+
 
 def main() -> int:
     # Engine imports — every tier must load even when its runtime

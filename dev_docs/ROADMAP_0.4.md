@@ -251,8 +251,47 @@ code path for nodes-as-threads OR nodes-as-processes.
 
 ---
 
-## Library review queue (operator drops in)
+## Library review queue
 
-| Lib | Pattern to evaluate | Notes |
-|---|---|---|
-| _(operator to fill)_ | _(operator to fill)_ | _(operator to fill)_ |
+Detailed reviews live under `dev_docs/library_review/<name>.md`.
+This table is the index + the absorption verdict.
+
+| Lib | Reviewed | Verdict | Use it for |
+|---|---|---|---|
+| **JP01_Firmware** | [`jp01_firmware.md`](library_review/jp01_firmware.md) | **Absorb as Track C spec source** | Board layout truth (JP01-VCC01 / AVC01 / MC01 / CC01), motor + LED serial protocols, blackbox_logger pattern, ReactPy web UI alignment |
+| **VoiceLLM** | [`voicellm.md`](library_review/voicellm.md) | **Absorb three patterns into Track A** | Single-process Bus (verbatim, ~30 lines), LLM-gated speech (`<ignore>`/`<reply>`), explicit orchestrator FSM, optional mlx-lm backend |
+
+## Correction to the architecture diagram
+
+The original diagram in this doc had the board mapping inverted.  Per
+JP01_Firmware's actual controller layout:
+
+  - **JP01-AVC01 (Teensy)** runs the audio + LED matrix (`.ino`,
+    `NeoPixelHandler.h`, `LedMatrixHandler.h`).
+  - **JP01-MC01 (ESP32)** runs the motors + sensors.
+  - **JP01-VCC01 (Jetson Orin)** runs vision/AI/PC interface (YOLOv8,
+    dual CSI cams, Flask web).
+  - **JP01-CC01** — fourth controller, role TBD (likely the central
+    coordinator / power management).
+
+Topic-to-node mapping for Track C should use these names so JROS
+nodes line up 1:1 with the firmware controllers.
+
+## What ELSE the operator might want to add
+
+Based on the trajectory (JP01_Firmware = hardware, VoiceLLM = voice
+loop, JROS = brain), candidates that would complete the picture:
+
+  - **Lilith-AI** (under `/Users/jonathanjenkins/GITHUB/Lilith-AI/`) —
+    the JROS test agent.  Worth reviewing for the operator-side
+    persona + skill bundles already developed.  Not a code-pattern
+    contributor — more a "what does a fielded JROS agent's instance
+    bundle actually look like" reference.
+  - **Hermes** (under `/Users/jonathanjenkins/GITHUB/Hermes/`) — the
+    operator's earlier cloud-agentic framework.  Already informed the
+    JROS install pattern (clone+venv, not pip).  Worth a formal
+    review for: the supervisor.py restart-on-crash pattern (port to
+    Track D), the cloud-LLM provider abstraction (defer to 0.5).
+
+Operator says NO to those, or wants to add new ones, this section
+gets struck and the new entries land below.

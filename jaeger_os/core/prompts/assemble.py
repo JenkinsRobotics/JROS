@@ -113,6 +113,17 @@ def assemble_prompt(
     parts.append(OPERATING_DISCIPLINE.strip())
     parts.append(TOOL_USAGE_RULES.strip())
 
+    # Voice-mode LLM gate (opt-in via ``config.voice.llm_gate``).
+    # ``voice_loop.py`` exports JAEGER_VOICE_GATE=1 at boot when the
+    # config flag is on; we read the env var here so the prompt
+    # assembler doesn't have to depend on the voice config schema.
+    # Sub-agents skip — they speak through the agent surface, not the
+    # mic.
+    import os as _os
+    if mode != "subagent" and _os.environ.get("JAEGER_VOICE_GATE") == "1":
+        from .rules import VOICE_LLM_GATE_RULE
+        parts.append(VOICE_LLM_GATE_RULE.strip())
+
     # Skill index — sub-agents don't need it (they were given a
     # specific task; ranging across the skill library would expand
     # scope). Every other mode benefits from knowing what playbooks

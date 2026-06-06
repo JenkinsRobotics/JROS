@@ -19,9 +19,10 @@ we:
      run dropped for us.
   4. Restore the original config at the end (always, via try/finally).
 
-Results land in ``benchmark/sweep/RESULTS_<timestamp>.md`` plus a
+Results land in ``dev_benchmark/sweep/RESULTS_<timestamp>.md`` plus a
 ``sweep_rows.jsonl`` with per-model totals so a future script can plot
-trends.
+trends.  (Was ``benchmark/sweep/`` until 0.3.0 fixed the aggregator
+mismatch — see ``jaeger_os/daemon/bench_history_verb.py``.)
 
 The driver is deliberately dumb — it doesn't try to be clever about
 parallelism or hot-swapping. Each model loads from cold; one process at
@@ -81,7 +82,7 @@ def _resolve_active_config_path() -> pathlib.Path:
 # Resolved once at module load — the subprocess inherits this script's
 # env, so the path it reads from is the same one we edit here.
 DEFAULT_INSTANCE_CFG = _resolve_active_config_path()
-SWEEP_DIR = REPO / "benchmark" / "sweep"
+SWEEP_DIR = REPO / "dev_benchmark" / "sweep"
 
 
 @dataclass
@@ -331,7 +332,7 @@ def run_one(model_path: str, *, level: int) -> ModelResult:
         except ValueError:
             _model_timeout = 7200.0
         proc = subprocess.run(
-            [sys.executable, str(REPO / "benchmark" / "run_flat_bench.py"),
+            [sys.executable, str(REPO / "dev_benchmark" / "run_flat_bench.py"),
              "--no-warmup", *extra_args],
             cwd=str(REPO),
             env=env,
@@ -371,7 +372,7 @@ def run_one(model_path: str, *, level: int) -> ModelResult:
     tps = 0.0
     tps_source = "n/a"
     try:
-        flat_root = REPO / "benchmark" / "flat" / name
+        flat_root = REPO / "dev_benchmark" / "flat" / name
         if flat_root.is_dir():
             run_dirs = sorted(
                 (d for d in flat_root.iterdir() if d.is_dir()),

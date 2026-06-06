@@ -166,14 +166,21 @@ def main() -> int:
     except Exception:  # noqa: BLE001 — metadata, never block a bench
         pass
 
-    # Per-model nesting under benchmark/flat/<model>/<ts>/. Each
+    # Per-model nesting under dev_benchmark/flat/<model>/<ts>/. Each
     # artifact ALSO carries ``<model>-<ts>`` in its filename — so a
     # file copied / shared out of context still self-identifies. The
     # generic ``rows.jsonl`` / ``summary.json`` names of the original
     # layout were undescriptive once moved; the prefix fixes that.
     # ``unknown`` collects runs where the config didn't expose a
     # model_path (rare; usually a misconfigured boot).
-    out_dir = _REPO / "benchmark" / "flat" / model_name / ts
+    #
+    # 0.3.0: was ``benchmark/flat/<model>/<ts>/`` until
+    # ``jaeger_os.daemon.bench_history_verb`` (the aggregator that
+    # builds ``dev_benchmark/HISTORY.md``) was found to read from
+    # ``dev_benchmark/flat/`` while writers landed under
+    # ``benchmark/flat/``.  Writers now match the reader so every
+    # bench surfaces on the leaderboard automatically.
+    out_dir = _REPO / "dev_benchmark" / "flat" / model_name / ts
     out_dir.mkdir(parents=True, exist_ok=True)
     prefix = f"{model_name}-{ts}"
     rows_path = out_dir / f"{prefix}-rows.jsonl"

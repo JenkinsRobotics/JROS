@@ -1,10 +1,11 @@
 """``jaeger bench history`` — rolling leaderboard across every bench run.
 
-Each bench run today writes a fresh artifact (``benchmark/flat/<ts>/``
-for single-model runs, ``benchmark/sweep/RESULTS_<ts>.md`` and
-``sweep_rows.jsonl`` for multi-model sweeps). Nothing aggregates them —
-"what's the best model on this machine?" requires walking the
-directory tree and reading each file.
+Each bench run today writes a fresh artifact
+(``dev_benchmark/flat/<model>/<ts>/`` for single-model runs,
+``dev_benchmark/sweep/RESULTS_<ts>.md`` and ``sweep_rows.jsonl`` for
+multi-model sweeps). Nothing aggregates them — "what's the best model
+on this machine?" requires walking the directory tree and reading
+each file.
 
 This verb fixes that. It scans the bench history, attributes results
 to models, and renders a leaderboard sorted by best routing accuracy.
@@ -15,12 +16,21 @@ Two output modes:
 
 Data sources (skipped silently when missing):
 
-  * ``benchmark/sweep/sweep_rows.jsonl`` — one row per per-model sweep
-    invocation. Older format from before the metrics block existed.
-  * ``benchmark/flat/<ts>/summary.json`` — modern per-run summaries.
-    Now stamped with ``model_name`` / ``model_path`` (added 2026-05-27).
-    Older summaries land in the "unknown model" bucket — call those
-    out with a count so the user can re-run them if it matters.
+  * ``dev_benchmark/sweep/sweep_rows.jsonl`` — one row per per-model
+    sweep invocation. Older format from before the metrics block
+    existed.
+  * ``dev_benchmark/flat/<model>/<ts>/summary.json`` — modern per-run
+    summaries.  Now stamped with ``model_name`` / ``model_path``
+    (added 2026-05-27).  Older summaries land in the "unknown model"
+    bucket — call those out with a count so the user can re-run them
+    if it matters.
+
+0.3.0 note: the writer-side scripts used to land artifacts under
+``benchmark/...`` while this verb read from ``dev_benchmark/...``,
+so fresh runs silently dropped off the leaderboard.  The writers
+(``dev_benchmark/run_flat_bench.py`` + ``run_model_sweep.py``) were
+fixed to match this verb's read path; the comment trail there
+remembers the migration.
 
 We do not parse the rendered ``RESULTS_*.md`` files — the JSONL +
 JSON sources have everything the markdown does and more.
@@ -185,7 +195,7 @@ def render_history_md(
     ``include_uninstalled``: by default the leaderboard filters out
     entries for models that aren't on disk anymore (deleted from the
     LM Studio cache). The historical data is preserved in
-    ``benchmark/flat/`` and ``sweep_rows.jsonl``; set this true to
+    ``dev_benchmark/flat/`` and ``sweep_rows.jsonl``; set this true to
     include it in the rendered report."""
     entries = list(_collect_entries(repo))
     # ``since=None`` is the CLI's ``--all`` mode: show every run
@@ -296,7 +306,7 @@ def _collect_entries(repo: pathlib.Path) -> Iterable[dict[str, Any]]:
 
     Dedup rule: ``sweep_rows.jsonl`` is a per-model log line written by
     ``run_model_sweep.py`` after each model finishes a sweep. It's a
-    strict subset of the matching ``benchmark/flat/<model>/<ts>/
+    strict subset of the matching ``dev_benchmark/flat/<model>/<ts>/
     summary.json`` — same scoring numbers, but no ``thinking_mode``
     field and no per-case detail. Without dedup, the same run shows
     up twice in the leaderboard: once bucketed as ``(model, default)``
@@ -316,7 +326,7 @@ def _collect_entries(repo: pathlib.Path) -> Iterable[dict[str, Any]]:
 
 
 def _from_sweep_jsonl(repo: pathlib.Path) -> Iterable[dict[str, Any]]:
-    """Older format. ``benchmark/sweep/sweep_rows.jsonl`` is one
+    """Older format. ``dev_benchmark/sweep/sweep_rows.jsonl`` is one
     JSON-per-line of ``ModelResult`` dataclasses, written by
     ``run_model_sweep.py`` after each model finishes."""
     path = repo / "dev_benchmark" / "sweep" / "sweep_rows.jsonl"
@@ -362,20 +372,20 @@ def _from_sweep_jsonl(repo: pathlib.Path) -> Iterable[dict[str, Any]]:
                     "tokens_per_sec": 0.0,
                     "tokens_source": "n/a",
                     "cases": cases,
-                    "run_dir": "benchmark/sweep/",
+                    "run_dir": "dev_benchmark/sweep/",
                 }
     except OSError:
         return
 
 
 def _from_flat_summaries(repo: pathlib.Path) -> Iterable[dict[str, Any]]:
-    """Walk ``benchmark/flat/`` for per-run summaries.
+    """Walk ``dev_benchmark/flat/`` for per-run summaries.
 
     Two layouts supported because we restructured the tree
     2026-05-27 to nest by model:
 
-      * NEW: ``benchmark/flat/<model>/<ts>/summary.json``
-      * OLD: ``benchmark/flat/<ts>/summary.json`` (timestamp-only,
+      * NEW: ``dev_benchmark/flat/<model>/<ts>/summary.json``
+      * OLD: ``dev_benchmark/flat/<ts>/summary.json`` (timestamp-only,
         pre-restructure — these always land in the "unknown" bucket
         since model attribution was added at the same time as
         nesting).
@@ -1204,13 +1214,13 @@ def _render(
             f" Filtered out **{len(hidden_orphans)}** entr"
             f"{'y' if len(hidden_orphans) == 1 else 'ies'} for "
             "models no longer on disk — historical data preserved in "
-            "``benchmark/flat/``."
+            "``dev_benchmark/flat/``."
         )
     lines = [
         "# Jaeger-OS bench history",
         "",
         f"_Generated {now_iso} from {total_entries} run(s) across "
-        f"`benchmark/sweep/` and `benchmark/flat/` — showing "
+        f"`dev_benchmark/sweep/` and `dev_benchmark/flat/` — showing "
         f"{window}.{orphan_note}_",
         "",
         f"**Bench corpus version: {_CURRENT_BENCH_VERSION}** (cutoff "

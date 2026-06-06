@@ -434,7 +434,21 @@ class KokoroTTS:
         # Signal end-of-message and block until the audio thread has
         # actually played everything we enqueued.
         player.mark_end()
-        player.wait_until_drained()
+        if not player.wait_until_drained():
+            try:
+                player.reset()
+            except Exception:  # noqa: BLE001
+                try:
+                    player.close()
+                except Exception:  # noqa: BLE001
+                    pass
+                self._player = None
+            return {
+                "spoken": False,
+                "reason": "drain timeout",
+                "text": cleaned,
+                "samples": queued_samples,
+            }
 
         return {
             "spoken": True,

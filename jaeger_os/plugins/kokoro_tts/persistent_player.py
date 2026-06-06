@@ -343,6 +343,37 @@ class PersistentKokoroPlayer:
             self._q.queue.clear()
         self._drained.set()
 
+    def reset(self) -> None:
+        """Flush queued audio and repair drain accounting.
+
+        Used after a drain timeout.  The sounddevice stream stays open
+        and resumes outputting silence from its callback.  The AVAudio
+        player node is stopped to flush scheduled buffers, then re-armed
+        with ``play()`` so the next enqueue can schedule cleanly without
+        cycling the engine.
+        """
+        if self.backend == "avaudio":
+            if self._player is not None:
+                try:
+                    self._player.stop()
+                except Exception:  # noqa: BLE001
+                    pass
+            with self._drain_lock:
+                self._pending_callbacks.clear()
+                self._drained_count = self._scheduled_count
+                self._drained.set()
+            if self._player is not None:
+                try:
+                    self._player.play()
+                except Exception:  # noqa: BLE001
+                    pass
+            return
+
+        self._current = np.zeros(0, dtype=np.float32)
+        with self._q.mutex:
+            self._q.queue.clear()
+        self._drained.set()
+
     def is_open(self) -> bool:
         if self.backend == "avaudio":
             return bool(self._running and self._engine is not None

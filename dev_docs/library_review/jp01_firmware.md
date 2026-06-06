@@ -24,12 +24,23 @@ The repo organises one controller per directory under `controllers/`:
 | **JP01-VCC01** | Jetson Orin | Vision / AI / Central Compute / PC interface |
 | **JP01-AVC01** | Teensy 4.x | Audio / Video / LED matrix (`.ino` firmware) |
 | **JP01-MC01** | ESP32 | Motion controller (motors + sensors) |
-| **JP01-CC01** | TBD | (fourth controller — purpose to confirm) |
+| **JP01-CC01** | (host PC, today a Mac) | Operator-facing manual Python UI: connect to + control individual components.  **0.4 deliverable: JROS REPLACES CC01.**  The Mac running JROS becomes the new Central Computer; what was a manual control panel becomes an autonomous agent that drives the other three boards via the same serial / network protocols CC01 already speaks. |
 
 **Important correction to my earlier 0.4 roadmap:** I had Teensy as
 motors and ESP32 as LEDs.  JP01 actually does the opposite — **Teensy
 runs the audio/LED stack, ESP32 runs the motors.**  Fixed in the
 roadmap library-queue update.
+
+**On CC01 specifically:** confirmed by the operator that JP01-CC01
+is currently a manual Python UI an operator runs on a host PC to
+connect to + control individual components.  JROS on the Mac is the
+intended replacement — same role (central computer + operator-
+facing surface) but with autonomous agentic control.  This means
+Track C's hardware-adapter nodes don't just talk to MC01/AVC01/VCC01
+— they collectively SUPERSEDE CC01.  The CC01 codebase is therefore
+also a reference for the current operator-control vocabulary the
+JROS surface should support (per-component connect/control
+operations).
 
 ## Patterns to absorb into JROS 0.4
 

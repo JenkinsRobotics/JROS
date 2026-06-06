@@ -264,34 +264,59 @@ This table is the index + the absorption verdict.
 ## Correction to the architecture diagram
 
 The original diagram in this doc had the board mapping inverted.  Per
-JP01_Firmware's actual controller layout:
+JP01_Firmware's actual controller layout (confirmed by the operator
+2026-06-06):
 
   - **JP01-AVC01 (Teensy)** runs the audio + LED matrix (`.ino`,
     `NeoPixelHandler.h`, `LedMatrixHandler.h`).
   - **JP01-MC01 (ESP32)** runs the motors + sensors.
   - **JP01-VCC01 (Jetson Orin)** runs vision/AI/PC interface (YOLOv8,
     dual CSI cams, Flask web).
-  - **JP01-CC01** — fourth controller, role TBD (likely the central
-    coordinator / power management).
+  - **JP01-CC01** — the host-PC operator UI (currently a manual
+    Python tool the operator runs to connect to + control individual
+    components).  **JROS on the Mac REPLACES CC01.**  Same role
+    (central computer + operator surface), but with autonomous
+    agentic control instead of manual driving.  This is the headline
+    deliverable that 0.4 enables on real hardware.
 
 Topic-to-node mapping for Track C should use these names so JROS
 nodes line up 1:1 with the firmware controllers.
 
-## What ELSE the operator might want to add
+## Library inventory decisions
 
-Based on the trajectory (JP01_Firmware = hardware, VoiceLLM = voice
-loop, JROS = brain), candidates that would complete the picture:
+  - **Lilith-AI** — operator says SKIP.  It's a JROS implementation
+    that hasn't tracked JROS itself, so reviewing it would teach us
+    things we already know.  Will be updated downstream once JROS
+    stabilises.
+  - **Hermes** — already informed the JROS install pattern; no fresh
+    review needed unless Track D wants to port `supervisor.py`
+    verbatim.
 
-  - **Lilith-AI** (under `/Users/jonathanjenkins/GITHUB/Lilith-AI/`) —
-    the JROS test agent.  Worth reviewing for the operator-side
-    persona + skill bundles already developed.  Not a code-pattern
-    contributor — more a "what does a fielded JROS agent's instance
-    bundle actually look like" reference.
-  - **Hermes** (under `/Users/jonathanjenkins/GITHUB/Hermes/`) — the
-    operator's earlier cloud-agentic framework.  Already informed the
-    JROS install pattern (clone+venv, not pip).  Worth a formal
-    review for: the supervisor.py restart-on-crash pattern (port to
-    Track D), the cloud-LLM provider abstraction (defer to 0.5).
+## Carry-forward patterns already absorbed
 
-Operator says NO to those, or wants to add new ones, this section
-gets struck and the new entries land below.
+  - **VoiceLLM → JROS:** the `<ignore>` / `<reply>` LLM-gated speech
+    pattern landed at commit `ee8bb9b` as an opt-in
+    `config.voice.llm_gate` flag (default off).  Sits above the
+    existing STT-level `is_non_speech_marker()` filter as the second
+    line of defence for always-on embodied agents.  See
+    `jaeger_os/core/voice/llm_gate.py` and
+    `rules.VOICE_LLM_GATE_RULE`.
+
+## Reverse migration queue (JROS → upstream)
+
+VoiceLLM's audio pipeline is older than ours; if the operator wants
+to ship a final pass over VoiceLLM, JROS has improvements worth
+porting back:
+
+  - Persistent Kokoro player (sounddevice + avaudio backends with
+    live CoreAudio default-device resolution) — replaces VoiceLLM's
+    per-call `sd.OutputStream` open.
+  - Audio backend config toggle.
+  - Whisper STT hardening (the `_NON_SPEECH_MARKERS` set + AEC
+    plumbing).
+  - The `tts_node.shutdown()` deterministic teardown that prevents
+    the `Pa_Terminate`-at-exit segfault class on macOS 26.
+
+These are NOT 0.4 deliverables for JROS — they'd be a separate
+"VoiceLLM audio refresh" patch landing in that repo when the
+operator chooses.

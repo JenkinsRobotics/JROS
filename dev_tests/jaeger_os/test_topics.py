@@ -102,7 +102,7 @@ def test_envelope_topic_v_defaults_to_one():
 _REGISTERED: tuple[type[topics.TopicMessage], ...] = (
     topics.AudioInFrame,
     topics.Transcript,
-    topics.VisionObservation,
+    topics.CameraFrame,
     topics.TouchReading,
     topics.ProprioReading,
     topics.SpokenAck,
@@ -212,10 +212,32 @@ def test_transcript_sensible_defaults():
     assert msg.duration_s == 0.0
 
 
-def test_vision_observation_boxes_default_empty():
-    msg = topics.VisionObservation(image_w=640, image_h=480)
-    assert msg.boxes == []
-    assert msg.scene == ""
+def test_camera_frame_carries_image_bytes():
+    """CameraFrame holds the encoded image as ``frame_bytes`` with
+    a dimensions + encoding header.  Default encoding is JPEG —
+    the universal-debug choice; raw_bgr8 / raw_rgb8 / png available
+    when a producer wants minimal CPU overhead."""
+    payload = b"\xff\xd8\xff\xe0" + b"\x00" * 64  # fake JPEG header
+    msg = topics.CameraFrame(
+        image_w=640, image_h=480, encoding="jpeg",
+        frame_bytes=payload, camera_id="usb-0",
+    )
+    assert msg.image_w == 640
+    assert msg.image_h == 480
+    assert msg.encoding == "jpeg"
+    assert msg.frame_bytes == payload
+    assert msg.camera_id == "usb-0"
+    assert msg.frame_seq == 0
+
+
+def test_camera_frame_sensible_defaults():
+    msg = topics.CameraFrame()
+    assert msg.image_w == 0
+    assert msg.image_h == 0
+    assert msg.encoding == "jpeg"
+    assert msg.frame_bytes == b""
+    assert msg.camera_id == "default"
+    assert msg.frame_seq == 0
 
 
 def test_motion_command_velocity_mode_default():

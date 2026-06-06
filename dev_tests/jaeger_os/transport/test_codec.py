@@ -15,16 +15,24 @@ from jaeger_os.transport import codec
 
 # ── topic classification ──────────────────────────────────────────
 
-def test_audio_topics_are_binary():
-    """Both audio topics ride MessagePack."""
+def test_payload_heavy_topics_are_binary():
+    """Audio frames AND camera frames ride MessagePack — both carry
+    raw payload bytes that benefit from MessagePack's native bytes
+    encoding (no base64 hop)."""
     assert codec.is_binary_topic(topics.SENSE_AUDIO_IN) is True
     assert codec.is_binary_topic(topics.ACT_AUDIO_OUT) is True
+    assert codec.is_binary_topic(topics.SENSE_VISION) is True
 
 
 def test_text_topics_are_not_binary():
-    """Every non-audio topic rides JSON."""
+    """Every non-payload-heavy topic rides JSON for debug-ability."""
+    binary = {
+        topics.SENSE_AUDIO_IN,
+        topics.ACT_AUDIO_OUT,
+        topics.SENSE_VISION,
+    }
     for name in topics.ALL_TOPICS:
-        if name in (topics.SENSE_AUDIO_IN, topics.ACT_AUDIO_OUT):
+        if name in binary:
             continue
         assert codec.is_binary_topic(name) is False, (
             f"{name} unexpectedly classified as binary"

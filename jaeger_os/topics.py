@@ -116,16 +116,33 @@ class Transcript(TopicMessage):
     duration_s: float = 0.0
 
 
-class VisionObservation(TopicMessage):
-    """Single frame of visual scene understanding.  YOLOv8-compatible
-    box format so JP01-VCC01's CSI-camera inference drops in without
-    translation."""
+class CameraFrame(TopicMessage):
+    """A single camera frame.  Binary payload — rides MessagePack
+    on the wire so the encoded image bytes don't pay a base64 hop.
+
+    Schema is intentionally lean: a camera node is a source, not
+    an analyser.  No YOLO boxes, no scene descriptions, no
+    detection metadata — those belong on a future
+    ``/sense/vision_analysis`` topic published by a downstream
+    inference node that consumes ``/sense/vision``.
+
+    Two source modes supported by the vision node (Track B.5):
+        * USB camera (cv2.VideoCapture device index, local Mac)
+        * TCP stream (frames pushed by a remote board over an
+          Ethernet socket — today: JP01-VCC01 Jetson; tomorrow:
+          any IP-streamable source)
+
+    The brain doesn't care which mode produced a frame — same
+    topic, same schema; only ``camera_id`` distinguishes sources
+    when multiple cameras run at once.
+    """
     topic: Literal["/sense/vision"] = SENSE_VISION
     image_w: int = 0
     image_h: int = 0
-    boxes: list[dict] = msgspec.field(default_factory=list)
-    # Each box: {cls: str, conf: float, xyxy: [x1, y1, x2, y2]}
-    scene: str = ""  # optional scene-level description
+    encoding: str = "jpeg"  # "jpeg" | "png" | "raw_bgr8" | "raw_rgb8"
+    frame_bytes: bytes = b""
+    camera_id: str = "default"
+    frame_seq: int = 0  # monotonic counter from the producing camera
 
 
 class TouchReading(TopicMessage):
@@ -234,7 +251,7 @@ class LightCommand(TopicMessage):
 TOPIC_TO_CLASS: dict[str, type[TopicMessage]] = {
     SENSE_AUDIO_IN: AudioInFrame,
     SENSE_TRANSCRIPT: Transcript,
-    SENSE_VISION: VisionObservation,
+    SENSE_VISION: CameraFrame,
     SENSE_TOUCH: TouchReading,
     SENSE_PROPRIO: ProprioReading,
     SENSE_SPOKEN: SpokenAck,
@@ -266,7 +283,7 @@ __all__ = [
     "ALL_TOPICS",
     # Envelope + concrete types
     "TopicMessage",
-    "AudioInFrame", "Transcript", "VisionObservation",
+    "AudioInFrame", "Transcript", "CameraFrame",
     "TouchReading", "ProprioReading", "SpokenAck",
     "SpeechCommand", "AudioOutFrame", "MotionCommand", "LightCommand",
     "SpeechStop",

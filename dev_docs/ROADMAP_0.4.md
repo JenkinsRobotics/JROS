@@ -156,16 +156,38 @@ code path for nodes-as-threads OR nodes-as-processes.
     - ZMQ socket setup boilerplate (configurable transport: inproc / ipc / tcp)
     - log routing into the existing `jaeger_os` logger
     - signal handling: graceful SIGTERM, restart on SIGUSR1
-  - [ ] `jaeger_os/topics.py` — single source of truth
+  - [x] **A.1** — `jaeger_os/topics.py` — single source of truth
     - constant names: `SENSE_AUDIO_IN`, `ACT_AUDIO_OUT`, etc.
-    - Pydantic schemas for each topic's payload
+    - **`msgspec.Struct` schemas** (NOT Pydantic — landed at A.1.1
+      after operator-flagged inconsistency; see commit `0b0b38c`).
+      Pydantic stays in JROS for config + tool schemas where its
+      richer ecosystem earns the overhead; transport schemas live
+      where microseconds matter.
     - schema versioning (`topic_v: int` on every message)
-  - [ ] `jaeger_os/transport.py` — ZMQ wrapper
+    - landed 2026-06-06; 49 tests pass
+  - [ ] **A.2** — `jaeger_os/transport/codec.py` (NEW step inserted
+    on second-agent review)
+    - JSON encoder/decoder for text topics (`/sense/transcript`,
+      `/act/speech`, etc.) — `msgspec.json.encode/decode`
+    - MessagePack encoder/decoder for binary topics
+      (`/sense/audio_in`, `/act/audio_out`, `/sense/vision`) —
+      `msgspec.msgpack.encode/decode`
+    - Pick-by-topic helper so call sites don't have to remember
+      which encoding belongs to which namespace
+  - [ ] **A.3** — `jaeger_os/transport/inproc_bus.py` — in-process
+    Bus (the VoiceLLM port).  Uses the codec from A.2.
+  - [ ] **A.4** — `jaeger_os/transport/zmq_bus.py` — ZMQ pub/sub
+    behind the same Bus interface.
     - default `inproc://` for in-process nodes
     - `ipc://` for same-machine multi-process
     - `tcp://` for cross-machine (JP01: Mac↔Jetson↔Teensy)
     - autodetect from `JAEGER_TRANSPORT` env / config
-  - [ ] `launch.py` — gains a `--mode {monolithic,multiprocess}` flag
+  - [ ] **A.5** — `jaeger_os/nodes/base.py` — `Node` base class
+    - lifecycle hooks: `setup()`, `tick()`, `teardown()`, `health()`
+    - Bus socket setup boilerplate
+    - log routing into the existing `jaeger_os` logger
+    - signal handling: graceful SIGTERM, restart on SIGUSR1
+  - [ ] **A.6** — `launch.py` — gains a `--mode {monolithic,multiprocess}` flag
     - `monolithic` (default): all nodes inproc, current TUI behaviour
     - `multiprocess`: spawn each node as its own Python subprocess
 

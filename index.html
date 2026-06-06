@@ -784,6 +784,7 @@
       <a href="#what">What it is</a>
       <a href="#features">Capabilities</a>
       <a href="#architecture">Architecture</a>
+      <a href="#positioning">vs ROS/Hermes</a>
       <a href="#install">Install</a>
       <a href="#roadmap">Roadmap</a>
       <a class="btn" href="https://github.com/JenkinsRobotics/JROS" target="_blank" rel="noopener">GitHub →</a>
@@ -1005,12 +1006,65 @@
     <div style="margin-top: 36px;">
       <div class="arch-box" style="text-align: center;">
         <h4>Runtime model</h4>
-        <h3>The daemon holds the model. Everything else attaches.</h3>
+        <h3>0.3.0 ships the brain. 0.4 wires the spine.</h3>
         <p style="margin-top: 12px;">
-          <code>./run.sh start</code> boots the daemon: one Gemma instance, the cron runner, the memory store, the socket server. Voice loop, messaging gateway, TUI, and (soon) GUI all connect via <code>chat.send</code> — one model in RAM, many client surfaces. Same architecture as Docker Desktop and Ollama; designed in from 0.2.0.
+          <code>./launch</code> boots the in-process TUI: one Gemma instance, the persistent voice pipeline, the skill registry, the memory store — all in one Python process for sub-microsecond function-call latency. <strong>0.4 adopts a node architecture</strong>: brain stays one process; audio I/O, STT, TTS, vision, motors, lights each become their own node, talking ZMQ. Same code laptop or fleet — only the transport changes.
         </p>
       </div>
     </div>
+
+    <div style="margin-top: 28px;">
+      <div class="arch-box">
+        <h4>0.4 node layout</h4>
+        <h3>One brain process. N hardware-bound peripheral nodes.</h3>
+        <p style="margin-top: 12px;">
+          <strong>Tools = networking shims; nodes = execution.</strong> The agent's tool signatures (<code>text_to_speech("hi")</code>, <code>listen(seconds=5)</code>) stay identical — what changes is the implementation: in-process call becomes a topic publish + correlation-ID wait for the ack. STT and TTS get their own nodes because voice pipelines evolve (today's Kokoro becomes tomorrow's MLX-TTS without touching the brain). The brain doesn't know whether <code>/sense/audio_in</code> comes from a Mac mic, a Jetson mic, or a simulated WAV file.
+        </p>
+        <p style="margin-top: 12px;">
+          Full diagram + track breakdown in
+          <a href="https://github.com/JenkinsRobotics/JROS/blob/master/dev_docs/ROADMAP_0.4.md" target="_blank" rel="noopener" style="color: var(--accent2);">ROADMAP_0.4.md</a>.
+        </p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ─────────────────────── POSITIONING ─────────────────────── -->
+<section id="positioning">
+  <div class="wrap">
+    <div class="eyebrow">// where jros fits</div>
+    <h2 class="h">The framework no one else owns.</h2>
+    <p class="sub">
+      ROS is the embodied-robotics middleware standard but doesn't think about LLM agents. Hermes and the agent frameworks own the agent loop but assume a single process on one machine — no robots in the picture. JROS is built where they don't overlap: <strong>a local LLM agent that drives real hardware nodes</strong>.
+    </p>
+
+    <div class="arch-box" style="overflow-x: auto;">
+      <table style="width: 100%; border-collapse: collapse; font-family: var(--sans); font-size: 14px;">
+        <thead>
+          <tr style="border-bottom: 1px solid var(--border2); text-align: left;">
+            <th style="padding: 10px 12px; color: var(--muted); font-weight: 600;"></th>
+            <th style="padding: 10px 12px; color: var(--heading); font-weight: 600;">ROS 2</th>
+            <th style="padding: 10px 12px; color: var(--heading); font-weight: 600;">Hermes / agent frameworks</th>
+            <th style="padding: 10px 12px; color: var(--accent2); font-weight: 700;">JROS</th>
+          </tr>
+        </thead>
+        <tbody style="color: var(--fg);">
+          <tr style="border-bottom: 1px solid var(--border);"><td style="padding: 8px 12px; color: var(--muted);">Embodied robotics</td><td style="padding: 8px 12px;">✅ industry standard</td><td style="padding: 8px 12px; color: var(--red);">❌ no body model</td><td style="padding: 8px 12px; color: var(--green);">✅ Mac → Jetson → Teensy → ESP32 first-class</td></tr>
+          <tr style="border-bottom: 1px solid var(--border);"><td style="padding: 8px 12px; color: var(--muted);">Local LLM agent</td><td style="padding: 8px 12px; color: var(--red);">❌ no agent layer</td><td style="padding: 8px 12px; color: var(--red);">❌ assumes cloud</td><td style="padding: 8px 12px; color: var(--green);">✅ Gemma local, no internet needed</td></tr>
+          <tr style="border-bottom: 1px solid var(--border);"><td style="padding: 8px 12px; color: var(--muted);">Mac-native dev</td><td style="padding: 8px 12px; color: var(--red);">❌ Linux + Docker</td><td style="padding: 8px 12px;">✅ runs on Mac</td><td style="padding: 8px 12px; color: var(--green);">✅ Mac-first since 0.2</td></tr>
+          <tr style="border-bottom: 1px solid var(--border);"><td style="padding: 8px 12px; color: var(--muted);">Transport weight</td><td style="padding: 8px 12px; color: var(--warn);">DDS (~2 GB)</td><td style="padding: 8px 12px; color: var(--muted);">n/a</td><td style="padding: 8px 12px; color: var(--green);">✅ ZMQ (50 KB)</td></tr>
+          <tr style="border-bottom: 1px solid var(--border);"><td style="padding: 8px 12px; color: var(--muted);">Learning curve</td><td style="padding: 8px 12px; color: var(--red);">hard</td><td style="padding: 8px 12px; color: var(--green);">easy</td><td style="padding: 8px 12px;">medium — one Python file per node</td></tr>
+          <tr style="border-bottom: 1px solid var(--border);"><td style="padding: 8px 12px; color: var(--muted);">One-Mac development</td><td style="padding: 8px 12px; color: var(--red);">painful</td><td style="padding: 8px 12px; color: var(--green);">easy</td><td style="padding: 8px 12px; color: var(--green);">✅ monolith mode = same code, no IPC</td></tr>
+          <tr style="border-bottom: 1px solid var(--border);"><td style="padding: 8px 12px; color: var(--muted);">Multi-board production</td><td style="padding: 8px 12px; color: var(--green);">✅ designed for it</td><td style="padding: 8px 12px; color: var(--red);">❌ no</td><td style="padding: 8px 12px; color: var(--green);">✅ flip a config flag</td></tr>
+          <tr style="border-bottom: 1px solid var(--border);"><td style="padding: 8px 12px; color: var(--muted);">Operator UX out of the box</td><td style="padding: 8px 12px; color: var(--red);">❌ build your own</td><td style="padding: 8px 12px; color: var(--muted);">n/a</td><td style="padding: 8px 12px; color: var(--green);">✅ TUI + web inspector (Track F)</td></tr>
+          <tr><td style="padding: 8px 12px; color: var(--muted);">Crash isolation per subsystem</td><td style="padding: 8px 12px; color: var(--green);">✅ best</td><td style="padding: 8px 12px; color: var(--red);">❌ none</td><td style="padding: 8px 12px; color: var(--green);">✅ per node when split</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p class="sub" style="margin-top: 28px; text-align: center;">
+      <strong>The pitch in one line:</strong> the only framework where a local LLM agent thinks and a dedicated set of hardware nodes act — designed for one developer driving one robot from a Mac.
+    </p>
   </div>
 </section>
 

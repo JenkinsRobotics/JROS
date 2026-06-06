@@ -465,7 +465,7 @@ class KokoroTTS:
         """Like speak(), but returns immediately and supports interruption.
 
         Kicks off a synthesis thread that streams Kokoro generator chunks
-        into an OutputStream + queue. Each chunk is pushed to playback AS
+        into the persistent player. Each chunk is pushed to playback AS
         IT'S SYNTHESIZED, not after the whole utterance is rendered — so
         the user can interrupt during synthesis, not just during playback.
 
@@ -479,28 +479,36 @@ class KokoroTTS:
         poll `is_playing()` or call `wait_until_done()`.
         """
         import numpy as np
-        import sounddevice as sd
         import threading
-        import queue as _queue
 
         cleaned = clean_for_tts(text)
         if not cleaned:
             return {"started": False, "reason": "empty text"}
 
         synth_started = time.perf_counter()
+        try:
+            player = self._ensure_player()
+        except Exception as exc:  # noqa: BLE001
+            return {"started": False, "reason": f"player open failed: {exc}"}
 
         # Fresh per-utterance cancel flag — set() to stop both synthesis
         # and playback. Threads check it between chunks.
         self._cancel = threading.Event()
-
-        # Bounded audio queue between the synth thread and the playback
-        # callback. None sentinel marks end-of-stream.
-        self._play_q: "_queue.Queue[np.ndarray | None]" = _queue.Queue(maxsize=32)
-        # Current chunk being drained by the callback.
-        self._current_chunk = np.zeros(0, dtype=np.float32)
         self._stream_done = threading.Event()
+        self._async_player = player
+        queued_samples = {"n": 0}
 
-        device = _resolve_live_device(sd)
+        def _enqueue_async_chunk(chunk_24k: np.ndarray) -> None:
+            if chunk_24k.size == 0 or self._cancel.is_set():
+                return
+            if self.reference_buffer is not None:
+                try:
+                    ref = _resample_to_reference_rate(chunk_24k)
+                    self.reference_buffer.write(ref)
+                except Exception:  # noqa: BLE001
+                    pass
+            player.enqueue(chunk_24k)
+            queued_samples["n"] += int(chunk_24k.size)
 
         # Synthesis worker — runs in its own thread so play_async() returns.
         def _synth_loop() -> None:
@@ -521,70 +529,30 @@ class KokoroTTS:
                                     return
                                 if r.audio is None:
                                     continue
-                                self._enqueue_chunk(np.asarray(r.audio, dtype=np.float32))
+                                _enqueue_async_chunk(
+                                    np.asarray(r.audio, dtype=np.float32))
                         else:
                             n = int(KOKORO_SAMPLE_RATE * value / 1000)
                             if n > 0:
-                                self._enqueue_chunk(np.zeros(n, dtype=np.float32))
+                                _enqueue_async_chunk(
+                                    np.zeros(n, dtype=np.float32))
                 else:
                     for r in pipe(cleaned, voice=self.voice):
                         if self._cancel.is_set():
                             return
                         if r.audio is None:
                             continue
-                        self._enqueue_chunk(np.asarray(r.audio, dtype=np.float32))
+                        _enqueue_async_chunk(
+                            np.asarray(r.audio, dtype=np.float32))
             finally:
-                # End-of-stream marker — callback drains, then signals done.
-                try:
-                    self._play_q.put_nowait(None)
-                except Exception:
-                    pass
-
-        def _audio_cb(outdata, frames, time_info, status) -> None:
-            # Pulls float32 mono frames from the queue, writes to outdata.
-            if status:
-                pass  # underruns happen briefly mid-utterance; ignore
-            if self._cancel.is_set():
-                outdata.fill(0)
+                if not self._cancel.is_set() and queued_samples["n"] > 0:
+                    player.mark_end()
+                    if not player.wait_until_drained():
+                        try:
+                            player.reset()
+                        except Exception:  # noqa: BLE001
+                            pass
                 self._stream_done.set()
-                raise sd.CallbackStop()
-            out = np.zeros(frames, dtype=np.float32)
-            n_filled = 0
-            ended = False
-            while n_filled < frames:
-                if len(self._current_chunk) == 0:
-                    try:
-                        nxt = self._play_q.get_nowait()
-                    except _queue.Empty:
-                        break
-                    if nxt is None:
-                        ended = True
-                        break
-                    self._current_chunk = nxt
-                take = min(frames - n_filled, len(self._current_chunk))
-                out[n_filled:n_filled + take] = self._current_chunk[:take]
-                self._current_chunk = self._current_chunk[take:]
-                n_filled += take
-            outdata[:, 0] = out
-            if ended and n_filled == 0 and self._play_q.empty():
-                self._stream_done.set()
-                raise sd.CallbackStop()
-
-        # Close any prior stream (idempotent).
-        self._close_stream()
-        try:
-            self._stream = sd.OutputStream(
-                samplerate=KOKORO_SAMPLE_RATE,
-                channels=1,
-                dtype="float32",
-                blocksize=int(KOKORO_SAMPLE_RATE * 0.02),  # 20 ms blocks
-                device=device,
-                callback=_audio_cb,
-                finished_callback=self._stream_done.set,
-            )
-            self._stream.start()
-        except Exception as exc:
-            return {"started": False, "reason": f"stream open failed: {exc}"}
 
         self._synth_thread = threading.Thread(
             target=_synth_loop, daemon=True, name="kokoro-synth",
@@ -596,26 +564,16 @@ class KokoroTTS:
             "text": cleaned,
             "chars": len(cleaned),
             "synth_started_s": round(time.perf_counter() - synth_started, 3),
-            "device": device,
+            "device": player.device_name,
         }
 
-    def _enqueue_chunk(self, chunk_24k) -> None:
-        """Push a synthesis chunk to the playback queue AND to the AEC
-        reference buffer (resampled to the reference sample rate)."""
-        if chunk_24k.size == 0:
-            return
-        if self.reference_buffer is not None:
-            try:
-                ref = _resample_to_reference_rate(chunk_24k)
-                self.reference_buffer.write(ref)
-            except Exception:
-                pass
-        try:
-            self._play_q.put(chunk_24k, timeout=5.0)
-        except Exception:
-            pass
-
     def _close_stream(self) -> None:
+        """Close the legacy async stream if one exists.
+
+        Kept as a compatibility cleanup hook for sessions created by
+        older code paths before 0.3.0 switched async playback to the
+        persistent player.
+        """
         s = getattr(self, "_stream", None)
         if s is not None:
             try:
@@ -632,11 +590,16 @@ class KokoroTTS:
         cancel = getattr(self, "_cancel", None)
         if cancel is not None:
             cancel.set()
-        play_q = getattr(self, "_play_q", None)
-        if play_q is not None:
-            with play_q.mutex:
-                play_q.queue.clear()
+        player = getattr(self, "_async_player", None) or self._player
+        if player is not None:
+            try:
+                player.cancel()
+            except Exception:  # noqa: BLE001
+                pass
         self._close_stream()
+        done = getattr(self, "_stream_done", None)
+        if done is not None:
+            done.set()
         if self.reference_buffer is not None:
             self.reference_buffer.clear()
 
@@ -645,23 +608,18 @@ class KokoroTTS:
         playing). Polled by the voice loop to know when an async speak
         has finished naturally."""
         s = getattr(self, "_stream", None)
-        if s is None:
-            return False
-        try:
-            if not s.active:
-                return False
-        except Exception:
-            return False
-        play_q = getattr(self, "_play_q", None)
-        # Stream is active and either still has buffered audio or the
-        # synthesis thread might still be feeding it.
         synth = getattr(self, "_synth_thread", None)
         if synth is not None and synth.is_alive():
             return True
-        if play_q is not None and not play_q.empty():
+        done = getattr(self, "_stream_done", None)
+        if done is not None and not done.is_set():
             return True
-        # Stream is active but queue is empty and synth has exited — about to drain.
-        return not getattr(self, "_stream_done", threading.Event()).is_set() if False else True
+        if s is None:
+            return False
+        try:
+            return bool(s.active)
+        except Exception:
+            return False
 
     def wait_until_done(self) -> None:
         """Block until async playback finishes naturally (or stop() is called)."""

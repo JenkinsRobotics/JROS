@@ -374,6 +374,10 @@ class PersistentKokoroPlayer:
             self._q.queue.clear()
         self._drained.set()
 
+    def cancel(self) -> None:
+        """Stop current playback without closing the persistent stream."""
+        self.reset()
+
     def is_open(self) -> bool:
         if self.backend == "avaudio":
             return bool(self._running and self._engine is not None

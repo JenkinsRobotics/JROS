@@ -1,15 +1,16 @@
 # Jaeger-OS bench history
 
-_Generated 2026-06-06T11:25:50 from 48 run(s) across `dev_benchmark/sweep/` and `dev_benchmark/flat/` — showing runs on/after **2026-05-29** (current benchmark generation). Filtered out **13** entries for models no longer on disk — historical data preserved in ``dev_benchmark/flat/``._
+_Generated 2026-06-06T12:59:06 from 49 run(s) across `dev_benchmark/sweep/` and `dev_benchmark/flat/` — showing runs on/after **2026-05-29** (current benchmark generation). Filtered out **14** entries for models no longer on disk — historical data preserved in ``dev_benchmark/flat/``._
 
 **Bench corpus version: 1.1** (cutoff 2026-05-29). The leaderboard ranks only runs of this version so the comparison stays apples-to-apples; older 1.0 (51-case) runs are archived and shown separately at the bottom of the report.
 
 ## Per-model leaderboard
 
-<details><summary><i>13 hidden uninstalled models</i></summary>
+<details><summary><i>14 hidden uninstalled models</i></summary>
 
 These models have bench history but their ``.gguf`` files are no longer in ``~/.lmstudio/models``. Run ``jaeger bench history --write --include-uninstalled`` to surface them again.
 
+- `gemma-4-26b-a4b-it-q4-k-m`
 - `gemma-4-e2b-it-q4-k-m`
 - `gemma-4-e4b-it-q6-k`
 - `gemma-4-e4b-it-q8-0`
@@ -64,10 +65,11 @@ Sorted by routing % (then p50 asc). A single great run doesn't make a model grea
 
 ## Full chronological log
 
-Every run we have data for (48 total), newest first. ``vs peak`` shows the route% delta from this model's all-time best (0.0% = this run IS the peak).
+Every run we have data for (49 total), newest first. ``vs peak`` shows the route% delta from this model's all-time best (0.0% = this run IS the peak).
 
 | Date | Model | Route% | p50 s | TPS | Cases | vs peak | Source |
 |---|---|---:|---:|---:|---:|---:|---|
+| 2026-06-06 12:59 | `gemma-4-26b-a4b-it-q4-k-m` | 98.1% | 2.77 | 14.6 | 59 | **peak** | flat |
 | 2026-06-06 01:31 | `gemma-4-26b-a4b-it-q4_k_m` | 98.1% | 2.78 | 14.7 | 59 | -1.9pp | flat |
 | 2026-06-04 23:45 | `gemma-4-12b-it-q4_k_m` | 98.1% | 4.41 | 9.7 | 59 | **peak** | flat |
 | 2026-06-04 01:09 | `gemma-4-26b-a4b-it-q4_k_m` | 100.0% | 2.52 | 17.2 | 59 | **peak** | flat |

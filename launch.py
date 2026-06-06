@@ -732,6 +732,19 @@ def main() -> int:
                         help="truncate <instance>/run/jaeger.log to 0")
     parser.add_argument("--health", action="store_true",
                         help="preflight checks and exit")
+    # 0.4 node infrastructure entry points (Track A).
+    parser.add_argument("--node-test", action="store_true",
+                        help="run the 0.4 Track A verification gate "
+                             "(echo-node round-trip in monolithic mode "
+                             "by default) and exit")
+    parser.add_argument("--mode",
+                        choices=["monolithic", "multiprocess"],
+                        default="monolithic",
+                        help="node transport mode for the TUI boot "
+                             "(0.4; monolithic = all nodes inproc, "
+                             "current behaviour; multiprocess = each "
+                             "node its own subprocess via ZMQ — needs "
+                             "Track A.7 broker + Track B node split)")
     args = parser.parse_args()
 
     if not SANDBOX_INSTANCE.exists():
@@ -751,6 +764,30 @@ def main() -> int:
         return cmd_status(env)
     if args.stop:
         return cmd_stop(env)
+    if args.node_test:
+        # 0.4 Track A verification gate.  Delegates to the standalone
+        # script so the test logic + child-subprocess pattern stay
+        # together — launch.py shouldn't grow node-orchestration code
+        # that belongs in dev_scripts/.
+        import subprocess as _sp
+        node_test_path = _REPO_ROOT / "dev_scripts" / "node_verification.py"
+        return _sp.call([_sys.executable, str(node_test_path)])
+    if args.mode == "multiprocess":
+        # Track A.7 + Track B work — the node-splitting + broker
+        # pieces aren't in place yet.  Fail loudly so the operator
+        # knows they need to wait, rather than silently falling back.
+        print("[launch] --mode multiprocess not yet operational",
+              file=_sys.stderr)
+        print("[launch] needs: Track A.7 (broker) + Track B (audio_io "
+              "node split)", file=_sys.stderr)
+        print("[launch] try ./launch (default monolithic) instead",
+              file=_sys.stderr)
+        return 2
+    # Default path: in-process TUI exactly as 0.3.0 shipped.  All
+    # 0.4 transport + node infrastructure is loaded but dormant —
+    # the brain still calls Kokoro/Whisper in-process; Track B
+    # is what wires the audio_io node onto the Bus.
+    env["JAEGER_NODE_MODE"] = args.mode  # "monolithic" for now
     if args.restart:
         cmd_stop(env)
     return cmd_boot(env, no_voice=args.no_voice)

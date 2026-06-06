@@ -490,46 +490,46 @@ def health(env: dict[str, str]) -> int:
     print()
     print("== JROS sandbox health check ==")
     fails = 0
-    if not VENV_PY.exists():
-        fail(f".venv not at {VENV_PY}"); fails += 1
-    else:
-        ok(f".venv     {VENV_PY}")
-        if not verify_library_path(env):
+
+    def record(name: str, passed: bool, label: str) -> None:
+        nonlocal fails
+        if passed:
+            ok(f"{name:<17} {label}")
+        else:
+            fail(f"{name:<17} {label}")
             fails += 1
-    if SANDBOX_INSTANCE.exists():
-        ok(f"instance  {SANDBOX_INSTANCE}")
+
+    if not VENV_PY.exists():
+        record(".venv", False, f"not at {VENV_PY}")
     else:
-        fail(f"instance missing at {SANDBOX_INSTANCE}"); fails += 1
-    config_yaml = SANDBOX_INSTANCE / "config.yaml"
-    if config_yaml.exists():
-        text = config_yaml.read_text()
-        for line in text.splitlines():
-            if line.strip().startswith("model_path:"):
-                raw = line.split(":", 1)[1].strip().strip('"\'')
-                if raw.startswith("/"):
-                    p = Path(raw)
-                    if p.exists():
-                        size_gb = p.stat().st_size / 1024 ** 3
-                        ok(f"LLM model {p.name} ({size_gb:.1f} GB)")
-                    else:
-                        fail(f"LLM model not at {raw}"); fails += 1
-                else:
-                    try:
-                        from jaeger_os.core.models.model_resolver import (
-                            resolve_model_path,
-                        )
-                        resolved = resolve_model_path(raw)
-                        if resolved and Path(resolved).exists():
-                            size_gb = Path(resolved).stat().st_size / 1024 ** 3
-                            ok(f"LLM model {raw} → {Path(resolved).name} "
-                               f"({size_gb:.1f} GB)")
-                        else:
-                            fail(f"LLM model key {raw!r} unresolvable")
-                            fails += 1
-                    except Exception as exc:  # noqa: BLE001
-                        fail(f"model_resolver error: {exc}")
-                        fails += 1
-                break
+        record(".venv", True, str(VENV_PY))
+        record(
+            "library",
+            verify_library_path(env, quiet=True),
+            str(REPO / "jaeger_os"),
+        )
+
+    record("instance", SANDBOX_INSTANCE.exists(), str(SANDBOX_INSTANCE))
+    legacy_pid = _legacy_daemon_pid()
+    record(
+        "legacy daemon",
+        legacy_pid is None,
+        "not running (archived path)" if legacy_pid is None else f"pid={legacy_pid}",
+    )
+
+    check_rows = [
+        ("manifest", _check_instance_manifest),
+        ("LLM model", lambda: _model_file_on_disk(env)),
+        ("AVAudio bridge", _check_avaudio_bridge),
+        ("Whisper assets", _check_whisper_assets),
+        ("Kokoro TTS", _check_kokoro_package),
+        ("skill matrix", lambda: _check_skill_matrix(env)),
+        ("TUI module", _check_tui_importable),
+    ]
+    for name, check in check_rows:
+        passed, label = check()
+        record(name, passed, label)
+
     print()
     if fails:
         fail(f"{fails} check(s) failed")

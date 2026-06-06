@@ -1,26 +1,30 @@
-"""Persistent sounddevice output player for the Kokoro TTS plugin.
+"""Persistent output player for the Kokoro TTS plugin.
 
 Direct port of the working pattern from
-``dev_tools/audio_smoke/voice_assistant_persistent.py::PersistentPlayer``,
-adapted to live inside the plugin.
+``dev_tools/audio_smoke/voice_assistant_persistent.py::PersistentPlayer``
+(and ``voice_assistant_avaudio.py::SessionPlayer``), adapted to live
+inside the plugin with backend selection.
 
 Design notes
 ------------
-* ONE ``sd.OutputStream`` opens at plugin warm / first speak() and
-  stays alive for the whole session.  Closed at process shutdown.
-* Audio chunks come in via :meth:`enqueue` and are pulled out of a
-  ``queue.Queue`` by the audio callback running on PortAudio's worker
-  thread.  No per-utterance stream churn → no audible device
-  power-cycle clicks between replies.
-* The output device is **resolved live at start() time** via a direct
-  CoreAudio query — *not* PortAudio's cached "default", which on macOS
-  is whatever sounddevice picked at module-import time (frequently a
-  monitor's HDMI audio sink rather than the device the operator's
-  Settings → Sound currently points at).
-
-This module deliberately stays sounddevice-only.  An ``avaudio_io``
-variant of the same surface will land in a sibling file when we wire
-the config-toggle in step 2 of the 0.3.0 refactor.
+* ONE output stream opens at plugin warm / first speak() and stays
+  alive for the whole session.  Closed at process shutdown.
+* Audio chunks come in via :meth:`enqueue`; the sounddevice backend
+  feeds them through a callback queue, while the avaudio backend
+  schedules them directly on an ``AVAudioPlayerNode``.  No
+  per-utterance stream churn → no audible device power-cycle clicks
+  between replies.
+* Two backends, chosen at construction time:
+    - ``backend="sounddevice"`` — PortAudio via the sounddevice
+      wrapper.  Output device resolved live at start() via a direct
+      CoreAudio query (PortAudio's cached "default" can lag behind
+      the operator's Settings → Sound choice on macOS).
+    - ``backend="avaudio"`` — PyObjC AVAudioEngine direct scheduling
+      on ``AVAudioPlayerNode``.  Apple-native, no PortAudio in the
+      loop, no worker-thread pacing.
+* Caller picks the backend via the ``audio_backend`` field on the
+  instance's ``voice`` config block (default: ``"sounddevice"`` since
+  step 1 proved it works end-to-end in the 0.2.6 TUI).
 """
 
 from __future__ import annotations
@@ -157,8 +161,8 @@ def resolve_output_device(sd: Any) -> Optional[int]:
 # with one addition: ``start()`` resolves the live macOS default device
 # so PortAudio's stale "default" can't route TTS to a silent monitor.
 
-class PersistentSoundDevicePlayer:
-    """Long-lived sounddevice OutputStream + feed queue.
+class PersistentKokoroPlayer:
+    """Long-lived output stream + feed queue with pluggable backend.
 
     Stream opens once and stays running for the whole process
     lifetime, closed at exit by :meth:`close`.  All TTS chunks go
@@ -166,15 +170,36 @@ class PersistentSoundDevicePlayer:
     :meth:`mark_end` + :meth:`wait_until_drained` to wait until
     everything queued has actually played.
 
-    Why a queue + callback instead of per-utterance ``sd.play``: it
-    matches the production voice-app pattern (Discord, Zoom, FaceTime,
-    Logic Pro).  Stream resources stay allocated for the session; the
-    audio thread pulls samples on demand instead of us pushing them.
-    Same shape as the AVAudioEngine version that will land alongside
-    this in step 2 of the 0.3.0 refactor.
+    Backends
+    --------
+    ``backend="sounddevice"``  (default)
+        PortAudio via the sounddevice wrapper.  Output device
+        resolved live via :func:`resolve_output_device`.
+    ``backend="avaudio"``
+        PyObjC AVAudioEngine via direct ``AVAudioPlayerNode`` buffer
+        scheduling.  Apple-native, bypasses PortAudio and the
+        avaudio_io worker wrapper entirely.
+
+    A misspelled / unavailable backend raises at :meth:`start`; the
+    caller (``KokoroTTS._ensure_player``) catches that and logs
+    "persistent player warm failed — will retry on first speak()".
     """
 
-    def __init__(self, samplerate: int = 24000, channels: int = 1) -> None:
+    SUPPORTED_BACKENDS = ("sounddevice", "avaudio")
+
+    def __init__(
+        self,
+        *,
+        backend: str = "sounddevice",
+        samplerate: int = 24000,
+        channels: int = 1,
+    ) -> None:
+        if backend not in self.SUPPORTED_BACKENDS:
+            raise ValueError(
+                f"unknown audio backend {backend!r}; "
+                f"expected one of {self.SUPPORTED_BACKENDS}"
+            )
+        self.backend = backend
         self.samplerate = int(samplerate)
         self.channels = int(channels)
         # Queue items: np.ndarray (audio) or None (end-of-message marker).
@@ -184,41 +209,123 @@ class PersistentSoundDevicePlayer:
         self._drained = threading.Event()
         self._drained.set()           # idle = drained
         self._stream: Any = None
-        # Resolved at start() so callers can log it.
+        self._av: Any = None
+        self._engine: Any = None
+        self._player: Any = None
+        self._format: Any = None
+        self._running = False
+        # AVAudio drain tracking via per-buffer completion handlers.
+        self._scheduled_count = 0
+        self._drained_count = 0
+        self._drain_lock = threading.Lock()
+        # Keep PyObjC block wrappers alive until AVAudio fires them.
+        self._pending_callbacks: list[Any] = []
+        # Resolved at start() so callers can log them.
         self.device_index: Optional[int] = None
         self.device_name: Optional[str] = None
 
     # ── lifecycle ─────────────────────────────────────────────────────
 
     def start(self) -> None:
-        """Open the persistent OutputStream.  Idempotent."""
-        if self._stream is not None:
+        """Open the persistent output stream.  Idempotent.
+
+        The sounddevice path opens a callback-driven ``OutputStream``.
+        The avaudio path opens one AVAudioEngine + player node and
+        later schedules each enqueued buffer directly on that node."""
+        if self.is_open():
             return
-        import sounddevice as sd  # deferred import — keeps cold imports fast
+        blocksize = int(self.samplerate * 0.02)  # 20 ms
 
-        device = resolve_output_device(sd)
+        if self.backend == "avaudio":
+            self._start_avaudio()
+            return
+        else:  # sounddevice
+            import sounddevice as sd  # deferred import
+            device = resolve_output_device(sd)
+            try:
+                info = sd.query_devices(device if device is not None
+                                        else sd.default.device[1])
+                self.device_index = device
+                self.device_name = info["name"]
+            except Exception:  # noqa: BLE001 — informational only
+                self.device_name = "(unknown)"
+            self._stream = sd.OutputStream(
+                samplerate=self.samplerate,
+                channels=self.channels,
+                dtype="float32",
+                blocksize=blocksize,
+                callback=self._cb,
+                device=device,
+            )
+            self._stream.start()
+
+    def _start_avaudio(self) -> None:
         try:
-            info = sd.query_devices(device if device is not None
-                                    else sd.default.device[1])
-            self.device_index = device
-            self.device_name = info["name"]
-        except Exception:  # noqa: BLE001 — informational only
-            self.device_name = "(unknown)"
+            import AVFoundation  # type: ignore
+        except ImportError as exc:
+            raise RuntimeError(
+                "AVAudioEngine output requires pyobjc-framework-AVFoundation. "
+                "Install with: pip install pyobjc-framework-AVFoundation"
+            ) from exc
 
-        self._stream = sd.OutputStream(
-            samplerate=self.samplerate,
-            channels=self.channels,
-            dtype="float32",
-            blocksize=int(self.samplerate * 0.02),     # 20 ms
-            callback=self._cb,
-            device=device,
+        av = AVFoundation
+        engine = av.AVAudioEngine.alloc().init()
+        player = av.AVAudioPlayerNode.alloc().init()
+        fmt = av.AVAudioFormat.alloc(
+        ).initWithCommonFormat_sampleRate_channels_interleaved_(
+            av.AVAudioPCMFormatFloat32,
+            float(self.samplerate),
+            self.channels,
+            False,
         )
-        self._stream.start()
+
+        engine.attachNode_(player)
+        engine.connect_to_format_(player, engine.mainMixerNode(), fmt)
+        success, err = engine.startAndReturnError_(None)
+        if not success:
+            raise RuntimeError(
+                f"AVAudioEngine output start failed: "
+                f"{err.localizedDescription() if err else 'unknown'}"
+            )
+
+        player.play()
+        self._av = av
+        self._engine = engine
+        self._player = player
+        self._format = fmt
+        self._running = True
+        self.device_index = None
+        self.device_name = "(macOS system default via AVAudioEngine)"
+
+    def _close_avaudio(self) -> None:
+        if not self._running and self._engine is None and self._player is None:
+            return
+        try:
+            if self._player is not None:
+                self._player.stop()
+            if self._engine is not None:
+                self._engine.stop()
+        except Exception:  # noqa: BLE001
+            pass
+        finally:
+            with self._drain_lock:
+                self._pending_callbacks.clear()
+                self._drained_count = self._scheduled_count
+                self._drained.set()
+            self._running = False
+            self._engine = None
+            self._player = None
+            self._format = None
+            self._av = None
+            self.device_name = "(macOS system default via AVAudioEngine)"
 
     def close(self) -> None:
         """Stop + close the stream.  Idempotent.  Safe to call at any
         point on the main thread; the audio callback won't fire after
         ``stop()`` returns."""
+        if self.backend == "avaudio":
+            self._close_avaudio()
+            return
         if self._stream is None:
             return
         try:
@@ -237,6 +344,9 @@ class PersistentSoundDevicePlayer:
         self._drained.set()
 
     def is_open(self) -> bool:
+        if self.backend == "avaudio":
+            return bool(self._running and self._engine is not None
+                        and self._player is not None)
         return self._stream is not None
 
     # ── callback ──────────────────────────────────────────────────────
@@ -279,16 +389,87 @@ class PersistentSoundDevicePlayer:
             audio = audio.astype(np.float32)
         if audio.size == 0:
             return
+        if self.backend == "avaudio":
+            self._enqueue_avaudio(audio)
+            return
         self._drained.clear()
         self._q.put(audio)
+
+    def _enqueue_avaudio(self, audio: np.ndarray) -> None:
+        if not self.is_open():
+            self.start()
+        if self._av is None or self._player is None or self._format is None:
+            raise RuntimeError("AVAudioEngine output is not open")
+
+        audio = np.asarray(audio, dtype=np.float32)
+        if audio.ndim > 1:
+            audio = audio.reshape(-1, audio.shape[-1])
+            n = int(audio.shape[0])
+        else:
+            audio = audio.reshape(-1)
+            n = int(audio.size)
+        if n == 0:
+            return
+
+        pcm = self._av.AVAudioPCMBuffer.alloc().initWithPCMFormat_frameCapacity_(
+            self._format, n,
+        )
+        if pcm is None:
+            raise RuntimeError("failed to allocate AVAudioPCMBuffer")
+        pcm.setFrameLength_(n)
+
+        floats = pcm.floatChannelData()
+        if audio.ndim == 1:
+            samples = audio.tolist()
+            floats[0][0:n] = samples
+            for ch in range(1, self.channels):
+                floats[ch][0:n] = samples
+        else:
+            for ch in range(self.channels):
+                src_ch = min(ch, audio.shape[1] - 1)
+                floats[ch][0:n] = audio[:, src_ch].tolist()
+
+        with self._drain_lock:
+            self._scheduled_count += 1
+            self._drained.clear()
+
+        def _on_done() -> None:
+            _ = pcm  # capture the PCM buffer for the callback lifetime
+            with self._drain_lock:
+                self._drained_count += 1
+                try:
+                    self._pending_callbacks.remove(_on_done)
+                except ValueError:
+                    pass
+                if self._drained_count >= self._scheduled_count:
+                    self._drained.set()
+
+        self._pending_callbacks.append(_on_done)
+        try:
+            # 2-arg scheduleBuffer:completionHandler:.  The 4-arg
+            # atTime/options form crashes PyObjC signature inference
+            # on macOS 26.
+            self._player.scheduleBuffer_completionHandler_(pcm, _on_done)
+        except Exception:
+            with self._drain_lock:
+                self._scheduled_count -= 1
+                try:
+                    self._pending_callbacks.remove(_on_done)
+                except ValueError:
+                    pass
+                if self._drained_count >= self._scheduled_count:
+                    self._drained.set()
+            raise
 
     def mark_end(self) -> None:
         """Put an end-of-message sentinel on the queue.  The callback
         fires :attr:`_drained` when it pulls this marker — i.e. once
         every chunk enqueued *before* the marker has played."""
+        if self.backend == "avaudio":
+            return
         self._q.put(None)
 
     def wait_until_drained(self, timeout: float = 60.0) -> bool:
-        """Block until the audio thread has consumed an end marker.
+        """Block until the backend has consumed all queued audio.
         Returns ``False`` on timeout."""
         return self._drained.wait(timeout=timeout)

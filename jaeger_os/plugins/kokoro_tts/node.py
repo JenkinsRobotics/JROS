@@ -20,6 +20,7 @@ Public surface (consumed by core/tools/speak.py):
 
 from __future__ import annotations
 
+import os
 import re
 import sys
 import time
@@ -123,29 +124,67 @@ class KokoroTTS:
         # AEC sees silence as far-end and barge-in won't work — but plain
         # set_paused()-based playback still works.
         self.reference_buffer = reference_buffer
-        # 0.3.0-refactor step 1: ONE long-lived sounddevice OutputStream
-        # for the whole TTS lifetime, same pattern proven by
-        # ``dev_tools/audio_smoke/voice_assistant_persistent.py``.  Lazy-
-        # opened by ``_ensure_player`` on first ``speak()`` / ``warm()``,
-        # closed by ``shutdown()`` at TUI exit.  Replaces the per-call
-        # ``sd.play`` + ``sd.wait`` path that opened/closed the audio
-        # device on every utterance.
-        from .persistent_player import PersistentSoundDevicePlayer
-        self._PlayerCls = PersistentSoundDevicePlayer
+        # 0.3.0-refactor step 1+2: ONE long-lived output stream for the
+        # whole TTS lifetime.  Backend chosen at runtime from
+        # ``config.voice.audio_backend`` (default "sounddevice"):
+        #   - "sounddevice" : PortAudio path proven by
+        #     dev_tools/audio_smoke/voice_assistant_persistent.py
+        #   - "avaudio"     : AVAudioEngine path proven by
+        #     dev_tools/audio_smoke/voice_assistant_avaudio.py
+        # Lazy-opened by ``_ensure_player`` from ``warm()``; closed by
+        # ``shutdown()`` at TUI exit.
+        from .persistent_player import PersistentKokoroPlayer
+        self._PlayerCls = PersistentKokoroPlayer
         self._player: Any = None
+        # Operator can override the config-default backend at runtime
+        # via ``JAEGER_AUDIO_BACKEND`` for quick A/B testing without
+        # editing config.yaml.  Falls through to the config / "sounddevice"
+        # default in :meth:`_resolve_backend`.
+        self._backend_override = os.environ.get("JAEGER_AUDIO_BACKEND")
+
+    def _resolve_backend(self) -> str:
+        """Pick the audio backend for the persistent player.
+
+        Resolution order: env override → instance config → default
+        "sounddevice".  Validated against the supported set; an
+        unknown name falls back to "sounddevice" with a warning."""
+        candidate = self._backend_override
+        if not candidate:
+            try:
+                from jaeger_os.core.tools._common import _require_layout
+                from jaeger_os.core.instance.schemas import Config, load_yaml
+                layout = _require_layout()
+                cfg = load_yaml(layout.config_path, Config)
+                vc = getattr(cfg, "voice", None)
+                candidate = getattr(vc, "audio_backend", None) if vc else None
+            except Exception:  # noqa: BLE001 — config read is best-effort
+                candidate = None
+        if not candidate:
+            candidate = "sounddevice"
+        from .persistent_player import PersistentKokoroPlayer
+        if candidate not in PersistentKokoroPlayer.SUPPORTED_BACKENDS:
+            print(
+                f"[kokoro] unknown audio_backend {candidate!r}; "
+                f"falling back to 'sounddevice'",
+                file=sys.stderr, flush=True,
+            )
+            return "sounddevice"
+        return candidate
 
     # ── persistent player lifecycle ───────────────────────────────────
     def _ensure_player(self) -> Any:
-        """Open the persistent sounddevice OutputStream if it isn't
-        already.  Idempotent; safe to call from warm() AND from the
-        first speak()."""
+        """Open the persistent output stream if it isn't already.
+        Idempotent; safe to call from warm() AND from the first speak()."""
         if self._player is not None and self._player.is_open():
             return self._player
-        self._player = self._PlayerCls(samplerate=KOKORO_SAMPLE_RATE,
-                                       channels=1)
+        backend = self._resolve_backend()
+        self._player = self._PlayerCls(
+            backend=backend,
+            samplerate=KOKORO_SAMPLE_RATE, channels=1,
+        )
         self._player.start()
         print(f"[kokoro] persistent output stream open → "
-              f"device={self._player.device_index} "
+              f"backend={backend!r} device={self._player.device_index} "
               f"name={self._player.device_name!r}",
               file=sys.stderr, flush=True)
         return self._player

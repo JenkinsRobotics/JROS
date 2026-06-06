@@ -32,9 +32,13 @@ def test_check_environment_covers_every_category():
     # voice / vision / external / memory / messaging Python deps + system
     for expected in ("voice", "vision", "external", "system"):
         assert expected in cats, expected
-    # PortAudio + git are always probed
+    # The audio backend probe + git are always present.  0.3.0 renamed
+    # the audio check from "PortAudio" to "audio I/O" because the
+    # default backend on macOS is now AVAudioEngine (via avaudio_io)
+    # with PortAudio kept as the cross-platform fallback — the check
+    # probes whichever one is in use.
     names = {c.name for c in checks}
-    assert "PortAudio" in names and "git" in names
+    assert "audio I/O" in names and "git" in names
 
 
 def test_missing_returns_only_failures():

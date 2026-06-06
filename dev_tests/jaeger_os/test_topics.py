@@ -110,6 +110,7 @@ _REGISTERED: tuple[type[topics.TopicMessage], ...] = (
     topics.AudioOutFrame,
     topics.MotionCommand,
     topics.LightCommand,
+    topics.SpeechStop,
 )
 
 

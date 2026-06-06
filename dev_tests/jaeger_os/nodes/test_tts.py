@@ -233,3 +233,116 @@ def test_node_unsubscribes_on_teardown(bus):
     bus.publish(topics.SpeechCommand(text="post-stop"))
     time.sleep(0.2)
     assert synth.calls == []
+
+
+# ── barge-in (SpeechStop) ────────────────────────────────────────
+
+
+class _StoppableSynth:
+    """Mock synth whose speak() blocks until either timeout or stop()."""
+    def __init__(self):
+        self._stop_event = threading.Event()
+        self.stops_received = 0
+
+    def speak(self, text):
+        self._stop_event.clear()
+        stopped = self._stop_event.wait(timeout=5.0)
+        return {
+            "spoken": not stopped,
+            "elapsed_s": 0.1,
+            "reason": "interrupted" if stopped else None,
+        }
+
+    def stop(self):
+        self.stops_received += 1
+        self._stop_event.set()
+
+    def shutdown(self):
+        pass
+
+
+def test_speech_stop_interrupts_in_flight_speak(bus):
+    """SpeechStop published mid-speak fires synth.stop() and the
+    in-flight speak() returns with the interrupted ack.  Proves the
+    voice-loop barge-in primitive works end-to-end through the bus."""
+    import uuid
+    synth = _StoppableSynth()
+    node = TTSNode(bus=bus, synthesizer=synth, name="tts",
+                   install_signal_handlers=False)
+    thread = threading.Thread(target=node.run, daemon=True)
+    thread.start()
+    time.sleep(0.1)
+
+    cid = uuid.uuid4().hex
+    received: list[topics.TopicMessage] = []
+    ack_event = threading.Event()
+
+    def on_ack(msg):
+        if msg.correlation_id == cid:
+            received.append(msg)
+            ack_event.set()
+
+    bus.subscribe(topics.SENSE_SPOKEN, on_ack)
+    try:
+        bus.publish(topics.SpeechCommand(text="hello", correlation_id=cid))
+        # Let the synth's blocking speak() start.
+        time.sleep(0.2)
+        bus.publish(topics.SpeechStop(reason="test interrupt"))
+        # Synth should stop, speak() returns, ack publishes.
+        assert ack_event.wait(timeout=2.0), "no interrupted ack received"
+        assert synth.stops_received >= 1
+        ack = received[0]
+        assert ack.ok is False
+        assert ack.reason == "interrupted"
+        assert ack.correlation_id == cid
+    finally:
+        node.stop()
+        thread.join(timeout=2.0)
+
+
+def test_speech_stop_without_in_flight_speech_is_safe(bus):
+    """A SpeechStop arriving when nothing is playing must not crash
+    the node — stop() runs against an idle synth."""
+    synth = _StoppableSynth()
+    node = TTSNode(bus=bus, synthesizer=synth, name="tts",
+                   install_signal_handlers=False)
+    thread = threading.Thread(target=node.run, daemon=True)
+    thread.start()
+    time.sleep(0.1)
+
+    try:
+        bus.publish(topics.SpeechStop(reason="idle stop"))
+        time.sleep(0.2)
+        # stop() still ran (synth recorded it); node still healthy.
+        assert synth.stops_received == 1
+        assert node.state.value == "running"
+    finally:
+        node.stop()
+        thread.join(timeout=2.0)
+
+
+def test_speech_stop_synthesizer_without_stop_method_logs_and_continues(bus):
+    """If the synthesizer doesn't implement stop() (older Synthesizer
+    surface), the node logs but doesn't crash."""
+    class _NoStopSynth:
+        def speak(self, text):
+            return {"spoken": True, "elapsed_s": 0.0}
+        # NO stop() method
+        def shutdown(self):
+            pass
+
+    synth = _NoStopSynth()
+    node = TTSNode(bus=bus, synthesizer=synth, name="tts",
+                   install_signal_handlers=False)
+    thread = threading.Thread(target=node.run, daemon=True)
+    thread.start()
+    time.sleep(0.1)
+
+    try:
+        bus.publish(topics.SpeechStop(reason="no-op"))
+        time.sleep(0.2)
+        # Node should still be running.
+        assert node.state.value == "running"
+    finally:
+        node.stop()
+        thread.join(timeout=2.0)

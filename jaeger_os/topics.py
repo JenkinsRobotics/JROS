@@ -58,6 +58,13 @@ ACT_AUDIO_OUT = "/act/audio_out"
 ACT_MOTION = "/act/motion"
 ACT_LIGHT = "/act/light"
 
+# Control topics — interrupt / coordination commands ("stop /
+# pause / resume what's in flight") rather than "do this action".
+# Kept under ``/act/`` so the SUB-filter prefix at the brain side
+# stays uniform; future control topics (mic_pause,
+# stt_open_followup) will sit alongside.
+ACT_SPEECH_STOP = "/act/speech_stop"
+
 
 # ── common envelope ────────────────────────────────────────────────
 
@@ -190,6 +197,24 @@ class MotionCommand(TopicMessage):
     target_xy: list[float] = msgspec.field(default_factory=list)
 
 
+class SpeechStop(TopicMessage):
+    """Voice loop → TTS node: stop the current speech.  Barge-in
+    primitive — when the STT side detects sustained user voice
+    during TTS playback, the voice loop publishes this so the TTS
+    node interrupts its synthesizer.  The TTS node then publishes
+    a SpokenAck with ``ok=False`` / ``reason="interrupted"`` for
+    any in-flight bus.request waiting on the matching
+    correlation_id.
+
+    Reasonably blast-radius'd: callers don't need to know which
+    correlation_id is in flight; the TTS node maintains its own
+    state.  Pass ``correlation_id`` if you want the ack to be tied
+    back, otherwise the node uses whatever it's currently working
+    on."""
+    topic: Literal["/act/speech_stop"] = ACT_SPEECH_STOP
+    reason: str = "interrupted"
+
+
 class LightCommand(TopicMessage):
     """Brain → led_ctrl (JP01-AVC01 Teensy): RGB LED state.
 
@@ -217,6 +242,7 @@ TOPIC_TO_CLASS: dict[str, type[TopicMessage]] = {
     ACT_AUDIO_OUT: AudioOutFrame,
     ACT_MOTION: MotionCommand,
     ACT_LIGHT: LightCommand,
+    ACT_SPEECH_STOP: SpeechStop,
 }
 
 ALL_TOPICS: tuple[str, ...] = tuple(TOPIC_TO_CLASS.keys())
@@ -236,12 +262,14 @@ __all__ = [
     "SENSE_AUDIO_IN", "SENSE_TRANSCRIPT", "SENSE_VISION",
     "SENSE_TOUCH", "SENSE_PROPRIO", "SENSE_SPOKEN",
     "ACT_SPEECH", "ACT_AUDIO_OUT", "ACT_MOTION", "ACT_LIGHT",
+    "ACT_SPEECH_STOP",
     "ALL_TOPICS",
     # Envelope + concrete types
     "TopicMessage",
     "AudioInFrame", "Transcript", "VisionObservation",
     "TouchReading", "ProprioReading", "SpokenAck",
     "SpeechCommand", "AudioOutFrame", "MotionCommand", "LightCommand",
+    "SpeechStop",
     # Registry
     "TOPIC_TO_CLASS", "class_for_topic",
 ]

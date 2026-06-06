@@ -101,7 +101,10 @@ class TTSNode(Node):
 
     def setup(self) -> None:
         self.bus.subscribe(topics.ACT_SPEECH, self._on_speech_command)
-        self._log(f"subscribed to {topics.ACT_SPEECH}")
+        self.bus.subscribe(topics.ACT_SPEECH_STOP, self._on_speech_stop)
+        self._log(
+            f"subscribed to {topics.ACT_SPEECH} + {topics.ACT_SPEECH_STOP}"
+        )
 
     def tick(self) -> None:
         """Drain one queued speech request per tick.  Synthesis runs
@@ -116,6 +119,12 @@ class TTSNode(Node):
     def teardown(self) -> None:
         try:
             self.bus.unsubscribe(topics.ACT_SPEECH, self._on_speech_command)
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            self.bus.unsubscribe(
+                topics.ACT_SPEECH_STOP, self._on_speech_stop,
+            )
         except Exception:  # noqa: BLE001
             pass
         if self.synthesizer is not None:
@@ -140,6 +149,35 @@ class TTSNode(Node):
             self._publish_ack(
                 msg, ok=False, reason="TTS queue full", duration_s=0.0,
             )
+
+    def _on_speech_stop(self, msg: topics.TopicMessage) -> None:
+        """Barge-in primitive: the voice loop (or any other coordinator)
+        publishes :class:`SpeechStop` when it wants the in-flight speech
+        cut.  We forward to ``synthesizer.stop()`` if the engine
+        supports it; the in-flight ``synthesizer.speak()`` returns
+        promptly with ``spoken=False`` and the worker's normal
+        flow publishes the SpokenAck so any bus.request() in flight
+        wakes up.
+
+        Runs on the bus delivery thread — must not block.
+        ``synthesizer.stop()`` is implemented as a flag flip on
+        KokoroTTS, so it's effectively instant."""
+        assert isinstance(msg, topics.SpeechStop), (
+            f"TTS node got unexpected topic on speech_stop subscription: "
+            f"{msg.topic}"
+        )
+        stop = getattr(self.synthesizer, "stop", None)
+        if not callable(stop):
+            self._log(
+                "speech_stop received but synthesizer has no stop(); "
+                "ignoring"
+            )
+            return
+        try:
+            stop()
+        except Exception as exc:  # noqa: BLE001
+            self._log(f"synthesizer stop() raised: "
+                      f"{type(exc).__name__}: {exc}")
 
     def _handle(self, msg: topics.SpeechCommand) -> None:
         t0 = time.perf_counter()

@@ -1,9 +1,11 @@
 """Apple-native audio I/O for the Python voice loop.
 
 PyObjC ``AVAudioEngine`` wrappers exposed with the **same call surface
-as sounddevice's** ``InputStream`` / ``OutputStream`` so they're a
-drop-in replacement at the existing call sites in
-``plugins/whisper_stt/_base.py`` and ``plugins/kokoro_tts/node.py``.
+as sounddevice's** ``InputStream`` / ``OutputStream``.  ``InputStream``
+is used by the live mic path; ``OutputStream`` remains a generic
+compatibility wrapper for smoke tests and future call sites.  Kokoro
+TTS does not use the output wrapper in 0.3.0 — it schedules directly
+on ``AVAudioPlayerNode`` inside ``PersistentKokoroPlayer``.
 
 Why
 ---
@@ -58,9 +60,10 @@ Status (2026-06-04)
 * ``InputStream`` (mic capture): shipped + default backend on macOS
   via ``whisper_stt/_base.py``.  Voice-processing AEC auto-on when
   no speexdsp is wired.
-* ``OutputStream`` (speaker): shipped + integrated into
-  ``kokoro_tts/node.py`` behind the ``PersistentKokoroPlayer``
-  (persistent stream, queue-based feed, hardware-buffer drain).
+* ``OutputStream`` (speaker): shipped as the generic sounddevice-shaped
+  wrapper, but not used by Kokoro TTS in 0.3.0.  TTS uses direct
+  ``AVAudioPlayerNode.scheduleBuffer:completionHandler:`` scheduling
+  inside ``PersistentKokoroPlayer`` to avoid worker-thread pacing.
 * Smoke test (``smoke_test.py``): standalone, verifies capture +
   playback + loopback + AEC paths without touching the voice loop.
 * Fallback: when the bridge can't load (non-macOS, missing

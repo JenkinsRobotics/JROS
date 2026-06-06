@@ -185,12 +185,12 @@ def test_actions_dispatches_to_the_right_callback():
     calls or quit). One indirection so the GUI doesn't bind callbacks
     by identity; tests can inject stubs.
 
-    0.2.6 added ``open_voice`` (launches the voice loop) and
-    ``open_gui`` (placeholder for the PyQt6 floating chat) as required
-    fields on TrayActions; this test was written against the pre-
-    0.2.6 signature and is updated here to supply them.  Tray is
-    archived in 0.3.0-refactor but the tests remain valid because
-    the tray code stayed in tree.
+    Historical context: TrayActions added ``open_voice`` (launches the
+    voice loop) and ``open_gui`` (placeholder for the PyQt6 floating
+    chat) as required fields back in the 0.2.6 work; this test was
+    written against the older signature.  On the 0.3.0-refactor branch
+    tray code is archived but still in tree, so the test stays
+    relevant — just needs the two extra no-op lambdas.
     """
     calls = []
     actions = TrayActions(

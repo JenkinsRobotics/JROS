@@ -1,6 +1,6 @@
 # Jaeger-OS bench history
 
-_Generated 2026-06-06T14:40:21 from 49 run(s) across `dev_benchmark/sweep/` and `dev_benchmark/flat/` — showing runs on/after **2026-05-29** (current benchmark generation). Filtered out **14** entries for models no longer on disk — historical data preserved in ``dev_benchmark/flat/``._
+_Generated 2026-06-06T15:31:35 from 49 run(s) across `dev_benchmark/sweep/` and `dev_benchmark/flat/` — showing runs on/after **2026-05-29** (current benchmark generation). Filtered out **14** entries for models no longer on disk — historical data preserved in ``dev_benchmark/flat/``._
 
 **Bench corpus version: 1.1** (cutoff 2026-05-29). The leaderboard ranks only runs of this version so the comparison stays apples-to-apples; older 1.0 (51-case) runs are archived and shown separately at the bottom of the report.
 

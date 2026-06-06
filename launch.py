@@ -732,11 +732,19 @@ def main() -> int:
                         help="truncate <instance>/run/jaeger.log to 0")
     parser.add_argument("--health", action="store_true",
                         help="preflight checks and exit")
-    # 0.4 node infrastructure entry points (Track A).
+    # 0.4 node infrastructure entry points (Track A + B).
     parser.add_argument("--node-test", action="store_true",
                         help="run the 0.4 Track A verification gate "
                              "(echo-node round-trip in monolithic mode "
                              "by default) and exit")
+    parser.add_argument("--tts-test", action="store_true",
+                        help="run the 0.4 Track B.1 TTS node integration "
+                             "gate (loads real Kokoro + speaks a test "
+                             "phrase through the bus) and exit")
+    parser.add_argument("--tts-boot-test", action="store_true",
+                        help="boot-only TTS node check — loads Kokoro, "
+                             "verifies node lifecycle, no audio output. "
+                             "Safe for headless/CI runs.")
     parser.add_argument("--mode",
                         choices=["monolithic", "multiprocess"],
                         default="monolithic",
@@ -772,6 +780,17 @@ def main() -> int:
         import subprocess as _sp
         node_test_path = _REPO_ROOT / "dev_scripts" / "node_verification.py"
         return _sp.call([_sys.executable, str(node_test_path)])
+    if args.tts_test or args.tts_boot_test:
+        # 0.4 Track B.1 TTS node integration gate.  --tts-test speaks
+        # audibly through the speakers (operator audio gate);
+        # --tts-boot-test loads Kokoro + checks node lifecycle without
+        # audio output (safe for headless / autonomous runs).
+        import subprocess as _sp
+        tts_test_path = _REPO_ROOT / "dev_scripts" / "tts_node_test.py"
+        cmd = [_sys.executable, str(tts_test_path)]
+        if args.tts_boot_test:
+            cmd.append("--boot-only")
+        return _sp.call(cmd, env=env)
     if args.mode == "multiprocess":
         # Track A.7 + Track B work — the node-splitting + broker
         # pieces aren't in place yet.  Fail loudly so the operator

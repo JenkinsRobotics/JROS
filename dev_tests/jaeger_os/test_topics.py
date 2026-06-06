@@ -1,15 +1,17 @@
 """Test suite for ``jaeger_os.topics`` — the 0.4 node-topic SSOT.
 
-Track A step 1 of the 0.4 roadmap.  These tests pin the topic-
-namespace contract so future Bus + Node code can rely on it.
+Track A.1 of the 0.4 roadmap.  Schemas are msgspec.Struct (not
+Pydantic) per the operator-resolved transport-schema decision; tests
+exercise msgspec's JSON encode/decode + the forbid_unknown_fields
+validation.
 """
 
 from __future__ import annotations
 
 import time
 
+import msgspec
 import pytest
-from pydantic import ValidationError
 
 from jaeger_os import topics
 
@@ -74,16 +76,16 @@ def test_envelope_timestamp_is_recent():
 
 def test_envelope_correlation_id_defaults_to_none():
     """Non-RPC messages don't need a correlation_id."""
-    msg = topics.AudioInFrame(samples=b"")
+    msg = topics.AudioInFrame()
     assert msg.correlation_id is None
 
 
 def test_envelope_correlation_id_round_trips_via_json():
-    """An explicit correlation_id survives serialization."""
+    """An explicit correlation_id survives JSON serialization."""
     msg = topics.SpeechCommand(text="hello", correlation_id="abc123")
-    payload = msg.model_dump_json()
-    parsed = topics.SpeechCommand.model_validate_json(payload)
-    assert parsed.correlation_id == "abc123"
+    encoded = msgspec.json.encode(msg)
+    decoded = msgspec.json.decode(encoded, type=topics.SpeechCommand)
+    assert decoded.correlation_id == "abc123"
 
 
 def test_envelope_topic_v_defaults_to_one():
@@ -94,30 +96,29 @@ def test_envelope_topic_v_defaults_to_one():
 
 # ── per-class invariants ───────────────────────────────────────────
 
-# Each (cls, required_kwargs) tuple covers one registered topic.
-# The required kwargs are the minimum needed to instantiate the
-# class without ValidationError; the test below uses them to prove
-# the topic field pins to the right constant.
-_INSTANTIABLE: tuple[tuple[type[topics.TopicMessage], dict], ...] = (
-    (topics.AudioInFrame, {"samples": b""}),
-    (topics.Transcript, {"text": ""}),
-    (topics.VisionObservation, {"image_w": 0, "image_h": 0}),
-    (topics.TouchReading, {"sensor_id": "", "in_contact": False}),
-    (topics.ProprioReading, {}),
-    (topics.SpokenAck, {"ok": True}),
-    (topics.SpeechCommand, {"text": ""}),
-    (topics.AudioOutFrame, {"samples": b""}),
-    (topics.MotionCommand, {}),
-    (topics.LightCommand, {}),
+# Each registered topic class is parameterised here.  msgspec
+# Structs with kw_only=True don't require constructor args — all
+# fields have defaults — so no kwargs dict is needed.
+_REGISTERED: tuple[type[topics.TopicMessage], ...] = (
+    topics.AudioInFrame,
+    topics.Transcript,
+    topics.VisionObservation,
+    topics.TouchReading,
+    topics.ProprioReading,
+    topics.SpokenAck,
+    topics.SpeechCommand,
+    topics.AudioOutFrame,
+    topics.MotionCommand,
+    topics.LightCommand,
 )
 
 
-@pytest.mark.parametrize("cls,kwargs", _INSTANTIABLE)
-def test_topic_class_pins_its_constant(cls, kwargs):
+@pytest.mark.parametrize("cls", _REGISTERED)
+def test_topic_class_pins_its_constant(cls):
     """Default-construction of each class must produce ``msg.topic``
     equal to the registered constant.  Catches Literal-vs-constant
     typos at the class definition level."""
-    msg = cls(**kwargs)
+    msg = cls()
     name = msg.topic
     assert name in topics.TOPIC_TO_CLASS, (
         f"{cls.__name__}.topic = {name!r}, not a registered topic"
@@ -128,28 +129,56 @@ def test_topic_class_pins_its_constant(cls, kwargs):
     )
 
 
-@pytest.mark.parametrize("cls,kwargs", _INSTANTIABLE)
-def test_extra_fields_are_rejected(cls, kwargs):
-    """``ConfigDict(extra='forbid')`` must catch unrecognised
-    payload keys — otherwise a typo silently drops the value."""
-    bad = {**kwargs, "this_field_does_not_exist": 42}
-    with pytest.raises(ValidationError):
-        cls(**bad)
+@pytest.mark.parametrize("cls", _REGISTERED)
+def test_extra_fields_are_rejected_at_decode(cls):
+    """``forbid_unknown_fields=True`` must catch unrecognised payload
+    keys arriving over the wire — otherwise a typo silently drops
+    the value."""
+    canonical = msgspec.json.encode(cls())
+    # Inject an unknown key into the encoded JSON.
+    bad = canonical.rstrip(b"}") + b',"this_field_does_not_exist":42}'
+    with pytest.raises(msgspec.ValidationError):
+        msgspec.json.decode(bad, type=cls)
 
 
-# ── per-class field defaults that matter ──────────────────────────
+@pytest.mark.parametrize("cls", _REGISTERED)
+def test_topic_field_rejected_when_mismatched(cls):
+    """A wire payload claiming the wrong topic for the class must
+    fail decode — msgspec validates Literal types."""
+    canonical = msgspec.json.encode(cls())
+    # Replace the topic value with a known-different one.
+    other_topic = next(t for t in topics.ALL_TOPICS if t != cls().topic)
+    bad = canonical.replace(
+        f'"topic":"{cls().topic}"'.encode(),
+        f'"topic":"{other_topic}"'.encode(),
+    )
+    with pytest.raises(msgspec.ValidationError):
+        msgspec.json.decode(bad, type=cls)
+
+
+# ── per-class field semantics ─────────────────────────────────────
 
 def test_audio_in_frame_carries_binary_samples():
-    """Binary samples survive ``model_dump()`` (dict form preserves
-    the bytes object).  JSON round-trip on raw bytes is intentionally
-    NOT supported — per ROADMAP_0.4.md open question #2, binary
-    topics (audio_in, audio_out, vision) ride MessagePack on the
-    wire which handles bytes natively.  Text topics ride JSON."""
+    """Binary samples survive msgpack round-trip natively — no
+    base64 hop needed (the whole point of using MessagePack for
+    binary topics per ROADMAP_0.4.md open question #2)."""
     raw = b"\x00\x01\x02\xff\xfe\xfd"
     msg = topics.AudioInFrame(samples=raw, sample_rate=16000)
-    dumped = msg.model_dump()
-    assert dumped["samples"] == raw
-    assert dumped["sample_rate"] == 16000
+    encoded = msgspec.msgpack.encode(msg)
+    decoded = msgspec.msgpack.decode(encoded, type=topics.AudioInFrame)
+    assert decoded.samples == raw
+    assert decoded.sample_rate == 16000
+
+
+def test_audio_in_frame_json_uses_base64_for_bytes():
+    """JSON encoding of bytes goes through base64 in msgspec (same
+    as Pydantic), so JSON round-trip ALSO works — text-topic-only
+    is a guideline for performance, not a hard constraint."""
+    raw = b"\x00\x01\x02\xff\xfe\xfd"
+    msg = topics.AudioInFrame(samples=raw, sample_rate=16000)
+    encoded = msgspec.json.encode(msg)
+    decoded = msgspec.json.decode(encoded, type=topics.AudioInFrame)
+    assert decoded.samples == raw
 
 
 def test_text_topic_json_round_trips():
@@ -164,8 +193,8 @@ def test_text_topic_json_round_trips():
         node_id="stt",
         correlation_id="utt-42",
     )
-    payload = original.model_dump_json()
-    parsed = topics.Transcript.model_validate_json(payload)
+    encoded = msgspec.json.encode(original)
+    parsed = msgspec.json.decode(encoded, type=topics.Transcript)
     assert parsed.text == "hello world"
     assert parsed.confidence == 0.92
     assert parsed.is_final is True
@@ -218,28 +247,18 @@ def test_spoken_ack_carries_failure_reason():
     assert msg.reason == "audio device locked"
 
 
-# ── invariant we want at the API level ────────────────────────────
+# ── msgspec-specific performance hints (smoke, not assertion) ─────
 
-def test_topic_constants_match_class_topic_defaults():
-    """Each module-level constant must equal the topic-default of
-    the class registered for it.  Belt-and-suspenders against drift
-    when a constant or a class default is renamed in isolation."""
-    pairs = (
-        (topics.SENSE_AUDIO_IN, topics.AudioInFrame),
-        (topics.SENSE_TRANSCRIPT, topics.Transcript),
-        (topics.SENSE_VISION, topics.VisionObservation),
-        (topics.SENSE_TOUCH, topics.TouchReading),
-        (topics.SENSE_PROPRIO, topics.ProprioReading),
-        (topics.SENSE_SPOKEN, topics.SpokenAck),
-        (topics.ACT_SPEECH, topics.SpeechCommand),
-        (topics.ACT_AUDIO_OUT, topics.AudioOutFrame),
-        (topics.ACT_MOTION, topics.MotionCommand),
-        (topics.ACT_LIGHT, topics.LightCommand),
+def test_messagepack_smaller_than_json_for_audio():
+    """Sanity: MessagePack should produce a smaller wire form than
+    JSON for binary topics — that's why we use it for audio frames.
+    Not a hard contract, just a guard against accidental regression
+    if msgspec's encoder ever changes shape."""
+    raw = b"\x00" * 320  # 20 ms of 16 kHz mono float32
+    msg = topics.AudioInFrame(samples=raw)
+    json_bytes = msgspec.json.encode(msg)
+    msgpack_bytes = msgspec.msgpack.encode(msg)
+    assert len(msgpack_bytes) < len(json_bytes), (
+        f"msgpack={len(msgpack_bytes)}B, json={len(json_bytes)}B — "
+        "expected msgpack to be smaller for binary payload"
     )
-    for constant, cls in pairs:
-        # Get the topic field's default by inspecting model fields
-        topic_field = cls.model_fields["topic"]
-        assert topic_field.default == constant, (
-            f"{cls.__name__}.topic default = {topic_field.default!r}, "
-            f"expected {constant!r}"
-        )

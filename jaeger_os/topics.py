@@ -4,12 +4,13 @@ Pure schemas + constants.  No transport dependency.  Both the
 in-process Bus (Track A.2) and the future ZMQ transport (Track A.5)
 import from here.
 
-Every message is a Pydantic model that inherits from
-:class:`TopicMessage` — the common envelope carries the topic name,
-schema version, emit timestamp, sequence number, source node ID,
-and an optional correlation ID for the tool/RPC pattern (the
-operator's "tools = networking, nodes = execution" contract from
-``dev_docs/ROADMAP_0.4.md``).
+Schemas are :class:`msgspec.Struct`, not Pydantic models — 10×
+faster on the transport hot path AND native MessagePack support
+for the binary topics (audio frames, vision frames).  Pydantic
+stays in JROS for config validation + tool schemas where its
+richer ecosystem earns the overhead; transport schemas live where
+microseconds matter.  See ``dev_docs/ROADMAP_0.4.md`` open question
+#2 (resolved): JSON for text topics, MessagePack for binary topics.
 
 Namespace
 ---------
@@ -23,15 +24,16 @@ Namespace
 Adding a new topic
 ------------------
 1. Add an ``UPPER_SNAKE_CASE`` constant.
-2. Add a Pydantic class that inherits from :class:`TopicMessage`,
-   with ``topic: Literal[CONSTANT] = CONSTANT``.
+2. Add a :class:`msgspec.Struct` subclass that inherits
+   :class:`TopicMessage`, with
+   ``topic: Literal[CONSTANT] = CONSTANT``.
 3. Register it in :data:`TOPIC_TO_CLASS`.
-4. Bump ``topic_v`` (default 1) only if you change a payload field
-   in a breaking way; add a migration note in the docstring.
+4. Only bump ``topic_v`` (default 1) on breaking payload changes;
+   add a migration note in the docstring.
 
 The test suite enforces that every constant in :data:`ALL_TOPICS`
-has a registered class, that classes pin their constant, and that
-``ConfigDict(extra="forbid")`` catches typos at validation time.
+has a registered class, that subclasses pin their constant, and
+that ``forbid_unknown_fields=True`` catches typos at decode time.
 """
 
 from __future__ import annotations
@@ -39,7 +41,7 @@ from __future__ import annotations
 import time
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+import msgspec
 
 
 # ── topic name constants ──────────────────────────────────────────
@@ -59,17 +61,27 @@ ACT_LIGHT = "/act/light"
 
 # ── common envelope ────────────────────────────────────────────────
 
-class TopicMessage(BaseModel):
+class TopicMessage(
+    msgspec.Struct,
+    kw_only=True,
+    forbid_unknown_fields=True,
+):
     """Common envelope every topic payload inherits.
 
-    Subclasses define their own payload fields and pin ``topic`` to
-    the matching constant via ``Literal``.
-    """
-    model_config = ConfigDict(extra="forbid")
+    ``kw_only=True`` lets subclasses freely mix required and default-
+    bearing fields without dataclass-style ordering pain.
 
+    ``forbid_unknown_fields=True`` makes msgspec raise on unknown
+    keys during decode — analogous to Pydantic's ``extra="forbid"``
+    so a typo'd field name on the wire is a hard error, not a
+    silent drop.
+
+    Subclasses pin ``topic`` to a Literal whose only value is the
+    matching constant.  msgspec validates this at decode time too.
+    """
     topic: str
     topic_v: int = 1
-    t_emit_ns: int = Field(default_factory=lambda: time.time_ns())
+    t_emit_ns: int = msgspec.field(default_factory=time.time_ns)
     seq: int = 0
     node_id: str = ""
     correlation_id: str | None = None
@@ -79,10 +91,10 @@ class TopicMessage(BaseModel):
 
 class AudioInFrame(TopicMessage):
     """Raw mic samples from an audio_in node.  Binary payload —
-    intended for MessagePack on the wire (JSON falls back to base64
-    via Pydantic's default ``bytes`` encoder)."""
+    intended for MessagePack on the wire (msgspec encodes ``bytes``
+    natively; JSON would need a base64 hop)."""
     topic: Literal["/sense/audio_in"] = SENSE_AUDIO_IN
-    samples: bytes  # float32 little-endian PCM
+    samples: bytes = b""  # float32 little-endian PCM
     sample_rate: int = 16000
     channels: int = 1
 
@@ -90,8 +102,8 @@ class AudioInFrame(TopicMessage):
 class Transcript(TopicMessage):
     """STT output for a finalized utterance."""
     topic: Literal["/sense/transcript"] = SENSE_TRANSCRIPT
-    text: str
-    confidence: float = 0.0  # 0..1; 0.0 = unknown
+    text: str = ""
+    confidence: float = 0.0   # 0..1; 0.0 = unknown
     language: str = "en"
     is_final: bool = True
     duration_s: float = 0.0
@@ -99,12 +111,12 @@ class Transcript(TopicMessage):
 
 class VisionObservation(TopicMessage):
     """Single frame of visual scene understanding.  YOLOv8-compatible
-    box format so JP01-VCC01's existing CSI-camera inference drops in
-    without translation."""
+    box format so JP01-VCC01's CSI-camera inference drops in without
+    translation."""
     topic: Literal["/sense/vision"] = SENSE_VISION
-    image_w: int
-    image_h: int
-    boxes: list[dict] = Field(default_factory=list)
+    image_w: int = 0
+    image_h: int = 0
+    boxes: list[dict] = msgspec.field(default_factory=list)
     # Each box: {cls: str, conf: float, xyxy: [x1, y1, x2, y2]}
     scene: str = ""  # optional scene-level description
 
@@ -112,18 +124,20 @@ class VisionObservation(TopicMessage):
 class TouchReading(TopicMessage):
     """Contact-sensor reading from skin / bumpers."""
     topic: Literal["/sense/touch"] = SENSE_TOUCH
-    sensor_id: str
-    in_contact: bool
+    sensor_id: str = ""
+    in_contact: bool = False
     force_n: float = 0.0
 
 
 class ProprioReading(TopicMessage):
     """Encoder + IMU state from JP01-MC01 (ESP32 motion controller)."""
     topic: Literal["/sense/proprio"] = SENSE_PROPRIO
-    joints_rad: list[float] = Field(default_factory=list)
-    joints_vel_rps: list[float] = Field(default_factory=list)
-    imu_quat: list[float] = Field(default_factory=list)   # [w, x, y, z]
-    imu_omega: list[float] = Field(default_factory=list)  # [wx, wy, wz]
+    joints_rad: list[float] = msgspec.field(default_factory=list)
+    joints_vel_rps: list[float] = msgspec.field(default_factory=list)
+    imu_quat: list[float] = msgspec.field(default_factory=list)
+    # imu_quat: [w, x, y, z]
+    imu_omega: list[float] = msgspec.field(default_factory=list)
+    # imu_omega: [wx, wy, wz]
 
 
 class SpokenAck(TopicMessage):
@@ -132,7 +146,7 @@ class SpokenAck(TopicMessage):
     text_to_speech tool waits on this (correlation_id-matched) before
     returning to the agent loop."""
     topic: Literal["/sense/spoken"] = SENSE_SPOKEN
-    ok: bool
+    ok: bool = False
     duration_s: float = 0.0
     reason: str | None = None  # populated when ok=False
 
@@ -141,10 +155,10 @@ class SpokenAck(TopicMessage):
 
 class SpeechCommand(TopicMessage):
     """Brain → tts: speak the given text.  Set ``correlation_id`` to
-    match against the :class:`SpokenAck` reply for the tool-RPC
-    pattern."""
+    match against the :class:`SpokenAck` reply (the tool-RPC
+    pattern)."""
     topic: Literal["/act/speech"] = ACT_SPEECH
-    text: str
+    text: str = ""
     voice: str = "af_heart"
     rate: float = 1.0  # 1.0 = normal speed
 
@@ -153,7 +167,7 @@ class AudioOutFrame(TopicMessage):
     """Synthesized audio frames bound for the speaker.  Binary
     payload; published by the tts node, consumed by audio_out."""
     topic: Literal["/act/audio_out"] = ACT_AUDIO_OUT
-    samples: bytes  # float32 little-endian PCM
+    samples: bytes = b""  # float32 little-endian PCM
     sample_rate: int = 24000
     channels: int = 1
 
@@ -173,7 +187,7 @@ class MotionCommand(TopicMessage):
     angular_z_rps: float = 0.0
     duration_s: float = 0.0
     use_waypoint: bool = False
-    target_xy: list[float] = Field(default_factory=list)
+    target_xy: list[float] = msgspec.field(default_factory=list)
 
 
 class LightCommand(TopicMessage):
@@ -185,7 +199,7 @@ class LightCommand(TopicMessage):
     until the next command."""
     topic: Literal["/act/light"] = ACT_LIGHT
     strip_id: str = "default"
-    rgb: list[int] = Field(default_factory=lambda: [0, 0, 0])
+    rgb: list[int] = msgspec.field(default_factory=lambda: [0, 0, 0])
     pattern: str = "solid"  # "solid" | "pulse" | "rainbow" | "off"
     duration_ms: int = 0
 
@@ -209,7 +223,7 @@ ALL_TOPICS: tuple[str, ...] = tuple(TOPIC_TO_CLASS.keys())
 
 
 def class_for_topic(topic: str) -> type[TopicMessage]:
-    """Look up the Pydantic class for a topic string.
+    """Look up the msgspec.Struct subclass for a topic string.
 
     Raises ``KeyError`` for unknown topics — call sites should treat
     this as a hard error (an unknown topic indicates schema drift,

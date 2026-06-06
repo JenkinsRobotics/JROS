@@ -44,47 +44,103 @@ swappable.
 
 ---
 
-## Architecture diagram
+## Architecture diagram (canonical, 2026-06-06 operator-confirmed)
 
 ```
-                ┌──────────────────────────────────┐
-                │       BRAIN  (Mac)               │
-                │   LLM + agent loop + tools       │  
-                │   subscribes /sense/* topics     │
-                │   publishes /act/* topics        │
-                └──────────┬───────────────────────┘
-                           │ ZMQ pub/sub
-              ┌────────────┼──────────────┐
-              │            │              │
-     ┌────────▼─────┐ ┌────▼────────┐ ┌───▼────────┐
-     │  audio_in    │ │  audio_out  │ │  vision    │
-     │  (Mac mic)   │ │  (Mac spk)  │ │  (Jetson)  │
-     └──────────────┘ └─────────────┘ └────────────┘
-              │            ▲              │
-     ┌────────▼─────┐      │     ┌────────▼─────────┐
-     │   stt        │      │     │    moondream     │
-     │  (Whisper)   │      │     │    vision_lm     │
-     └──────────────┘      │     └──────────────────┘
-              │            │
-     ┌────────▼─────┐ ┌────┴────────┐
-     │ /sense/      │ │  /act/      │   ← canonical topic namespaces
-     │ transcript   │ │ audio_out   │
-     │ vision       │ │ motion      │
-     │ touch        │ │ light       │
-     │ proprio      │ │ speech      │
-     └──────────────┘ └─────────────┘
-                           │
-              ┌────────────┴──────────────┐
-              │                           │
-     ┌────────▼─────┐           ┌─────────▼────────┐
-     │  motor_ctrl  │           │   led_ctrl       │
-     │  (Teensy)    │           │   (ESP32)        │
-     └──────────────┘           └──────────────────┘
+                    ┌────────────────────────────────────────┐
+                    │            BRAIN NODE  (Mac)            │
+                    │                                         │
+                    │   LLM (Gemma) + agent loop              │
+                    │   In-process: tools, memory, skills,    │
+                    │                permissions, persona     │
+                    │                                         │
+                    │   Tools = networking shims:             │
+                    │     - text_to_speech → publish /act/speech
+                    │     - listen        → subscribe /sense/transcript
+                    │     - vision_analyze → subscribe /sense/vision
+                    │     - computer_use  → publish /act/motion etc.
+                    └────────────┬────────────────────────────┘
+                                 │ ZMQ pub/sub
+              ┌──────────────────┼──────────────────┐
+              │                  │                  │
+     ┌────────▼─────┐    ┌───────▼──────┐    ┌──────▼──────┐
+     │  audio_in    │    │   audio_out  │    │   vision    │
+     │  (Mac mic)   │    │   (Mac spk)  │    │   (Jetson)  │
+     │  PUB /sense/ │    │  SUB /act/   │    │  PUB /sense/│
+     │  audio_in    │    │  audio_out   │    │  vision     │
+     └──────┬───────┘    └──────▲───────┘    └─────────────┘
+            │                   │
+     ┌──────▼───────┐    ┌──────┴───────┐
+     │   stt        │    │   tts        │   ← own nodes; backend-swappable
+     │  (Whisper)   │    │  (Kokoro)    │      (today's Kokoro tomorrow's
+     │  SUB audio_in│    │  SUB /act/   │       MLX-TTS or NeuTTS without
+     │  PUB transcr │    │  speech      │       touching the brain)
+     │              │    │  PUB audio_out
+     └──────────────┘    └──────────────┘
+            │                   │
+            ▼                   ▼
+         /sense/transcript      /sense/spoken (TTS ack)
+
+   ┌─────────────────────────────────────────────────────┐
+   │ Canonical topic namespaces                           │
+   │   /sense/audio_in       raw mic frames (binary)     │
+   │   /sense/transcript     STT text + confidence (JSON)│
+   │   /sense/vision         YOLOv8 boxes / scene (JSON) │
+   │   /sense/touch          contact sensors (JSON)      │
+   │   /sense/proprio        encoders + IMU (JSON)       │
+   │   /sense/spoken         TTS-done ack (JSON)         │
+   │   /act/speech           text to speak (JSON)        │
+   │   /act/audio_out        raw speaker frames (binary) │
+   │   /act/motion           motor commands (JSON)       │
+   │   /act/light            LED commands (JSON)         │
+   └─────────────────────────────────────────────────────┘
+                              │
+              ┌───────────────┴──────────────────┐
+              │                                  │
+     ┌────────▼─────────┐              ┌─────────▼────────┐
+     │  motor_ctrl      │              │   led_ctrl       │
+     │  (ESP32, MC01)   │              │   (Teensy, AVC01)│
+     │  SUB /act/motion │              │   SUB /act/light │
+     │  PUB /sense/proprio              │  PUB /sense/spoken
+     └──────────────────┘              └──────────────────┘
 ```
 
-The brain doesn't know whether `audio_in` is a Mac mic, a Jetson mic, or
-a simulated mic.  It subscribes to `/sense/audio_in` — wherever that
-message comes from.
+**Key architectural decisions** (locked 2026-06-06):
+
+1. **One brain process, N hardware-bound peripheral nodes.**  Not one
+   node per tool — that's the ROS 2 mistake (extreme granularity).
+   The brain's tools, memory, and skill registry stay in-process for
+   sub-microsecond function-call latency.
+
+2. **STT and TTS are their own nodes, not in the brain.**  Operator
+   call: voice pipelines will evolve; today's Kokoro becomes
+   tomorrow's MLX-TTS or NeuTTS without touching the brain.  Same
+   `/act/speech` and `/sense/transcript` topic contract; the
+   subscriber implementation swaps freely.  Bonus: STT can move to
+   Jetson GPU later for CUDA acceleration without the brain
+   noticing.
+
+3. **Tool ↔ node contract** (operator's framing, kept verbatim):
+   "A tool does the networking and the node does the execution."
+   The agent's tool surface stays identical to today's:
+
+   ```python
+   text_to_speech("hello")   # same signature
+   listen(seconds=5)          # same signature
+   ```
+
+   What changes is the implementation: instead of calling Kokoro
+   in-process, the tool publishes to `/act/speech` and waits for
+   the matching `/sense/spoken` ack with a correlation ID.  In
+   monolithic mode (single process, inproc transport) the round-trip
+   is microseconds; in multi-process mode it's still sub-millisecond
+   on localhost.
+
+4. **The brain doesn't know where its peripherals run.**  It
+   subscribes to `/sense/audio_in` — wherever that comes from
+   (Mac mic, Jetson mic, simulated mic from a WAV file).  This is
+   what unlocks the Mac-only → Mac+Jetson+Teensy+ESP32 transition
+   without rewriting the brain.
 
 ---
 
@@ -221,33 +277,46 @@ code path for nodes-as-threads OR nodes-as-processes.
 
 ---
 
-## Open questions
+## Resolved decisions (2026-06-06 lock-in)
+
+  ✦ **STT/TTS placement.**  RESOLVED — own nodes, not in the brain.
+    Voice pipelines will evolve; today's Kokoro + Whisper become
+    tomorrow's MLX-TTS or NeuTTS without touching the brain.  Same
+    `/act/speech` and `/sense/transcript` topic contract; subscriber
+    implementation swaps freely.  Bonus: STT can move to Jetson GPU
+    later without the brain noticing.
+
+  ✦ **Tool ↔ node dispatch contract.**  RESOLVED — "**a tool does
+    the networking, the node does the execution**" (operator's
+    phrasing, kept as the canonical formulation).  The agent's tool
+    signatures stay identical to today's; the implementation goes
+    from in-process call to topic publish + correlation-ID wait for
+    the ack message.  Sub-ms round-trip in both monolithic and
+    multi-process modes.
+
+  ✦ **Library inventory.**  RESOLVED — JP01_Firmware + VoiceLLM
+    reviewed (`dev_docs/library_review/`); Lilith-AI explicitly
+    skipped per operator (hasn't tracked JROS); Hermes also delisted.
+
+## Still open
 
 1. **Brain co-location.**  Does the brain stay on the Mac, or does it
    also live on the Jetson?  Today Gemma needs unified memory (Apple
    Silicon).  Jetson can host smaller models but not 26B-class.  TBD
    whether 0.4 supports both as configurable.
 
-2. **Message serialization.**  MessagePack vs Pydantic JSON vs raw
-   protobuf.  MessagePack is the leading candidate for the hardware
-   topics (binary, fast); JSON for human-debuggable topics like
-   transcripts.  Need to pick before Track A locks the wire format.
+2. **Message serialization.**  Lean is **JSON for text topics**
+   (`/sense/transcript`, `/act/motion`, `/sense/spoken`) — human-
+   readable in `tcpdump`, easy to inspect — and **MessagePack for
+   binary topics** (`/sense/audio_in`, `/act/audio_out`,
+   `/sense/vision`) — 30-50 % smaller, faster encode/decode.  Operator
+   sign-off needed before Track A locks the wire format.
 
 3. **Time sync across boards.**  Mac↔Jetson↔Teensy clock drift will
    matter for proprio + vision fusion.  PTP?  NTP?  Custom-on-USB?
    Probably out of scope for 0.4.0, but the topic schema should
-   carry a `t_emit_ns` field from day one.
-
-4. **Tool ↔ node mapping.**  Today the brain's tools call into
-   in-process plugins (Kokoro, Whisper, Moondream).  Once those are
-   nodes, the agent's tool surface needs to dispatch to ZMQ instead.
-   The tool definition can stay the same; the implementation routes
-   through the topic layer.  Need to design this contract.
-
-5. **What library inventory does the operator want to absorb?**  The
-   operator has signalled they want to drop other repos into the
-   workspace for review (likely ROS-adjacent + agentic).  Reserve a
-   `dev_docs/library_review/` directory for those notes.
+   carry a `t_emit_ns` field from day one so the data's there when
+   sync arrives.
 
 ---
 

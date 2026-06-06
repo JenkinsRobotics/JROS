@@ -98,6 +98,34 @@ def _infer_bench_version(summary: dict[str, Any]) -> str:
 _DEFAULT_MIN_CASES = 50
 
 
+def _canonical_model_name(
+    model_path: str | None = None,
+    *,
+    name: str | None = None,
+) -> str:
+    """Collapse GGUF path/name casing drift to the registry key."""
+    raw_name = name or ""
+    if model_path:
+        p = pathlib.Path(str(model_path))
+        raw_name = raw_name or p.stem
+        filename = p.name.lower()
+    else:
+        filename = f"{raw_name}.gguf".lower() if raw_name else ""
+
+    try:
+        from jaeger_os.core.models.model_resolver import MODEL_REGISTRY
+        for key, info in MODEL_REGISTRY.items():
+            hf_file = str(info.get("hf_file", ""))
+            if filename and hf_file.lower() == filename:
+                return key
+            if raw_name and pathlib.Path(hf_file).stem.lower() == raw_name.lower():
+                return key
+    except Exception:  # noqa: BLE001 — history rendering should not fail
+        pass
+
+    return raw_name.lower().replace("_", "-") if raw_name else "unknown"
+
+
 def _cmd_bench_history_argv(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(
         prog="jaeger bench history", add_help=False,
@@ -355,9 +383,10 @@ def _from_sweep_jsonl(repo: pathlib.Path) -> Iterable[dict[str, Any]]:
                 # case count (same rule the flat-summary path uses).
                 bv = _CURRENT_BENCH_VERSION if cases >= 59 else "1.0"
                 ts = row.get("ts") or ""
+                model = _canonical_model_name(name=row.get("name") or "unknown")
                 yield {
-                    "model": row.get("name") or "unknown",
-                    "family": _family_of(row.get("name") or ""),
+                    "model": model,
+                    "family": _family_of(model),
                     "source": "sweep",
                     "ts": ts,
                     "benchmark_version": bv,
@@ -421,7 +450,10 @@ def _from_flat_summaries(repo: pathlib.Path) -> Iterable[dict[str, Any]]:
             continue
         run_dir = summary_path.parent
         metrics = summary.get("metrics") or {}
-        model = summary.get("model_name") or "unknown"
+        model = _canonical_model_name(
+            summary.get("model_path"),
+            name=summary.get("model_name") or "unknown",
+        )
         route_total = int(summary.get("routing_total", 0) or 0)
         route_passed = int(summary.get("routing_passed", 0) or 0)
         route_pct = (100 * route_passed / route_total) if route_total else 0.0
@@ -873,7 +905,7 @@ def _installed_model_stems(repo: pathlib.Path | None = None) -> set[str]:
             if real in seen_real:
                 continue
             seen_real.add(real)
-            stem = gguf.stem
+            stem = _canonical_model_name(str(gguf), name=gguf.stem)
             if stem.startswith("mmproj-"):
                 continue
             stems.add(stem)

@@ -97,7 +97,7 @@ def test_sweep_jsonl_parses_rows_and_skips_zero_case_runs(fake_repo):
     entries = list(bhv._from_sweep_jsonl(fake_repo))
     assert len(entries) == 1
     e = entries[0]
-    assert e["model"] == "gemma-4-26B-A4B"
+    assert e["model"] == "gemma-4-26b-a4b"
     assert e["family"] == "gemma"
     assert e["source"] == "sweep"
     assert e["cases"] == 34
@@ -148,7 +148,7 @@ def test_flat_summaries_parse_modern_format(fake_repo):
     entries = list(bhv._from_flat_summaries(fake_repo))
     assert len(entries) == 1
     e = entries[0]
-    assert e["model"] == "gemma-4-E4B-it-Q4_K_M"
+    assert e["model"] == "gemma-4-e4b-it-q4-k-m"
     assert e["family"] == "gemma"
     assert e["source"] == "flat"
     assert e["pass_rate"] == 0.922
@@ -211,8 +211,8 @@ def test_flat_summaries_walks_new_nested_layout(fake_repo):
     )
     entries = list(bhv._from_flat_summaries(fake_repo))
     models = sorted(e["model"] for e in entries)
-    assert models == ["gemma-4-26B-A4B-it-Q4_K_M", "gemma-4-E4B-it-Q4_K_M"]
-    e4b = next(e for e in entries if e["model"] == "gemma-4-E4B-it-Q4_K_M")
+    assert models == ["gemma-4-26b-a4b-it-q4_k_m", "gemma-4-e4b-it-q4-k-m"]
+    e4b = next(e for e in entries if e["model"] == "gemma-4-e4b-it-q4-k-m")
     # ``run_dir`` should reflect the new layout.
     assert "gemma-4-E4B-it-Q4_K_M" in e4b["run_dir"]
     assert "20260527-110000" in e4b["run_dir"]
@@ -237,7 +237,7 @@ def test_flat_summaries_finds_new_filename_convention(fake_repo):
     )
     entries = list(bhv._from_flat_summaries(fake_repo))
     assert len(entries) == 1
-    assert entries[0]["model"] == "gemma-4-E4B-it-Q4_K_M"
+    assert entries[0]["model"] == "gemma-4-e4b-it-q4-k-m"
     assert entries[0]["tokens_per_sec"] == 20.0
 
 
@@ -265,9 +265,9 @@ def test_flat_summaries_handles_mixed_old_and_new_layouts(fake_repo):
     )
     entries = list(bhv._from_flat_summaries(fake_repo))
     assert len(entries) == 2
-    # The old run lands in 'unknown', the new one keeps its name.
+    # The old run lands in 'unknown', the new one gets a canonical id.
     models = {e["model"] for e in entries}
-    assert models == {"unknown", "gemma-4-E4B-it-Q4_K_M"}
+    assert models == {"unknown", "gemma-4-e4b-it-q4-k-m"}
 
 
 # ── _aggregate_by_model ───────────────────────────────────────

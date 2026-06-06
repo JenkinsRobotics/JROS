@@ -35,6 +35,20 @@ for _candidate in (_REPO, _REPO / "src"):
 os.chdir(_REPO)
 
 
+def _canonical_model_name(model_path: object) -> str:
+    """Return the stable benchmark model id for ``model_path``."""
+    stem = pathlib.Path(str(model_path)).stem
+    try:
+        from jaeger_os.core.models.model_resolver import MODEL_REGISTRY
+        filename = pathlib.Path(str(model_path)).name.lower()
+        for key, info in MODEL_REGISTRY.items():
+            if str(info.get("hf_file", "")).lower() == filename:
+                return key
+    except Exception:  # noqa: BLE001 — benchmark metadata only
+        pass
+    return stem.lower().replace("_", "-")
+
+
 def main() -> int:
     p = argparse.ArgumentParser(description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -135,13 +149,12 @@ def main() -> int:
     # leave a pile of timestamped directories with no model context.
     model_name = "unknown"
     try:
-        from pathlib import Path as _Path
         from jaeger_os.main import _pipeline as _pl
         _cfg = _pl.get("config")
         _mp = getattr(getattr(_cfg, "model", None), "model_path", None)
         if _mp:
             summary["model_path"] = str(_mp)
-            model_name = _Path(str(_mp)).stem
+            model_name = _canonical_model_name(_mp)
             summary["model_name"] = model_name
     except Exception:  # noqa: BLE001 — model identity is metadata; never block
         pass

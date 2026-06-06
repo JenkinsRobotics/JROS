@@ -21,6 +21,18 @@ POLISH-5 in dev_docs/ROADMAP_0.2.0.md.
 
 from __future__ import annotations
 
+# Self-bootstrap: when ``test_polish_group5.py`` invokes this script
+# as a subprocess (no PYTHONPATH inherited), the ``from jaeger_os...``
+# import below raises ``ModuleNotFoundError: No module named
+# 'jaeger_os'``.  Walk one parent up (dev_scripts/ → repo root) and
+# prepend to ``sys.path`` BEFORE the heavy stdlib imports so the
+# bootstrap can never lose to its own side effects.
+import os.path as _osp
+import sys as _sys
+_REPO = _osp.dirname(_osp.dirname(_osp.abspath(__file__)))
+if _REPO not in _sys.path:
+    _sys.path.insert(0, _REPO)
+
 import argparse
 import sys
 from pathlib import Path

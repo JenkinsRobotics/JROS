@@ -183,21 +183,31 @@ def test_actions_dispatches_to_the_right_callback():
     """``TrayActions.dispatch(name)`` is the seam between menu items
     (which carry an ``action`` string) and the work that runs (subprocess
     calls or quit). One indirection so the GUI doesn't bind callbacks
-    by identity; tests can inject stubs."""
+    by identity; tests can inject stubs.
+
+    0.2.6 added ``open_voice`` (launches the voice loop) and
+    ``open_gui`` (placeholder for the PyQt6 floating chat) as required
+    fields on TrayActions; this test was written against the pre-
+    0.2.6 signature and is updated here to supply them.  Tray is
+    archived in 0.3.0-refactor but the tests remain valid because
+    the tray code stayed in tree.
+    """
     calls = []
     actions = TrayActions(
         start=lambda: calls.append("start"),
         stop=lambda: calls.append("stop"),
         restart=lambda: calls.append("restart"),
         open_tui=lambda: calls.append("open_tui"),
+        open_voice=lambda: calls.append("open_voice"),
+        open_gui=lambda: calls.append("open_gui"),
         open_web=lambda: calls.append("open_web"),
         quit_tray=lambda: calls.append("quit_tray"),
     )
-    for name in ("start", "stop", "restart", "open_tui",
-                 "open_web", "quit_tray"):
+    for name in ("start", "stop", "restart", "open_tui", "open_voice",
+                 "open_gui", "open_web", "quit_tray"):
         actions.dispatch(name)
     assert calls == ["start", "stop", "restart", "open_tui",
-                     "open_web", "quit_tray"]
+                     "open_voice", "open_gui", "open_web", "quit_tray"]
 
 
 def test_actions_dispatch_ignores_none_action():
@@ -206,7 +216,9 @@ def test_actions_dispatch_ignores_none_action():
     no-op, not an exception."""
     actions = TrayActions(
         start=lambda: None, stop=lambda: None, restart=lambda: None,
-        open_tui=lambda: None, open_web=lambda: None, quit_tray=lambda: None,
+        open_tui=lambda: None, open_voice=lambda: None,
+        open_gui=lambda: None, open_web=lambda: None,
+        quit_tray=lambda: None,
     )
     actions.dispatch(None)   # should not raise
     actions.dispatch("nonexistent")   # unknown action also a silent no-op

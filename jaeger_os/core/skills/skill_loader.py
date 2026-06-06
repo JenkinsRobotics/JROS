@@ -8,6 +8,21 @@ A *skill* is a self-contained directory:
         tests/
             smoke_test.py   # Decides whether the skill is safe to register
 
+0.3.0: a parallel canonical form lives alongside legacy
+``<name>_v<N>/`` folders — see ``docs/skill_schema_v3.md``:
+
+    skills/<id>/
+        manifest.yaml       # canonical v3 manifest (id, version, package,
+                            #   runtime, capabilities, permissions, …)
+        <python module>     # if package=code_skill
+        tests/
+            smoke_test.py
+            benchmark.py    # optional capability scorer
+
+The loader handles both shapes uniformly: legacy folders get a v3
+``Manifest`` *synthesised* at discovery time so downstream code
+(audit, scoring, the eventual marketplace) only ever sees v3 data.
+
 The loader scans two zones:
 
   1. Core skills        — jaeger_os/skills/   (read-only, shipped with the framework)
@@ -16,7 +31,8 @@ The loader scans two zones:
 Resolution rules:
 
   - On name collision, **instance wins over core**.
-  - Within a zone, the highest `_v<N>` suffix wins.
+  - Within a zone, the highest version wins (semver for v3 manifests;
+    integer ``_v<N>`` for legacy folders, treated as ``0.<N>.0``).
   - A skill whose smoke test fails is *skipped*, not registered, and the
     failure goes into logs/audit.log so the human can see why.
 
@@ -38,6 +54,12 @@ from pathlib import Path
 from typing import Any, Callable, Iterable
 
 from jaeger_os.core.instance.instance import InstanceLayout
+from jaeger_os.core.skills.manifest_v3 import (
+    Manifest,
+    ManifestError,
+    legacy_stub_manifest,
+    load_manifest_from_folder,
+)
 
 
 # Core skills shipped with the framework. Was `base_skills/` before the
@@ -48,6 +70,19 @@ CORE_SKILLS_DIR = Path(__file__).resolve().parent.parent.parent / "skills"
 
 
 _SKILL_RE = re.compile(r"^(?P<name>[A-Za-z][A-Za-z0-9_]*)_v(?P<v>\d+)$")
+# (V3 ID validation lives in jaeger_os.core.skills.manifest_v3 now.)
+
+
+def _semver_tuple(v: str) -> tuple[int, ...]:
+    """Crude semver sort key; non-int parts become 0.  Good enough
+    for the highest-version-wins resolution rule."""
+    out: list[int] = []
+    for part in v.split("."):
+        try:
+            out.append(int(part))
+        except ValueError:
+            out.append(0)
+    return tuple(out)
 
 
 @dataclass(frozen=True)
@@ -58,51 +93,221 @@ class DiscoveredSkill:
     folder: Path
     module_path: Path    # the .py file we'll import
     has_smoke: bool
+    manifest: Manifest   # v3 manifest (parsed from disk OR stubbed for legacy)
+    is_legacy_stub: bool # True when manifest was synthesised, not read
+
+    @property
+    def version_str(self) -> str:
+        """The version as a semver string — uses the manifest's value
+        so v3 skills get their real semver, legacy gets ``0.<N>.0``."""
+        return self.manifest.version
+
+    @property
+    def supported(self) -> bool:
+        """True iff the manifest's package + runtime are implemented in
+        this loader release.  Reserved enums are accepted at parse
+        time but rejected for registration."""
+        return self.manifest.is_supported_package and self.manifest.is_supported_runtime
 
 
 # ---------------------------------------------------------------------------
 # Discovery
 # ---------------------------------------------------------------------------
 def _scan_zone(root: Path, zone: str) -> list[DiscoveredSkill]:
+    """Discover every loadable code-skill folder under ``root``.
+
+    Two folder shapes are recognised:
+
+      * ``<id>/`` with a ``manifest.yaml`` or v3-frontmatter
+        ``SKILL.md`` — the canonical 0.3.0 shape.  Folder basename
+        must match the manifest's ``id`` (validated by the parser).
+
+      * ``<name>_v<N>/`` — legacy.  Loaded for backwards-compat; a
+        v3 ``Manifest`` is synthesised at discovery time so downstream
+        code never sees a legacy-only shape.
+
+    Returns one ``DiscoveredSkill`` per folder; the loader does
+    highest-version + instance-wins resolution downstream.
+    """
     found: list[DiscoveredSkill] = []
     if not root.exists():
         return found
     for child in sorted(root.iterdir()):
         if not child.is_dir():
             continue
-        m = _SKILL_RE.match(child.name)
-        if not m:
+        # Skip hidden / non-skill dirs (e.g. ``__pycache__``).
+        if child.name.startswith(("_", ".")):
+            continue
+
+        legacy_match = _SKILL_RE.match(child.name)
+
+        # Try v3 canonical first — a folder can carry BOTH manifest.yaml
+        # and a legacy _v<N> name; the manifest wins.
+        try:
+            manifest = load_manifest_from_folder(child)
+        except ManifestError as exc:
+            # A broken v3 manifest is loud — operator typo'd a schema
+            # field.  Don't silently fall through to legacy stub.
+            print(f"[jaeger-skills] {child.name}: v3 manifest invalid, "
+                  f"skipping: {exc}", flush=True)
+            continue
+
+        if manifest is not None:
+            # Playbook packages have no Python module — they're handled
+            # by ``playbook_skills.discover_playbooks``, not this loader.
+            # Drop them out of the code-skill discovery list so the
+            # registration loop below never tries to import a
+            # markdown file as Python.  ``playbook_skills.discover``
+            # already enumerates them on its own; this loader's job is
+            # the code-skill subset.
+            if manifest.package == "playbook":
+                continue
+
+            # Prefer the manifest's declared entrypoint — that's the
+            # operator's source of truth.  Fall back to the file-name
+            # heuristic only when the manifest didn't declare a module
+            # (e.g. legacy stub or partially-ported v3).
+            module: Path | None = None
+            if (
+                manifest.entrypoint is not None
+                and manifest.entrypoint.module
+            ):
+                declared = child / f"{manifest.entrypoint.module}.py"
+                if declared.exists():
+                    module = declared
+                else:
+                    print(f"[jaeger-skills] {child.name}: manifest "
+                          f"entrypoint.module={manifest.entrypoint.module!r} "
+                          f"points at a missing file ({declared.name}); "
+                          "falling back to filename heuristic",
+                          flush=True)
+            if module is None:
+                module = _pick_module_file(child, hint=manifest.id)
+            if module is None and manifest.package == "code_skill":
+                print(f"[jaeger-skills] {child.name}: code_skill manifest "
+                      "but no importable module file, skipping",
+                      flush=True)
+                continue
+            found.append(DiscoveredSkill(
+                name=manifest.id,
+                version=_legacy_version_int(manifest.version),
+                zone=zone,
+                folder=child,
+                module_path=module or (child / "SKILL.md"),
+                has_smoke=(child / "tests" / "smoke_test.py").exists(),
+                manifest=manifest,
+                is_legacy_stub=False,
+            ))
+            continue
+
+        # Fall through to legacy ``<name>_v<N>/`` shape.
+        if legacy_match is None:
+            # A directory with no v3 manifest AND no legacy version
+            # suffix isn't a code skill — leave it for playbook discovery.
             continue
         skill_md = child / "SKILL.md"
         if not skill_md.exists():
-            # A folder that looks like a skill but is missing SKILL.md is a
-            # half-finished thing — skip silently.
+            # Half-finished folder — skip silently.
             continue
         module = _pick_module_file(child)
         if module is None:
             continue
+
+        legacy_name = legacy_match.group("name")
+        legacy_v = int(legacy_match.group("v"))
+        try:
+            stub = legacy_stub_manifest(
+                folder=child,
+                name=legacy_name,
+                version=legacy_v,
+                description=_legacy_description(skill_md),
+                tier=_legacy_tier(skill_md),
+                smoke_path=(child / "tests" / "smoke_test.py")
+                           if (child / "tests" / "smoke_test.py").exists()
+                           else None,
+                entrypoint_module=module.stem,
+            )
+        except ManifestError as exc:
+            print(f"[jaeger-skills] {child.name}: couldn't synthesize v3 "
+                  f"stub, skipping: {exc}", flush=True)
+            continue
+
         found.append(DiscoveredSkill(
-            name=m.group("name"),
-            version=int(m.group("v")),
+            name=legacy_name,
+            version=legacy_v,
             zone=zone,
             folder=child,
             module_path=module,
             has_smoke=(child / "tests" / "smoke_test.py").exists(),
+            manifest=stub,
+            is_legacy_stub=True,
         ))
     return found
 
 
-def _pick_module_file(folder: Path) -> Path | None:
+def _legacy_version_int(semver: str) -> int:
+    """Convert ``0.<N>.0`` (stub form) or real semver to the integer
+    key the legacy ``DiscoveredSkill.version`` field expects.  Used
+    for highest-version-wins ordering when comparing a v3 skill against
+    a legacy ``_v<N>`` sibling on the same id."""
+    try:
+        return int(semver.split(".")[0]) * 10000 + int(semver.split(".")[1]) * 100 + int(semver.split(".")[2])
+    except (ValueError, IndexError):
+        return 0
+
+
+def _legacy_description(skill_md: Path) -> str | None:
+    """Pull the ``description:`` line from a legacy SKILL.md so the
+    stub manifest carries something useful.  Best-effort."""
+    try:
+        text = skill_md.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    for line in text.splitlines():
+        if line.strip().lower().startswith("description:"):
+            desc = line.split(":", 1)[1].strip().strip('"').strip("'")
+            return desc or None
+    return None
+
+
+def _legacy_tier(skill_md: Path) -> int:
+    """Pull ``permission_tier:`` from a legacy SKILL.md; default 0."""
+    try:
+        text = skill_md.read_text(encoding="utf-8")
+    except OSError:
+        return 0
+    for line in text.splitlines():
+        if line.strip().lower().startswith("permission_tier:"):
+            raw = line.split(":", 1)[1].strip().split("#", 1)[0].strip()
+            try:
+                tier = int(raw)
+                if 0 <= tier <= 5:
+                    return tier
+            except ValueError:
+                pass
+    return 0
+
+
+def _pick_module_file(folder: Path, *, hint: str | None = None) -> Path | None:
     """A skill folder may contain multiple files; the import target is
-    one of (in order): <name without version>.py, skill.py, __init__.py.
-    If none exist, the skill isn't importable and is skipped."""
-    base = _SKILL_RE.match(folder.name)
+    one of (in order): <hint>.py, <name without version>.py, skill.py,
+    __init__.py.  ``hint`` is the v3 manifest's ``id`` for canonical
+    folders; legacy ``<name>_v<N>`` folders fall back to the regex
+    match.  ``None`` when nothing importable lives in the folder
+    (valid for playbook packages; rejected upstream for code_skill)."""
     candidates: list[Path] = []
+    if hint:
+        candidates.append(folder / f"{hint}.py")
+    base = _SKILL_RE.match(folder.name)
     if base:
         candidates.append(folder / f"{base.group('name')}.py")
     candidates.append(folder / "skill.py")
     candidates.append(folder / "__init__.py")
+    seen: set[Path] = set()
     for c in candidates:
+        if c in seen:
+            continue
+        seen.add(c)
         if c.exists():
             return c
     return None
@@ -110,16 +315,18 @@ def _pick_module_file(folder: Path) -> Path | None:
 
 def discover_skills(layout: InstanceLayout) -> list[DiscoveredSkill]:
     """Return the resolved skill set: highest-version-per-name, instance
-    winning over core on name collision."""
+    winning over core on name collision.  Versions are compared as
+    semver tuples — a v3 manifest declaring ``2.1.0`` beats a legacy
+    ``<name>_v2/`` folder declaring ``0.2.0``, which is what we want
+    when both are present during the migration window."""
     core = _scan_zone(CORE_SKILLS_DIR, "core")
     instance = _scan_zone(layout.skills_dir, "instance")
 
-    # Pick highest version per (zone, name) first.
     def best_in(seq: Iterable[DiscoveredSkill]) -> dict[str, DiscoveredSkill]:
         out: dict[str, DiscoveredSkill] = {}
         for s in seq:
             cur = out.get(s.name)
-            if cur is None or s.version > cur.version:
+            if cur is None or _semver_tuple(s.version_str) > _semver_tuple(cur.version_str):
                 out[s.name] = s
         return out
 
@@ -300,6 +507,33 @@ def load_and_register(
                                      "zone": skill.zone, "reason": "disabled_by_config"})
             continue
 
+        # 0.3.0: reject manifests declaring reserved-but-not-implemented
+        # ``package`` / ``runtime`` enums.  Parsing accepts them so
+        # forward-looking skills can write a real manifest now; the
+        # loader will pick them up automatically when 0.4.x adds the
+        # corresponding adapter.
+        if not skill.supported:
+            reason = (
+                f"package={skill.manifest.package!r} / "
+                f"runtime={skill.manifest.runtime!r} not implemented yet"
+            )
+            skipped.append((skill, reason))
+            if audit:
+                audit("skill_unsupported", {
+                    "skill": skill.name, "version": skill.version_str,
+                    "zone": skill.zone, "package": skill.manifest.package,
+                    "runtime": skill.manifest.runtime,
+                })
+            continue
+
+        # Legacy stub heads-up — not an error; surfaces in audit so the
+        # operator sees which skills still need real v3 manifests.
+        if skill.is_legacy_stub and audit:
+            audit("skill_legacy_stub", {
+                "skill": skill.name, "version": skill.version_str,
+                "zone": skill.zone, "folder": str(skill.folder),
+            })
+
         if run_smoke_tests and skill.has_smoke:
             ok, msg = _run_smoke(skill)
             if not ok:
@@ -360,9 +594,20 @@ def load_and_register(
 
         try:
             module = _import_skill(skill)
-            register = getattr(module, "register", None)
+            # 0.3.0: prefer the manifest's declared entrypoint attr.
+            # Legacy stubs always say ``attr: register``; v3 manifests
+            # can declare any callable name, so a skill whose entry
+            # point isn't literally ``register`` is loadable.
+            entry_attr = "register"
+            if (
+                skill.manifest.entrypoint is not None
+                and skill.manifest.entrypoint.attr
+            ):
+                entry_attr = skill.manifest.entrypoint.attr
+            register = getattr(module, entry_attr, None)
             if register is None:
-                skipped.append((skill, "no register(agent) callable"))
+                skipped.append((skill,
+                                f"no {entry_attr}(agent) callable in module"))
                 continue
             # Register through a capturing wrapper so the skill's tools
             # become its own named toolset (a skill IS a toolset).
@@ -392,8 +637,18 @@ def load_and_register(
                                         "zone": skill.zone})
 
     if registered:
-        names = ", ".join(f"{s.name}_v{s.version}({s.zone})" for s in registered)
+        names = ", ".join(
+            f"{s.name}@{s.version_str}({s.zone})" for s in registered
+        )
         print(f"[jaeger-skills] registered {len(registered)} tool-skill(s): {names}", flush=True)
+        stub_count = sum(1 for s in registered if s.is_legacy_stub)
+        if stub_count:
+            print(
+                f"[jaeger-skills] {stub_count} of those still use a legacy "
+                "<name>_v<N>/ folder — port them to manifest.yaml at your "
+                "convenience (docs/skill_schema_v3.md).",
+                flush=True,
+            )
     # Playbook skills (procedural SKILL.md docs the agent reads on
     # demand via the ``skill`` tool) live alongside the tool-skills but
     # are NOT registered as agent tools — they get discovered + indexed

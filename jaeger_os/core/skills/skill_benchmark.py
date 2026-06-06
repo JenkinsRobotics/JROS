@@ -149,6 +149,24 @@ def benchmark_skill(layout: Any, skill_name: str) -> dict[str, Any]:
     }
     _append_history(history_path, record)
 
+    # 0.3.0: also route the result into v3 capability state when the
+    # skill has a manifest (or a stub).  ``record_benchmark_result``
+    # finds the manifest, picks the right capability (explicit
+    # ``cap`` field on the benchmark payload, or the single capability
+    # if the manifest only declares one), and updates state.yaml +
+    # history.jsonl with promotion/demotion applied.  Never raises;
+    # legacy paths that don't have v3 plumbing still see the existing
+    # benchmark_history.jsonl behaviour above.
+    cap_result: dict[str, Any] = {}
+    try:
+        from jaeger_os.core.skills.capability_state import record_benchmark_result
+        cap_result = record_benchmark_result(
+            skill_folder=skill_dir,
+            benchmark_payload=parsed,
+        )
+    except Exception as exc:  # noqa: BLE001
+        cap_result = {"ok": False, "reason": f"capability state error: {exc}"}
+
     return {
         "ok": True,
         "skill": skill_name,
@@ -162,4 +180,5 @@ def benchmark_skill(layout: Any, skill_name: str) -> dict[str, Any]:
         "elapsed_s": round(elapsed, 3),
         "cases": parsed.get("cases", []),
         "notes": parsed.get("notes", ""),
+        "capability": cap_result,    # v3: {ok, cap, level, delta, runs_total}
     }

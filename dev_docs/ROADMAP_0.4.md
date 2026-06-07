@@ -1,6 +1,35 @@
 # JROS 0.4 Roadmap — Embodied node architecture
 
-**Status:** draft (2026-06-06)
+**Status:** 0.4.0 shipped 2026-06-06 — Tracks A + B + C-skeleton landed
+
+## 0.4.0 release scope (LANDED 2026-06-06)
+
+* Track A.1–A.7 — node infrastructure (topics SSOT, codec,
+  InProcBus, ZMQBus, Node base class, launch flags, XPUB↔XSUB broker)
+* Track B.1–B.3.2 — TTS + STT nodes; agent text_to_speech tool
+  routes through bus; voice loop fully migrated (phrases via
+  /sense/transcript, speech via /act/speech, barge-in via
+  /act/speech_stop)
+* Track B.5 — Vision node (raw camera frames, USB + TCP backends,
+  no YOLO/no inference)
+* Track C skeletons — Motor + Light universal Protocols +
+  reference ASCII serial adapters
+* 1824 tests pass; agent + voice mode fully node-shaped
+* 0.3.0 operator surface (./launch TUI) unchanged
+
+## 0.4.x followups (DEFERRED)
+
+* B.4 audio_io node split (mic + speaker as their own node)
+* Track C instance-level adapters (JP01-MC01 ESP32, JP01-AVC01 Teensy)
+* Track D supervisor + per-node health bench
+* Track E simulation mode
+* Track F operator UX / topic inspector
+* `--mode multiprocess` end-to-end operator workflow (broker
+  infrastructure shipped; launch.py spawning + node-wiring TBD)
+
+---
+
+
 **Pre-req:** 0.3.0 shipped (in-process TUI + persistent voice pipeline + skill v3)
 **Target:** the framework needs to be usable on real robot hardware
 

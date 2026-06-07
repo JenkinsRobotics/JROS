@@ -21,7 +21,7 @@ def test_payload_heavy_topics_are_binary():
     encoding (no base64 hop)."""
     assert codec.is_binary_topic(topics.SENSE_AUDIO_IN) is True
     assert codec.is_binary_topic(topics.ACT_AUDIO_OUT) is True
-    assert codec.is_binary_topic(topics.SENSE_VISION) is True
+    assert codec.is_binary_topic(topics.SENSE_CAMERA_FRAME) is True
 
 
 def test_text_topics_are_not_binary():
@@ -29,7 +29,7 @@ def test_text_topics_are_not_binary():
     binary = {
         topics.SENSE_AUDIO_IN,
         topics.ACT_AUDIO_OUT,
-        topics.SENSE_VISION,
+        topics.SENSE_CAMERA_FRAME,
     }
     for name in topics.ALL_TOPICS:
         if name in binary:

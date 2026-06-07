@@ -2,7 +2,7 @@
 
 Covers:
   * VisionNode lifecycle with a mock adapter (no cv2, no socket)
-  * Frame publishing on /sense/vision
+  * Frame publishing on /sense/camera_frame
   * TCP adapter's length-prefixed wire format via a loopback socket
 
 USB adapter integration test (cv2.VideoCapture against a real
@@ -117,7 +117,7 @@ def test_frame_becomes_camera_frame_message(bus):
         received.append(msg)
         event.set()
 
-    bus.subscribe(topics.SENSE_VISION, on_frame)
+    bus.subscribe(topics.SENSE_CAMERA_FRAME, on_frame)
     node, thread = _start_node(bus, cam, camera_id="test-cam")
     try:
         cam.feed(FrameEnvelope(
@@ -148,7 +148,7 @@ def test_frame_seq_monotonic_across_frames(bus):
         if len(received) >= 3:
             target.set()
 
-    bus.subscribe(topics.SENSE_VISION, on_frame)
+    bus.subscribe(topics.SENSE_CAMERA_FRAME, on_frame)
     node, thread = _start_node(bus, cam)
     try:
         for _ in range(3):
@@ -168,7 +168,7 @@ def test_no_frame_no_publish(bus):
     def on_frame(msg):
         received.append(msg)
 
-    bus.subscribe(topics.SENSE_VISION, on_frame)
+    bus.subscribe(topics.SENSE_CAMERA_FRAME, on_frame)
     node, thread = _start_node(bus, cam, poll_timeout_s=0.05)
     try:
         time.sleep(0.2)

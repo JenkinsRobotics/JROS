@@ -54,7 +54,8 @@ up 1:1 with the firmware controllers:
 /act/audio_out     ← consumed by JP01-AVC01 (Teensy speaker / WS2812)
 /act/motion        ← consumed by JP01-MC01 (ESP32 motor driver)
 /sense/proprio     ← published by JP01-MC01 (encoder + IMU)
-/sense/vision      ← published by JP01-VCC01 (Jetson YOLOv8 + CSI cams)
+/sense/camera_frame      ← published by JP01-VCC01 (raw CSI cam frames)
+/sense/vision_analysis  ← published by JP01-VCC01 or downstream inference
 ```
 
 This is just a naming convention but it means a future "where does

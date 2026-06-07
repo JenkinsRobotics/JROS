@@ -86,7 +86,7 @@ swappable.
                     │   Tools = networking shims:             │
                     │     - text_to_speech → publish /act/speech
                     │     - listen        → subscribe /sense/transcript
-                    │     - vision_analyze → subscribe /sense/vision
+                    │     - vision_analyze → subscribe /sense/vision_analysis
                     │     - computer_use  → publish /act/motion etc.
                     └────────────┬────────────────────────────┘
                                  │ ZMQ pub/sub
@@ -96,7 +96,7 @@ swappable.
      │  audio_in    │    │   audio_out  │    │   vision    │
      │  (Mac mic)   │    │   (Mac spk)  │    │   (Jetson)  │
      │  PUB /sense/ │    │  SUB /act/   │    │  PUB /sense/│
-     │  audio_in    │    │  audio_out   │    │  vision     │
+     │  audio_in    │    │  audio_out   │    │  camera_frame│
      └──────┬───────┘    └──────▲───────┘    └─────────────┘
             │                   │
      ┌──────▼───────┐    ┌──────┴───────┐
@@ -114,7 +114,8 @@ swappable.
    │ Canonical topic namespaces                           │
    │   /sense/audio_in       raw mic frames (binary)     │
    │   /sense/transcript     STT text + confidence (JSON)│
-   │   /sense/vision         YOLOv8 boxes / scene (JSON) │
+   │   /sense/camera_frame   raw camera frames (MessagePack) │
+   │   /sense/vision_analysis YOLOv8 boxes / scene (JSON) │
    │   /sense/touch          contact sensors (JSON)      │
    │   /sense/proprio        encoders + IMU (JSON)       │
    │   /sense/spoken         TTS-done ack (JSON)         │
@@ -199,7 +200,7 @@ code path for nodes-as-threads OR nodes-as-processes.
     - JSON encoder/decoder for text topics (`/sense/transcript`,
       `/act/speech`, etc.) — `msgspec.json.encode/decode`
     - MessagePack encoder/decoder for binary topics
-      (`/sense/audio_in`, `/act/audio_out`, `/sense/vision`) —
+      (`/sense/audio_in`, `/act/audio_out`, `/sense/camera_frame`) —
       `msgspec.msgpack.encode/decode`
     - Pick-by-topic helper so call sites don't have to remember
       which encoding belongs to which namespace
@@ -250,7 +251,7 @@ code path for nodes-as-threads OR nodes-as-processes.
   - [ ] **Jetson** — vision pipeline lives there
     - `jaeger_os/nodes/vision.py` runs Whisper-large or Moondream
       CUDA-accelerated on Jetson Orin.
-    - Publishes `/sense/vision` (bounding boxes, OCR text, scene
+    - Publishes `/sense/vision_analysis` (bounding boxes, OCR text, scene
       description) over `tcp://` back to the Mac brain.
   - [ ] **Discovery** — a tiny `jaeger_os/nodes/registry.py` so the
     brain doesn't have to know IP addresses.  Uses mDNS (Bonjour on
@@ -360,7 +361,7 @@ code path for nodes-as-threads OR nodes-as-processes.
    (`/sense/transcript`, `/act/motion`, `/sense/spoken`) — human-
    readable in `tcpdump`, easy to inspect — and **MessagePack for
    binary topics** (`/sense/audio_in`, `/act/audio_out`,
-   `/sense/vision`) — 30-50 % smaller, faster encode/decode.  Operator
+   `/sense/camera_frame`) — 30-50 % smaller, faster encode/decode.  Operator
    sign-off needed before Track A locks the wire format.
 
 3. **Time sync across boards.**  Mac↔Jetson↔Teensy clock drift will

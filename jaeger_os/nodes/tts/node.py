@@ -96,6 +96,10 @@ class TTSNode(Node):
         self._pending: "queue.Queue[topics.SpeechCommand]" = queue.Queue(
             maxsize=queue_maxsize,
         )
+        # Correlation id for the speech currently inside synthesizer.speak().
+        # A SpeechStop carrying a different id is stale and must not cut a
+        # newer utterance that happened to start after the operator's stop.
+        self._active_correlation_id: str | None = None
 
     # ── lifecycle ─────────────────────────────────────────────────
 
@@ -166,6 +170,21 @@ class TTSNode(Node):
             f"TTS node got unexpected topic on speech_stop subscription: "
             f"{msg.topic}"
         )
+        if (
+            msg.correlation_id
+            and self._active_correlation_id
+            and msg.correlation_id != self._active_correlation_id
+        ):
+            self._log(
+                "speech_stop ignored for stale correlation_id "
+                f"{msg.correlation_id}"
+            )
+            return
+        if msg.correlation_id and self._active_correlation_id is None:
+            self._log(
+                "speech_stop ignored because no matching speech is active"
+            )
+            return
         stop = getattr(self.synthesizer, "stop", None)
         if not callable(stop):
             self._log(
@@ -181,6 +200,7 @@ class TTSNode(Node):
 
     def _handle(self, msg: topics.SpeechCommand) -> None:
         t0 = time.perf_counter()
+        self._active_correlation_id = msg.correlation_id
         try:
             result = self.synthesizer.speak(msg.text)
         except Exception as exc:  # noqa: BLE001
@@ -191,6 +211,8 @@ class TTSNode(Node):
                 duration_s=time.perf_counter() - t0,
             )
             return
+        finally:
+            self._active_correlation_id = None
         ok = bool(result.get("spoken", False))
         # Prefer the synthesizer's elapsed if it gives one (more
         # accurate — includes synth time, not just playback) but

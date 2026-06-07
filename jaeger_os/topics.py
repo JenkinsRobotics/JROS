@@ -48,7 +48,12 @@ import msgspec
 
 SENSE_AUDIO_IN = "/sense/audio_in"
 SENSE_TRANSCRIPT = "/sense/transcript"
-SENSE_VISION = "/sense/vision"
+SENSE_CAMERA_FRAME = "/sense/camera_frame"
+# Back-compat alias for code that still imports the old 0.4 draft name.
+# Do not register this as a separate topic; raw frames live on
+# /sense/camera_frame. Reserve /sense/vision_analysis for inference output.
+SENSE_VISION = SENSE_CAMERA_FRAME
+SENSE_VISION_ANALYSIS = "/sense/vision_analysis"
 SENSE_TOUCH = "/sense/touch"
 SENSE_PROPRIO = "/sense/proprio"
 SENSE_SPOKEN = "/sense/spoken"
@@ -124,7 +129,7 @@ class CameraFrame(TopicMessage):
     an analyser.  No YOLO boxes, no scene descriptions, no
     detection metadata — those belong on a future
     ``/sense/vision_analysis`` topic published by a downstream
-    inference node that consumes ``/sense/vision``.
+    inference node that consumes ``/sense/camera_frame``.
 
     Two source modes supported by the vision node (Track B.5):
         * USB camera (cv2.VideoCapture device index, local Mac)
@@ -136,7 +141,7 @@ class CameraFrame(TopicMessage):
     topic, same schema; only ``camera_id`` distinguishes sources
     when multiple cameras run at once.
     """
-    topic: Literal["/sense/vision"] = SENSE_VISION
+    topic: Literal["/sense/camera_frame"] = SENSE_CAMERA_FRAME
     image_w: int = 0
     image_h: int = 0
     encoding: str = "jpeg"  # "jpeg" | "png" | "raw_bgr8" | "raw_rgb8"
@@ -251,7 +256,7 @@ class LightCommand(TopicMessage):
 TOPIC_TO_CLASS: dict[str, type[TopicMessage]] = {
     SENSE_AUDIO_IN: AudioInFrame,
     SENSE_TRANSCRIPT: Transcript,
-    SENSE_VISION: CameraFrame,
+    SENSE_CAMERA_FRAME: CameraFrame,
     SENSE_TOUCH: TouchReading,
     SENSE_PROPRIO: ProprioReading,
     SENSE_SPOKEN: SpokenAck,
@@ -276,7 +281,8 @@ def class_for_topic(topic: str) -> type[TopicMessage]:
 
 __all__ = [
     # Constants
-    "SENSE_AUDIO_IN", "SENSE_TRANSCRIPT", "SENSE_VISION",
+    "SENSE_AUDIO_IN", "SENSE_TRANSCRIPT",
+    "SENSE_CAMERA_FRAME", "SENSE_VISION", "SENSE_VISION_ANALYSIS",
     "SENSE_TOUCH", "SENSE_PROPRIO", "SENSE_SPOKEN",
     "ACT_SPEECH", "ACT_AUDIO_OUT", "ACT_MOTION", "ACT_LIGHT",
     "ACT_SPEECH_STOP",

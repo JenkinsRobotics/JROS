@@ -13,7 +13,7 @@ import uuid
 import pytest
 
 from jaeger_os import topics
-from jaeger_os.transport import InProcBus
+from jaeger_os.transport import InProcBus, InProcBusOverflowError
 
 
 @pytest.fixture
@@ -68,6 +68,19 @@ def test_no_subscriber_doesnt_block_publisher(bus):
     # Should return immediately without raising.
     bus.publish(topics.MotionCommand(linear_x_mps=0.5))
     # Nothing to assert — the test passes if publish returned.
+
+
+def test_publish_overflow_raises_immediately():
+    """A full delivery queue must not block the publisher."""
+    bus = InProcBus(maxsize=1)
+    try:
+        bus._q.put_nowait(topics.Transcript(text="fills queue"))
+        started = time.perf_counter()
+        with pytest.raises(InProcBusOverflowError):
+            bus.publish(topics.Transcript(text="overflow"))
+        assert time.perf_counter() - started < 0.05
+    finally:
+        bus.close()
 
 
 def test_subscribers_only_get_their_topic(bus):

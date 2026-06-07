@@ -13,7 +13,12 @@ import time
 
 from rich.console import Console
 
-from jaeger_os.interfaces.tui.app import _WORKER_SHUTDOWN, JaegerTUI
+from jaeger_os.interfaces.tui.app import (
+    _WORKER_SHUTDOWN,
+    _format_coalesced_voice,
+    _split_coalesced_voice,
+    JaegerTUI,
+)
 
 
 # ── helpers ──────────────────────────────────────────────────────────
@@ -148,6 +153,52 @@ def test_submit_turn_steer_mode_interrupts_and_queues() -> None:
         m.request_turn_cancel = orig
     assert cancelled == [True]
     assert tui._turn_queue.get_nowait() == ("text", "steer me")
+
+
+def test_busy_voice_input_coalesces_without_interrupting() -> None:
+    tui = _tui()
+    tui._busy_mode = "interrupt"
+    tui._turn_running.set()
+    cancelled = []
+    import jaeger_os.main as m
+    orig = m.request_turn_cancel
+    m.request_turn_cancel = lambda: cancelled.append(True)
+    try:
+        tui._submit_turn("voice", "first phrase")
+        tui._submit_turn("voice", "second phrase")
+        tui._submit_turn("voice", "third phrase")
+    finally:
+        m.request_turn_cancel = orig
+
+    assert cancelled == []
+    source, text = tui._turn_queue.get_nowait()
+    assert source == "voice"
+    assert _split_coalesced_voice(text) == [
+        "first phrase",
+        "second phrase",
+        "third phrase",
+    ]
+    assert tui._turn_queue.empty()
+
+
+def test_busy_voice_coalescing_preserves_typed_queue() -> None:
+    tui = _tui()
+    tui._turn_running.set()
+    tui._turn_queue.put(("text", "typed follow-up"))
+
+    tui._submit_turn("voice", "voice one")
+    tui._submit_turn("voice", "voice two")
+
+    assert tui._turn_queue.get_nowait() == ("text", "typed follow-up")
+    source, text = tui._turn_queue.get_nowait()
+    assert source == "voice"
+    assert _split_coalesced_voice(text) == ["voice one", "voice two"]
+
+
+def test_coalesced_voice_format_round_trips() -> None:
+    formatted = _format_coalesced_voice(["one", "two"])
+    assert "combined turn" in formatted
+    assert _split_coalesced_voice(formatted) == ["one", "two"]
 
 
 # ── busy mode get/set ────────────────────────────────────────────────

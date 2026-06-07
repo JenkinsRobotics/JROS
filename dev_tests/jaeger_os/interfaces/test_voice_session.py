@@ -9,10 +9,12 @@ trigger, VoiceController construction, and /voice argument parsing.
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 from rich.console import Console
 
+from jaeger_os import topics
 from jaeger_os.core.instance.schemas import VoiceConfig
 from jaeger_os.interfaces.tui import slash_commands as slash
 from jaeger_os.interfaces.tui.app import _wants_voice_mode
@@ -144,6 +146,88 @@ def test_arm_interrupt_is_safe_before_start() -> None:
     ev = threading.Event()
     c.arm_interrupt(ev)
     c.disarm_interrupt()
+
+
+class _FakeSpeechBus:
+    def __init__(self, *, ack_ok: bool = True, fire_barge_in=None):
+        self.ack_ok = ack_ok
+        self.fire_barge_in = fire_barge_in
+        self.requests = []
+        self.published = []
+
+    def request(self, request_msg, *, ack_topic, timeout_s):
+        self.requests.append((request_msg, ack_topic, timeout_s))
+        if self.fire_barge_in is not None:
+            self.fire_barge_in()
+        return SimpleNamespace(
+            ok=self.ack_ok,
+            reason="interrupted" if not self.ack_ok else None,
+        )
+
+    def publish(self, msg):
+        self.published.append(msg)
+
+
+class _FakeSTT:
+    def __init__(self):
+        self.paused = []
+        self.on_speech_detected = None
+        self.drained = False
+
+    def set_paused(self, value):
+        self.paused.append(value)
+
+    def set_on_speech_detected(self, callback):
+        self.on_speech_detected = callback
+
+    def drain_pending(self):
+        self.drained = True
+
+
+def test_voice_controller_speaks_through_tts_node_bus() -> None:
+    c = VoiceController(Console(file=open("/dev/null", "w")))
+    c.llm_gate = False
+    c._bus = _FakeSpeechBus()
+    c._stt = _FakeSTT()
+
+    interrupted = c.speak("hello from the bus")
+
+    assert interrupted is False
+    request, ack_topic, timeout_s = c._bus.requests[0]
+    assert isinstance(request, topics.SpeechCommand)
+    assert request.topic == topics.ACT_SPEECH
+    assert request.text == "hello from the bus"
+    assert request.node_id == "tui_voice"
+    assert request.correlation_id
+    assert ack_topic == topics.SENSE_SPOKEN
+    assert timeout_s == 180.0
+    assert c._stt.paused == [True, False]
+
+
+def test_voice_controller_barge_in_publishes_correlated_speech_stop() -> None:
+    c = VoiceController(Console(file=open("/dev/null", "w")),
+                        barge_in=True)
+    c.llm_gate = False
+    stt = _FakeSTT()
+    bus = _FakeSpeechBus(
+        ack_ok=False,
+        fire_barge_in=lambda: stt.on_speech_detected(),
+    )
+    c._bus = bus
+    c._stt = stt
+    c._barge_in_live = True
+
+    interrupted = c.speak("long answer")
+
+    assert interrupted is True
+    request = bus.requests[0][0]
+    stop = bus.published[0]
+    assert isinstance(stop, topics.SpeechStop)
+    assert stop.topic == topics.ACT_SPEECH_STOP
+    assert stop.correlation_id == request.correlation_id
+    assert stop.node_id == "tui_voice"
+    # The interruption phrase should survive as the next user turn.
+    assert stt.drained is False
 
 
 # ── /voice slash command ─────────────────────────────────────────────

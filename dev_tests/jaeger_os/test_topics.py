@@ -61,6 +61,15 @@ def test_class_for_topic_raises_on_unknown():
         topics.class_for_topic("not_even_namespaced")
 
 
+def test_raw_camera_frame_topic_is_not_generic_vision():
+    """Raw camera bytes should not occupy the future analysis topic."""
+    assert topics.SENSE_CAMERA_FRAME == "/sense/camera_frame"
+    assert topics.SENSE_VISION == topics.SENSE_CAMERA_FRAME
+    assert topics.SENSE_VISION_ANALYSIS == "/sense/vision_analysis"
+    assert topics.CameraFrame().topic == topics.SENSE_CAMERA_FRAME
+    assert topics.SENSE_VISION_ANALYSIS not in topics.TOPIC_TO_CLASS
+
+
 # ── envelope ──────────────────────────────────────────────────────
 
 def test_envelope_timestamp_is_recent():

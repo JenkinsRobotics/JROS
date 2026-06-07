@@ -321,6 +321,22 @@ def test_speech_stop_without_in_flight_speech_is_safe(bus):
         thread.join(timeout=2.0)
 
 
+def test_speech_stop_with_stale_correlation_id_is_ignored(bus):
+    """A correlated stop for an old utterance must not interrupt the
+    newer speech currently active in the TTS node."""
+    synth = _StoppableSynth()
+    node = TTSNode(bus=bus, synthesizer=synth, name="tts",
+                   install_signal_handlers=False)
+    node._active_correlation_id = "current"
+
+    node._on_speech_stop(topics.SpeechStop(
+        reason="stale interrupt",
+        correlation_id="old",
+    ))
+
+    assert synth.stops_received == 0
+
+
 def test_speech_stop_synthesizer_without_stop_method_logs_and_continues(bus):
     """If the synthesizer doesn't implement stop() (older Synthesizer
     surface), the node logs but doesn't crash."""

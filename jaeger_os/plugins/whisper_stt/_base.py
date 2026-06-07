@@ -27,6 +27,8 @@ from typing import Any
 
 import numpy as np
 
+from jaeger_os.core.voice import is_non_speech_marker as is_non_speech_marker
+
 
 _WAKE_PREFIXES = ("ok", "okay", "hey")
 _ASSISTANT_NAMES = ("jaeger", "yeager", "yager", "jager")
@@ -35,41 +37,6 @@ DEFAULT_WAKE_PHRASES = tuple(f"{p} {n}" for p in _WAKE_PREFIXES for n in _ASSIST
 
 def _normalize(text: str) -> str:
     return re.sub(r"[^a-z0-9 ]+", " ", text.lower()).strip()
-
-
-# Whisper-emitted non-speech markers we want to suppress in modes
-# where any transcribed phrase counts as a command (follow-up window,
-# no-wake-word mode).  Stored as the *inner* token (no brackets) — the
-# wrapper is stripped before checking so the same set works whether
-# Whisper transcribes "[BLANK_AUDIO]" or bare "blank_audio".  Real
-# wrapped responses like "(yes)" or "[no]" pass through to the LLM as
-# legitimate commands.
-_NON_SPEECH_MARKERS = frozenset({
-    "blank_audio", "no_speech", "beep", "beeping",
-    "music", "applause", "laughter", "sigh", "sniff",
-    "breathing", "background noise", "silence",
-})
-_WRAPPED_MARKER_RE = re.compile(r"^\s*[\[\(]([^\]\)]{1,40})[\]\)]\s*[.!,?]*\s*$")
-
-
-def is_non_speech_marker(text: str) -> bool:
-    """True if Whisper transcribed silence / noise rather than real
-    speech.
-
-    Strips bracket/paren wrappers (if present) and matches the inner
-    token against the known-marker allowlist.  Free text and wrapped
-    real words like "(yes)" / "[no]" are treated as legitimate
-    commands.  Empty / whitespace input is also non-speech.
-    """
-    s = (text or "").strip()
-    if not s:
-        return True
-    m = _WRAPPED_MARKER_RE.match(s)
-    if m:
-        inner = m.group(1).lower().strip(".!?, ")
-        return inner in _NON_SPEECH_MARKERS
-    lowered = s.lower().strip(".!?, ")
-    return lowered in _NON_SPEECH_MARKERS
 
 
 def _find_wake_in_text(

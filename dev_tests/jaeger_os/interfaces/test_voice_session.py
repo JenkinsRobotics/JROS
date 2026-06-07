@@ -26,17 +26,26 @@ from jaeger_os.interfaces.tui.voice_session import (
 # ── VoiceConfig defaults ─────────────────────────────────────────────
 
 
-def test_voice_config_default_is_off_with_other_toggles_on() -> None:
-    """VOICE-1 (docs/ROADMAP_0.2.0.md): ``enabled`` defaults OFF so
-    a fresh install doesn't surprise the user with an open mic that
-    feeds nearby podcast audio into the agent without ``speexdsp``
-    AEC. The other voice toggles (wake_word / follow_up / barge_in)
-    stay ON so that when ``enabled`` IS flipped, the safe defaults
-    are still in place."""
+def test_voice_config_defaults_match_voicellm_proven_pattern() -> None:
+    """``enabled`` defaults OFF so a fresh install doesn't surprise
+    the user with an open mic (VOICE-1 / docs/ROADMAP_0.2.0.md).
+
+    0.4.x: when enabled IS flipped, the defaults match the proven
+    VoiceLLM continuous-listening pattern (validated 2026-06-06):
+      - wake_word OFF   — LLM gate handles addressed-to-me, not
+                          Whisper transcription matching
+      - llm_gate ON     — every reply <ignore>/<reply>-prefixed
+      - barge_in  OFF   — mic-pause during TTS (VoiceLLM's reference
+                          self-speech rejection strategy)
+      - follow_up ON, follow_up_seconds=10.0 (reference value)
+    """
     vc = VoiceConfig()
     assert vc.enabled is False
-    assert vc.wake_word and vc.follow_up and vc.barge_in
-    assert vc.follow_up_seconds == 15.0
+    assert vc.wake_word is False
+    assert vc.barge_in is False
+    assert vc.llm_gate is True
+    assert vc.follow_up is True
+    assert vc.follow_up_seconds == 10.0
 
 
 def test_voice_config_enabled_can_be_turned_on_explicitly() -> None:

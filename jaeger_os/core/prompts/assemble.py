@@ -123,6 +123,14 @@ def assemble_prompt(
     if mode != "subagent" and _os.environ.get("JAEGER_VOICE_GATE") == "1":
         from .rules import VOICE_LLM_GATE_RULE
         parts.append(VOICE_LLM_GATE_RULE.strip())
+        # Active follow-up addressed_hint — strict default-ignore when
+        # idle, permissive default-reply when we're inside the
+        # follow-up window after a recent reply.  voice_loop /
+        # voice_session toggle JAEGER_VOICE_ACTIVE_FOLLOWUP per turn.
+        # VoiceLLM parity: plugins/llm_core/node.py:93-103.
+        if _os.environ.get("JAEGER_VOICE_ACTIVE_FOLLOWUP") == "1":
+            from .rules import VOICE_FOLLOWUP_HINT_RULE
+            parts.append(VOICE_FOLLOWUP_HINT_RULE.strip())
 
     # Skill index — sub-agents don't need it (they were given a
     # specific task; ranging across the skill library would expand

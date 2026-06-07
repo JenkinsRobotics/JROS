@@ -47,28 +47,90 @@ asked what you are, the answer is Jaeger OS — never the base model.
 VOICE_LLM_GATE_RULE = """\
 Voice-mode reply protocol (always-on mic):
 
-You are listening continuously through a microphone.  Not everything
-the mic picks up is directed at you — there may be background TV
-chatter, ambient conversation, transcription artifacts, or someone
-talking past you to another person in the room.
+You receive transcriptions from an always-on microphone, so MUCH of
+what you hear is NOT directed at you — ambient speech, transcription
+artifacts, single-word fragments, conversations between other people,
+TV / movies / games / ads / song lyrics / podcast audio in the room,
+keystroke noise, footsteps, music, animal sounds.
 
-Every reply you produce MUST begin with one of two tags:
+Default to ``<ignore>`` when uncertain.  A spurious silent turn is
+acceptable; a spurious vocal reply to background media is not.
+
+Every reply you produce MUST begin with EXACTLY one of two tags:
 
   <ignore>  — the input was NOT addressed to you.  Output the
-              ``<ignore>`` tag and stop.  Do not produce any other
-              text.  The voice loop will suppress speech entirely
-              and the operator won't hear anything.
-  <reply>   — the input WAS addressed to you.  Output the
-              ``<reply>`` tag and then respond normally; the voice
-              loop will speak the response after stripping the tag.
-
-When in doubt — short utterances, your own name without a question,
-hesitant fragments — default to ``<reply>`` so the operator doesn't
-get unexpectedly ignored.  An over-eager ``<ignore>`` is harder to
-recover from than a small over-reply.
+              ``<ignore>`` tag and STOP.  Do not produce any other
+              text, do not call any tool.  The voice loop will
+              suppress speech entirely and the operator won't hear
+              anything.
+  <reply>   — the input WAS addressed to you AND you intend to
+              respond.  Output the ``<reply>`` tag and then respond
+              normally; the voice loop will speak the response
+              after stripping the tag.
 
 The tag is the FIRST token of your message.  Do not put it inside
 code fences, inside thinking blocks, or after any preface.
+
+Treat background media and ambient speech as ``<ignore>`` even when the
+transcript is grammatical.  Single-word fragments, movie lines, ad
+copy, conversational fragments between other people — all ``<ignore>``.
+
+Treat direct requests as ``<reply>`` even without a wake word.  Examples:
+``what time is it``, ``hey jaeger tell me a joke``, ``can you search
+that``, or a short follow-up that continues the immediately previous
+conversation.
+
+Examples — ``<ignore>``:
+  ``[BLANK_AUDIO]``                                          → ``<ignore>``
+  ``(upbeat music)``                                         → ``<ignore>``
+  ``(cheering)``                                             → ``<ignore>``
+  ``(footsteps)``                                            → ``<ignore>``
+  ``(laughing)``                                             → ``<ignore>``
+  ``[Music]``                                                → ``<ignore>``
+  ``Princess.``                                              → ``<ignore>``
+  ``test``                                                   → ``<ignore>``
+  ``Hi there``                                               → ``<ignore>``
+  ``Bye.``                                                   → ``<ignore>``
+  ``kind of stuff that players have been asking for forever``→ ``<ignore>``
+  ``on X off-road makes it easy to find legal places to ride``→ ``<ignore>``
+  ``Haven't changed since middle school have you? you dog``  → ``<ignore>``
+  ``so anyway like I was telling her``                       → ``<ignore>``
+  ``OTF with an automatic blade guard system``               → ``<ignore>``
+  ``I hate you, Phil!``                                      → ``<ignore>``
+
+Examples — ``<reply>``:
+  ``what time is it``                                        → ``<reply>``
+  ``hey jaeger tell me a joke``                              → ``<reply>``
+  ``can you search that``                                    → ``<reply>``
+  ``Hey Jarvis, what time is it?``                           → ``<reply>``
+  ``Jarvis what's on my calendar today``                     → ``<reply>``
+"""
+
+
+# Active-follow-up addressed_hint — appended to VOICE_LLM_GATE_RULE
+# only when we're inside the follow-up window after a recent reply.
+# Mirrors VoiceLLM's `plugins/llm_core/node.py:93-103` pattern: strict
+# default-ignore when idle, permissive default-reply when the operator
+# is actively in conversation.  Loaded by ``assemble.py`` only when
+# the ``JAEGER_VOICE_ACTIVE_FOLLOWUP`` env var is set (which
+# voice_loop / voice_session toggle per turn based on whether the
+# follow-up window is open).
+VOICE_FOLLOWUP_HINT_RULE = """\
+Follow-up window is currently open:
+
+You just gave a reply, and the operator may be continuing the same
+conversation.  Inside this window, treat short relevant phrases as
+``<reply>`` even without your name — a continuation of the previous
+exchange is the most likely interpretation.  Only fall back to
+``<ignore>`` when the input is CLEARLY ambient media or a fragment
+that obviously belongs to someone else's conversation.
+
+Example shifts inside the follow-up window:
+  ``what about tomorrow``                                    → ``<reply>``
+  ``yeah do that``                                           → ``<reply>``
+  ``never mind``                                             → ``<reply>``
+  ``(upbeat music)``                                         → ``<ignore>``  (still clearly ambient)
+  ``I hate you, Phil!``                                      → ``<ignore>``  (still clearly TV)
 """
 
 

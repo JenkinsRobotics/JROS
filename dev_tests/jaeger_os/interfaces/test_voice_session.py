@@ -9,6 +9,7 @@ trigger, VoiceController construction, and /voice argument parsing.
 from __future__ import annotations
 
 from pathlib import Path
+import time
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
@@ -40,6 +41,8 @@ def test_voice_config_defaults_match_voicellm_proven_pattern() -> None:
       - barge_in  OFF   — mic-pause during TTS (VoiceLLM's reference
                           self-speech rejection strategy)
       - follow_up ON, follow_up_seconds=10.0 (reference value)
+      - self_speech_filter ON, threshold=0.75
+      - stale queued turns dropped after 3.0s
     """
     vc = VoiceConfig()
     assert vc.enabled is False
@@ -48,6 +51,9 @@ def test_voice_config_defaults_match_voicellm_proven_pattern() -> None:
     assert vc.llm_gate is True
     assert vc.follow_up is True
     assert vc.follow_up_seconds == 10.0
+    assert vc.self_speech_filter is True
+    assert vc.self_speech_threshold == 0.75
+    assert vc.pending_turn_max_age_s == 3.0
 
 
 def test_voice_config_enabled_can_be_turned_on_explicitly() -> None:
@@ -205,6 +211,41 @@ def test_voice_controller_speaks_through_tts_node_bus() -> None:
     assert ack_topic == topics.SENSE_SPOKEN
     assert timeout_s == 180.0
     assert c._audio_session.paused == [True, False]
+
+
+def test_voice_controller_does_not_speak_non_speech_marker_reply() -> None:
+    c = VoiceController(Console(file=open("/dev/null", "w")))
+    c.llm_gate = False
+    c._bus = _FakeSpeechBus()
+    c._audio_session = _FakeSTT()
+
+    interrupted = c.speak("(beeping)")
+
+    assert interrupted is False
+    assert c._bus.requests == []
+
+
+def test_voice_controller_drops_non_speech_transcripts_before_queue() -> None:
+    c = VoiceController(Console(file=open("/dev/null", "w")))
+    handler = c._make_transcript_handler()
+
+    handler(SimpleNamespace(text="[BLANK_AUDIO]"))
+    handler(SimpleNamespace(text="hey jaeger what time is it"))
+
+    assert c._transcripts.qsize() == 1
+    queued, _queued_at = c._transcripts.get_nowait()
+    assert queued == "hey jaeger what time is it"
+
+
+def test_voice_controller_poll_drops_stale_transcripts() -> None:
+    c = VoiceController(
+        Console(file=open("/dev/null", "w")),
+        pending_turn_max_age_s=0.01,
+    )
+    c._audio_session = object()
+    c._transcripts.put_nowait(("what time is it", time.time() - 1.0))
+
+    assert c.poll(timeout=0.01) is None
 
 
 def test_voice_controller_barge_in_publishes_correlated_speech_stop() -> None:

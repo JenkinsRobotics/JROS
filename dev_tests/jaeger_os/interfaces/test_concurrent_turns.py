@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import threading
 import time
+from types import SimpleNamespace
 
 from rich.console import Console
 
@@ -197,8 +198,104 @@ def test_busy_voice_coalescing_preserves_typed_queue() -> None:
 
 def test_coalesced_voice_format_round_trips() -> None:
     formatted = _format_coalesced_voice(["one", "two"])
-    assert "combined turn" in formatted
+    assert "Decide with the voice gate" in formatted
+    assert "reply <ignore>" in formatted
     assert _split_coalesced_voice(formatted) == ["one", "two"]
+
+
+class _GateChat:
+    def __init__(self, text: str) -> None:
+        self.text = text
+
+
+class _GateClient:
+    def __init__(self, text: str) -> None:
+        self.text = text
+        self.calls: list = []
+
+    def chat(self, messages, **kwargs):
+        self.calls.append((messages, kwargs))
+        return _GateChat(self.text)
+
+
+# Single-pass gate replaces the two-call gate (operator-locked
+# 2026-06-07).  No dedicated gate LLM call; the primary agent's
+# response is parsed for the leading <ignore> / <reply> tag.
+# See dev_docs/0.4.0_voice_gate_unification_prompt.md.
+
+def test_tui_voice_turn_ignores_when_agent_replies_with_ignore_tag(
+    monkeypatch,
+) -> None:
+    """A voice turn whose agent response begins with ``<ignore>`` is
+    suppressed: no rendering, no TTS, no second LLM round-trip."""
+    tui = _tui()
+    tui._voice = SimpleNamespace(
+        running=True,
+        llm_gate=True,
+        in_followup_window=lambda: False,
+    )
+    tui._render_turn_header = lambda *_a, **_k: None
+    rendered: list[str] = []
+    tui._render_answer = lambda text, **_k: rendered.append(text)
+
+    import jaeger_os.main as main
+
+    calls: list[tuple[str, str | None]] = []
+
+    def _fake_run_for_voice(_client, text, session_key=None):
+        calls.append((text, session_key))
+        return {
+            "text": "<ignore>",
+            "error": None,
+            "spoke_via_tool": False,
+        }
+
+    monkeypatch.setattr(main, "run_for_voice", _fake_run_for_voice)
+
+    client = _GateClient("ignored-by-fixture")
+    tui._run_voice_turn(client, "background tv")
+
+    # Single-pass: run_for_voice IS called (gate happens INSIDE the
+    # turn via system prompt), but its response is suppressed.
+    assert calls == [("background tv", main._DEFAULT_SESSION_KEY)]
+    assert rendered == []
+
+
+def test_tui_voice_turn_accepts_into_cli_session(monkeypatch) -> None:
+    """A voice turn whose agent response begins with ``<reply>`` has
+    the tag stripped and the rest dispatched normally."""
+    tui = _tui()
+    tui._voice = SimpleNamespace(
+        running=True,
+        llm_gate=True,
+        speak=lambda _text: False,
+        chime=lambda _kind: None,
+        open_followup=lambda: None,
+        in_followup_window=lambda: False,
+    )
+    tui._render_turn_header = lambda *_a, **_k: None
+    rendered: list[str] = []
+    tui._render_answer = lambda text, **_k: rendered.append(text)
+
+    import jaeger_os.main as main
+
+    calls: list[tuple[str, str | None]] = []
+
+    def _fake_run_for_voice(_client, text, session_key=None):
+        calls.append((text, session_key))
+        return {
+            "text": "<reply>It is 2:28 PM.",
+            "error": None,
+            "spoke_via_tool": False,
+        }
+
+    monkeypatch.setattr(main, "run_for_voice", _fake_run_for_voice)
+
+    client = _GateClient("ignored-by-fixture")
+    tui._run_voice_turn(client, "what time is it")
+
+    assert calls == [("what time is it", main._DEFAULT_SESSION_KEY)]
+    assert rendered == ["It is 2:28 PM."]
 
 
 # ── busy mode get/set ────────────────────────────────────────────────

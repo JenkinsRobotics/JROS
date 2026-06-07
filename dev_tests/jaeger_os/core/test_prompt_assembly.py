@@ -37,6 +37,7 @@ from jaeger_os.core.prompts.rules import (
     MANDATORY_TOOL_RULES,
     OPERATING_DISCIPLINE,
     TOOL_USAGE_RULES,
+    VOICE_LLM_GATE_RULE,
 )
 
 
@@ -65,6 +66,32 @@ def test_agent_mode_contains_every_static_rule_block(tmp_path):
     assert MANDATORY_TOOL_RULES.strip() in out
     assert OPERATING_DISCIPLINE.strip() in out
     assert TOOL_USAGE_RULES.strip() in out
+
+
+def test_voice_gate_rule_matches_voicellm_noise_examples():
+    """The always-on voice gate must explicitly teach the model to ignore
+    background media/ad fragments while still answering direct requests.
+
+    G3 (operator-locked 2026-06-07): rule strengthened with VoiceLLM-
+    style default-to-ignore framing + more concrete noise examples,
+    including ones drawn from the operator's actual TV/movie test
+    runs."""
+    # Default-ignore framing (the conservative default that catches
+    # borderline ambient media).
+    assert "Default to ``<ignore>`` when uncertain" in VOICE_LLM_GATE_RULE
+    # The "much of what you hear is NOT directed at you" framing —
+    # VoiceLLM's anti-junk priming.  Substring search across the wrap.
+    assert "MUCH" in VOICE_LLM_GATE_RULE
+    assert "NOT directed at you" in VOICE_LLM_GATE_RULE
+    # Concrete examples — both legacy ones and ones added in G3.
+    assert "on X off-road makes it easy" in VOICE_LLM_GATE_RULE
+    assert "kind of stuff that players have been asking for forever" \
+        in VOICE_LLM_GATE_RULE
+    # G3 — example from operator's actual TV/movie noise test:
+    assert "Princess." in VOICE_LLM_GATE_RULE
+    # Direct requests stay <reply>.
+    assert "``what time is it``" in VOICE_LLM_GATE_RULE
+    assert "<reply>" in VOICE_LLM_GATE_RULE
 
 
 def test_every_mode_gets_the_three_laws_wrap(tmp_path):

@@ -1,11 +1,5 @@
-"""jaeger_os.nodes.stt — the STT node package.
+"""Compatibility shim for the renamed audio session node package."""
 
-Per-subsystem layout matching ``jaeger_os/nodes/tts/`` and
-VoiceLLM's ``stt/`` / ``tts/`` package shape.  Add backend
-adapters, VAD helpers, language detectors etc. as siblings of
-``node.py`` here rather than polluting the parent.
-"""
+from jaeger_os.nodes.audio_session import AudioSessionNode, STTAdapter, STTNode
 
-from .node import STTAdapter, STTNode
-
-__all__ = ["STTNode", "STTAdapter"]
+__all__ = ["AudioSessionNode", "STTNode", "STTAdapter"]

@@ -1,4 +1,4 @@
-"""Tests for ``jaeger_os.nodes.stt`` — Track B.3.1.
+"""Tests for ``jaeger_os.nodes.audio_session`` — Track B.3.1.
 
 Mock STT adapter so we don't load Whisper or open the mic.  The
 real-Whisper integration runs out-of-band via
@@ -13,7 +13,7 @@ import time
 import pytest
 
 from jaeger_os import topics
-from jaeger_os.nodes import STTNode
+from jaeger_os.nodes import AudioSessionNode, STTNode
 from jaeger_os.transport import InProcBus
 
 
@@ -30,6 +30,9 @@ class _MockAdapter:
     def __init__(self):
         self.started = False
         self.stopped = False
+        self.paused = []
+        self.on_speech_detected = None
+        self.drained = False
         self._phrases = []
         self._lock = threading.Lock()
 
@@ -50,9 +53,25 @@ class _MockAdapter:
             time.sleep(0.01)
         return None
 
+    def set_paused(self, paused):
+        self.paused.append(paused)
+
+    def set_on_speech_detected(self, callback):
+        self.on_speech_detected = callback
+
+    def open_followup(self):
+        pass
+
+    def drain_pending(self):
+        self.drained = True
+
     def feed_phrase(self, text: str):
         with self._lock:
             self._phrases.append(text)
+
+    def fire_speech_start(self):
+        if self.on_speech_detected is not None:
+            self.on_speech_detected()
 
 
 @pytest.fixture
@@ -63,7 +82,7 @@ def bus():
 
 
 def _start_node(bus, adapter, **kwargs):
-    node = STTNode(bus=bus, adapter=adapter, **kwargs)
+    node = AudioSessionNode(bus=bus, adapter=adapter, **kwargs)
     thread = threading.Thread(target=node.run, daemon=True)
     thread.start()
     time.sleep(0.1)  # let setup() complete
@@ -131,7 +150,7 @@ def test_phrase_becomes_transcript_message(bus):
         assert msg.text == "hello world"
         assert msg.is_final is True
         assert msg.language == "en"
-        assert msg.node_id == "stt"
+        assert msg.node_id == "audio_session"
     finally:
         _stop_node(node, thread)
 
@@ -198,5 +217,66 @@ def test_no_phrase_doesnt_publish(bus):
     try:
         time.sleep(0.2)
         assert received == []
+    finally:
+        _stop_node(node, thread)
+
+
+def test_user_speech_start_published_from_callback(bus):
+    """The audio session's low-latency speech callback publishes a
+    /sense/user_speech_start event before transcript finalization."""
+    adapter = _MockAdapter()
+    received = []
+    event = threading.Event()
+
+    def on_start(msg):
+        received.append(msg)
+        event.set()
+
+    bus.subscribe(topics.SENSE_USER_SPEECH_START, on_start)
+    node, thread = _start_node(bus, adapter, poll_timeout_s=0.1)
+    try:
+        adapter.fire_speech_start()
+        assert event.wait(timeout=2.0), "no /sense/user_speech_start published"
+        assert len(received) == 1
+        msg = received[0]
+        assert isinstance(msg, topics.UserSpeechStart)
+        assert msg.node_id == "audio_session"
+    finally:
+        _stop_node(node, thread)
+
+
+def test_sttnode_alias_still_available_for_one_release(bus):
+    adapter = _MockAdapter()
+    node = STTNode(bus=bus, adapter=adapter)
+    assert isinstance(node, AudioSessionNode)
+
+
+def test_transcript_publish_latency_smoke_bench(bus):
+    """Smoke-quality realtime-path bench for Design Call 3.
+
+    Measures local overhead from mock-STT phrase finalization to bus
+    transcript delivery.  This is not a hardware STT latency benchmark.
+    """
+    adapter = _MockAdapter()
+    event = threading.Event()
+    elapsed = {"s": None}
+    t0 = {"value": 0.0}
+
+    def on_transcript(_msg):
+        elapsed["s"] = time.perf_counter() - t0["value"]
+        event.set()
+
+    bus.subscribe(topics.SENSE_TRANSCRIPT, on_transcript)
+    node, thread = _start_node(bus, adapter, poll_timeout_s=0.01)
+    try:
+        t0["value"] = time.perf_counter()
+        adapter.feed_phrase("bench phrase")
+        assert event.wait(timeout=2.0), "no transcript published"
+        assert elapsed["s"] is not None
+        print(
+            "audio_session_transcript_publish_latency_ms="
+            f"{elapsed['s'] * 1000:.3f}"
+        )
+        assert elapsed["s"] < 0.05
     finally:
         _stop_node(node, thread)

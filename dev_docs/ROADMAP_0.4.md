@@ -6,10 +6,10 @@
 
 * Track A.1–A.7 — node infrastructure (topics SSOT, codec,
   InProcBus, ZMQBus, Node base class, launch flags, XPUB↔XSUB broker)
-* Track B.1–B.3.2 — TTS + STT nodes; agent text_to_speech tool
-  routes through bus; voice loop fully migrated (phrases via
+* Track B.1–B.3.2 — TTS + AudioSession nodes; agent text_to_speech
+  tool routes through bus; voice loop and TUI voice consume phrases via
   /sense/transcript, speech via /act/speech, barge-in via
-  /act/speech_stop)
+  /sense/user_speech_start + /act/speech_stop)
 * Track B.5 — Vision node (raw camera frames, USB + TCP backends,
   no YOLO/no inference)
 * Track C skeletons — Motor + Light universal Protocols +
@@ -19,7 +19,9 @@
 
 ## 0.4.x followups (DEFERRED)
 
-* B.4 audio_io node split (mic + speaker as their own node)
+* B.4 raw audio_io split (future device-level mic/speaker frame nodes
+  for multiprocess or remote hardware; not the 0.4.0 realtime voice
+  owner)
 * Track C instance-level adapters (JP01-MC01 ESP32, JP01-AVC01 Teensy)
 * Track D supervisor + per-node health bench
 * Track E simulation mode
@@ -225,12 +227,27 @@ code path for nodes-as-threads OR nodes-as-processes.
 
 **Goal:** prove the IPC layer end-to-end with the simplest possible case.
 
-  - [ ] `jaeger_os/nodes/audio_io.py` — wraps the persistent Kokoro
-    player + mic input as a single node, publishes
-    `/sense/audio_in` frames and subscribes `/act/audio_out` frames.
-    Runs in-process by default; spawns standalone with `--multiprocess`.
-  - [ ] Brain now reads transcripts from `/sense/transcript` (still
-    in-process for now) instead of calling Whisper directly.
+  - [ ] `jaeger_os/nodes/audio_session/` — the realtime voice-input
+    node. Owns mic capture, AEC reference wiring, VAD/STT adapter
+    lifecycle, non-speech filtering, finalized transcript publication,
+    and low-latency `/sense/user_speech_start` for barge-in.
+  - [ ] `audio_session` vs `audio_io` distinction:
+    - `audio_session` is the 0.4.0 monolithic realtime voice owner.
+      It keeps raw frames, AEC, VAD, and STT buffers in-process so
+      the hot path does not pay avoidable bus serialization/queueing.
+    - `audio_io` is a future raw-frame device node for multiprocess or
+      remote hardware. It will publish `/sense/audio_in` and consume
+      `/act/audio_out` only when a real process/device boundary needs
+      raw audio on the bus.
+  - [ ] TUI and standalone voice read transcripts from
+    `/sense/transcript` instead of constructing independent Whisper
+    owners.
+  - [ ] Known monolithic-only coupling: `AudioSessionNode` gets its AEC
+    far-end reference from the in-process TTS synth's
+    `reference_buffer` (`runtime.get_synth().reference_buffer` or
+    equivalent). This is deliberate for 0.4.0; future multiprocess work
+    should introduce a binary `/sense/tts_reference` topic instead of
+    shipping raw speaker frames through the monolithic bus today.
   - [ ] **Verification gate:** TUI works identically in both modes.
     `./launch` (monolithic) and `./launch --multiprocess` must produce
     the same operator experience.

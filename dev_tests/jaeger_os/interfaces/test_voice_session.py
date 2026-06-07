@@ -183,12 +183,15 @@ class _FakeSTT:
     def drain_pending(self):
         self.drained = True
 
+    def remember_reply(self, text):
+        self.last_reply = text
+
 
 def test_voice_controller_speaks_through_tts_node_bus() -> None:
     c = VoiceController(Console(file=open("/dev/null", "w")))
     c.llm_gate = False
     c._bus = _FakeSpeechBus()
-    c._stt = _FakeSTT()
+    c._audio_session = _FakeSTT()
 
     interrupted = c.speak("hello from the bus")
 
@@ -201,7 +204,7 @@ def test_voice_controller_speaks_through_tts_node_bus() -> None:
     assert request.correlation_id
     assert ack_topic == topics.SENSE_SPOKEN
     assert timeout_s == 180.0
-    assert c._stt.paused == [True, False]
+    assert c._audio_session.paused == [True, False]
 
 
 def test_voice_controller_barge_in_publishes_correlated_speech_stop() -> None:
@@ -214,7 +217,7 @@ def test_voice_controller_barge_in_publishes_correlated_speech_stop() -> None:
         fire_barge_in=lambda: stt.on_speech_detected(),
     )
     c._bus = bus
-    c._stt = stt
+    c._audio_session = stt
     c._barge_in_live = True
 
     interrupted = c.speak("long answer")

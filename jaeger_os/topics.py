@@ -48,6 +48,7 @@ import msgspec
 
 SENSE_AUDIO_IN = "/sense/audio_in"
 SENSE_TRANSCRIPT = "/sense/transcript"
+SENSE_USER_SPEECH_START = "/sense/user_speech_start"
 SENSE_CAMERA_FRAME = "/sense/camera_frame"
 # Back-compat alias for code that still imports the old 0.4 draft name.
 # Do not register this as a separate topic; raw frames live on
@@ -119,6 +120,17 @@ class Transcript(TopicMessage):
     language: str = "en"
     is_final: bool = True
     duration_s: float = 0.0
+
+
+class UserSpeechStart(TopicMessage):
+    """Low-latency event emitted when the audio session detects
+    sustained user speech.
+
+    This is distinct from :class:`Transcript`: speech-start is for
+    realtime interruption/barge-in and arrives before Whisper finalizes
+    a phrase; transcript is the later semantic user utterance.
+    """
+    topic: Literal["/sense/user_speech_start"] = SENSE_USER_SPEECH_START
 
 
 class CameraFrame(TopicMessage):
@@ -256,6 +268,7 @@ class LightCommand(TopicMessage):
 TOPIC_TO_CLASS: dict[str, type[TopicMessage]] = {
     SENSE_AUDIO_IN: AudioInFrame,
     SENSE_TRANSCRIPT: Transcript,
+    SENSE_USER_SPEECH_START: UserSpeechStart,
     SENSE_CAMERA_FRAME: CameraFrame,
     SENSE_TOUCH: TouchReading,
     SENSE_PROPRIO: ProprioReading,
@@ -281,7 +294,7 @@ def class_for_topic(topic: str) -> type[TopicMessage]:
 
 __all__ = [
     # Constants
-    "SENSE_AUDIO_IN", "SENSE_TRANSCRIPT",
+    "SENSE_AUDIO_IN", "SENSE_TRANSCRIPT", "SENSE_USER_SPEECH_START",
     "SENSE_CAMERA_FRAME", "SENSE_VISION", "SENSE_VISION_ANALYSIS",
     "SENSE_TOUCH", "SENSE_PROPRIO", "SENSE_SPOKEN",
     "ACT_SPEECH", "ACT_AUDIO_OUT", "ACT_MOTION", "ACT_LIGHT",
@@ -289,7 +302,7 @@ __all__ = [
     "ALL_TOPICS",
     # Envelope + concrete types
     "TopicMessage",
-    "AudioInFrame", "Transcript", "CameraFrame",
+    "AudioInFrame", "Transcript", "UserSpeechStart", "CameraFrame",
     "TouchReading", "ProprioReading", "SpokenAck",
     "SpeechCommand", "AudioOutFrame", "MotionCommand", "LightCommand",
     "SpeechStop",

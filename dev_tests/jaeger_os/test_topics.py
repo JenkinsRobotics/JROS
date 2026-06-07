@@ -111,6 +111,7 @@ def test_envelope_topic_v_defaults_to_one():
 _REGISTERED: tuple[type[topics.TopicMessage], ...] = (
     topics.AudioInFrame,
     topics.Transcript,
+    topics.UserSpeechStart,
     topics.CameraFrame,
     topics.TouchReading,
     topics.ProprioReading,

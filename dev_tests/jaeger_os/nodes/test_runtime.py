@@ -9,8 +9,10 @@ touching audio hardware.
 from __future__ import annotations
 
 import uuid
+import queue
 
 from jaeger_os import topics
+from jaeger_os.core.audio import AudioSessionConfig
 from jaeger_os.nodes import runtime
 from jaeger_os.nodes.tts import TTSNode
 from jaeger_os.transport import InProcBus
@@ -22,6 +24,7 @@ class _MockSynth:
         self.warm_calls = 0
         self.shutdown_called = False
         self.warm_raises = warm_raises
+        self.reference_buffer = None
 
     def speak(self, text: str):
         self.calls.append(text)
@@ -59,6 +62,34 @@ def _install_mock_runtime(monkeypatch, *, synth: _MockSynth | None = None):
     monkeypatch.setattr(runtime, "_synth_factory", synth_factory)
     monkeypatch.setattr(runtime, "_tts_node_factory", node_factory)
     return created
+
+
+class _MockAudioSession:
+    def __init__(self):
+        self.started = False
+        self.stopped = False
+        self.on_speech_detected = None
+        self.phrases: "queue.Queue[str]" = queue.Queue()
+        self.reference_buffer = None
+        self.barge_in_live = False
+
+    def start(self):
+        self.started = True
+
+    def stop(self):
+        self.stopped = True
+
+    def next_phrase(self, timeout=1.0):
+        try:
+            return self.phrases.get(timeout=timeout)
+        except queue.Empty:
+            return None
+
+    def set_on_speech_detected(self, callback):
+        self.on_speech_detected = callback
+
+    def feed(self, text):
+        self.phrases.put(text)
 
 
 def test_get_bus_returns_same_instance():
@@ -153,3 +184,62 @@ def test_shutdown_stops_node_thread_and_synth(monkeypatch):
     assert runtime._tts_thread is None
     assert runtime._bus is None
     assert synth.shutdown_called is True
+
+
+def test_ensure_audio_session_node_publishes_transcript(monkeypatch):
+    created = _install_mock_runtime(monkeypatch)
+    session = _MockAudioSession()
+    monkeypatch.setattr(
+        runtime,
+        "_audio_session_factory",
+        lambda _config: session,
+    )
+    try:
+        node = runtime.ensure_audio_session_node(
+            config=AudioSessionConfig(require_wake_word=False),
+        )
+        bus = runtime.get_bus()
+        got = []
+
+        def on_transcript(msg):
+            got.append(msg)
+
+        bus.subscribe(topics.SENSE_TRANSCRIPT, on_transcript)
+        session.feed("hello via audio node")
+        import time
+        deadline = time.monotonic() + 2.0
+        while time.monotonic() < deadline and not got:
+            time.sleep(0.01)
+
+        assert node is runtime._audio_session_node
+        assert session.started is True
+        assert got
+        assert got[0].text == "hello via audio node"
+        assert got[0].node_id == "audio_session"
+        assert created["synth"] is runtime.get_synth()
+    finally:
+        runtime.shutdown()
+
+
+def test_shutdown_audio_session_node_leaves_tts_running(monkeypatch):
+    _install_mock_runtime(monkeypatch)
+    session = _MockAudioSession()
+    monkeypatch.setattr(
+        runtime,
+        "_audio_session_factory",
+        lambda _config: session,
+    )
+    try:
+        runtime.ensure_audio_session_node(
+            config=AudioSessionConfig(require_wake_word=False),
+        )
+        assert runtime._tts_node is not None
+
+        runtime.shutdown_audio_session_node()
+
+        assert session.stopped is True
+        assert runtime._audio_session_node is None
+        assert runtime._audio_session_thread is None
+        assert runtime._tts_node is not None
+    finally:
+        runtime.shutdown()

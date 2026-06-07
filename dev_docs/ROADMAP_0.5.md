@@ -260,6 +260,87 @@ is Lilith.  Jarvis's robot is Jarvis.  This keeps the avatar /
 persona / voice / skill tuning cohesive per instance and avoids
 the complexity tax of persona-swap UX.
 
+### Track F — Node supervision + runtime (early in 0.5)
+
+Operator-locked 2026-06-07: **bake the supervision framework in
+NOW while we have ~6 nodes, not later when we have 20.**  Every
+new node that lands AFTER this track inherits the pattern for
+free; retrofitting it across a fleet is painful.
+
+Previously deferred as Track D in the 0.4 roadmap.  Promoting to
+a 0.5 Track because the cost-of-delay is real: avatar (Track C)
+and persona hot-reload (Track B) both need supervision to be safe
+on a live YouTube stream.
+
+* **F.1** `dev_docs/library_review/mochi_demo.md` audit (with the
+  Mochi reference 2026-06-08) explicitly catalogues supervision /
+  runtime / health patterns Mochi already has — operator believes
+  it does.  Anything reusable informs F.3.  Hermes's
+  `supervisor.py` is also preserved at
+  `dev_docs/library_review/hermes_supervisor.py` as a fallback
+  reference if Mochi doesn't cover the supervisor piece.
+
+* **F.2** New topic `/sense/health` + `NodeHealth` schema (msgspec.
+  Struct).  Every node publishes a heartbeat each tick.  Schema:
+
+  ```python
+  class NodeHealth(TopicMessage):
+      topic: Literal["/sense/health"] = SENSE_HEALTH
+      node: str = ""
+      state: str = "running"        # NodeState.value
+      uptime_s: float = 0.0
+      last_error: str | None = None
+      extras: dict = msgspec.field(default_factory=dict)
+  ```
+
+  `Node.health()` already returns this shape; we just need the
+  bus publish + a subscriber on the brain side.
+
+* **F.3** `jaeger_os/supervisor.py` — port from the Hermes
+  reference (or vendor patterns from Mochi if it has them),
+  adapted for the Node base class.  Wraps a node thread /
+  subprocess with:
+  - exponential backoff on crash (doubles per crash, caps at 60s)
+  - good-run reset (back to base delay after a long clean run)
+  - crash log appended to `<instance>/run/supervisor.crash.log`
+  - max-restarts gate (default unbounded; configurable)
+
+* **F.4** Promote `runtime.ensure_*_node` factories from the 0.4
+  patch round (`146b960`) to the canonical node-spawn path.
+  Supervisor wraps the factory.  Operator never starts a raw
+  node; they get a supervised one.
+
+* **F.5** `/sense/health` subscription in the brain.  Surface
+  missing heartbeats as "node X went dark":
+  - `./launch --health` already exists; extend it with live
+    node status
+  - new `/nodes` TUI slash command lists active nodes + state +
+    last seen
+  - operator notifications when a node restarts (TUI status bar
+    indicator)
+
+* **F.6** Backpressure policy per-topic.  ZMQ HWM + InProcBus
+  overflow path already exist; this track documents per-topic
+  defaults:
+  - audio frames: drop oldest (latency over completeness)
+  - motor commands: drop oldest (most recent intent wins)
+  - LLM tool dispatches: never drop (queue without limit)
+  - health heartbeats: drop newest (one missed beat OK)
+
+**Why F is early-0.5, not 0.5.x:**
+
+1. Track C (avatar) ships in 0.5 → without supervision a renderer
+   crash silently breaks the YouTube stream.
+2. Track B (per-turn persona composition) ships in 0.5 → a
+   compose bug becomes a per-turn crash; supervisor + health
+   makes that recoverable instead of catastrophic.
+3. Mochi-style face needs ~50 Hz lip-sync events on
+   `/sense/tts_chunk` → backpressure policy matters; without
+   it, a slow renderer wedges the bus.
+
+Estimated scope: ~400 lines new code, ~150 lines tests.  Smaller
+than Track B + C combined; big leverage.
+
 ---
 
 ## Milestones
@@ -267,6 +348,10 @@ the complexity tax of persona-swap UX.
 ### 0.5.0 — must-have
 
 * Track A.1 + A.2 + A.3 (audits + Lilith preset data)
+* **Track F.1 + F.2 + F.3 + F.4 + F.5 — node supervision +
+  runtime framework lands EARLY in 0.5 before Tracks B + C add
+  more nodes / per-turn complexity.**  Audit Mochi for existing
+  patterns first; build on what's there.
 * Track B.1 + B.2 + B.3 (structured personality affects the system
   prompt every turn)
 * Track C.1 + C.2 + C.3 + C.4 + C.5 + C.6 + C.7 (avatar visible

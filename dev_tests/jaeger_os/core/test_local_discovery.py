@@ -38,6 +38,13 @@ def isolated_env(monkeypatch, tmp_path):
     # Disable the in-tree dev path too — _in_tree_models_path resolves
     # via __file__, which still points at the real repo. Monkeypatch it.
     monkeypatch.setattr(ld, "_in_tree_models_path", lambda: None)
+    # 2026-06-07: also isolate _operator_state_models_path.  It
+    # resolves to ``<repo>/.jaeger_os/models/`` which is where
+    # JROS caches downloaded GGUFs — once an operator downloads
+    # ANY model, this path goes non-empty and tests that assume
+    # discovery returns nothing start failing.  Mock to None so
+    # the operator's real cache never leaks into the test scan.
+    monkeypatch.setattr(ld, "_operator_state_models_path", lambda: None)
     return tmp_path
 
 

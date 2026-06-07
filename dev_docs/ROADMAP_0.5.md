@@ -260,6 +260,90 @@ is Lilith.  Jarvis's robot is Jarvis.  This keeps the avatar /
 persona / voice / skill tuning cohesive per instance and avoids
 the complexity tax of persona-swap UX.
 
+### Track G — Audio control topics + brain pre-LLM gate
+
+Deferred from the 0.4 audio refactor request
+([`0.4.0_audio_refactor_prompt.md`](0.4.0_audio_refactor_prompt.md)
+Steps 5-6).  These were originally proposed by the reviewing
+agent as 0.4.0 hardening; operator scoped them to 0.5 because
+each adds new SSOT entries or new architectural layers that
+deserve their own deliberation pass.
+
+* **G.1** Audio control topics:
+  - `/control/mic_pause`
+  - `/control/stt_followup_open`
+  - `/control/audio_drain_pending`
+  - optional `/control/audio_mode`
+
+  Replaces the direct `stt.set_paused()` / `stt.open_followup()`
+  / `stt.drain_pending()` method calls the voice loop +
+  AudioSessionNode still use today.  Bus-managed lifecycle
+  matches the rest of the node fleet.
+
+* **G.2** Pre-LLM voice gate inside the AudioSessionNode or
+  voice orchestrator path.  Cheap deterministic filters BEFORE
+  the LLM gate sees the phrase:
+  1. Empty / junk marker gate
+  2. Minimum content gate
+  3. Repeated transcript gate
+  4. Stale phrase gate
+  5. Busy-turn coalescing (5 fragments while agent is busy →
+     one next-turn batch, or dropped as stale)
+  6. Optional small intent classifier (deferred sub-track)
+
+  Rationale: don't spend Gemma 12B cycles on `[BLANK_AUDIO]` or
+  on repeated identical transcripts.  The existing
+  `<ignore>`/`<reply>` LLM gate stays as the SEMANTIC backstop
+  for "was that addressed to me?"; this gate is the SYNTACTIC
+  one for "is this real content?"
+
+* **G.3** Tests + bench measuring gate hit rate against a
+  collected voice log corpus.
+
+### Track H — Turn routing classes
+
+Deferred from the 0.4 audio refactor request Step 7.  A major
+brain-loop change — voice should not route every accepted
+phrase into the same slow path.
+
+* **H.1** Route classification at the entry to `run_for_voice`:
+  - `immediate` — short factual answer, local status, simple
+    memory lookup, simple web/search with freshness
+  - `clarify` — ask one follow-up question quickly
+  - `background` — coding, research, code review, long
+    benchmark, large tool workflow
+  - `hardware` — robot body command, safety-gated
+
+* **H.2** Rule-based router first (tool-intent heuristics).
+  Promote to a small model only if the rule baseline plateaus.
+
+* **H.3** Background work integrates with the deep-think
+  kanban from 0.3 — a "background" route hands the task off,
+  acknowledges via voice, and the agent stays responsive.
+
+* **H.4** Tests + per-route latency budgets.
+
+### Track I — Context staging + compaction
+
+Deferred from the 0.4 audio refactor request Step 8.  Touches
+every prompt path; deserves its own track.
+
+* **I.1** Context levels:
+  - `voice_minimal` — identity, active conversation summary,
+    realtime commands, small toolset
+  - `default` — current normal agent context
+  - `deep_task` — coding/research skill docs, long memory,
+    larger toolset, background board integration
+
+* **I.2** `assemble_prompt` gains a `level` parameter; per-turn
+  route classifier (Track H) picks the level.
+
+* **I.3** Completed background work summarises back into memory
+  instead of bloating the active voice prompt.
+
+* **I.4** Bench cases measuring prompt size + decode latency
+  per level.
+
 ### Track F — Node supervision + runtime (early in 0.5)
 
 Operator-locked 2026-06-07: **bake the supervision framework in

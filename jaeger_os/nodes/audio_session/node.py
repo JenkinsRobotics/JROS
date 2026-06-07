@@ -55,6 +55,15 @@ class AudioSessionNode(Node):
     def setup(self) -> None:
         """Open the mic + start the STT background loop."""
         self.session.set_on_speech_detected(self._publish_user_speech_start)
+        # Wire the gate-decision callback so the node logs gate
+        # decisions as bus events the TUI / interfaces render in
+        # their voice-activity stream (🤫 ignored / 🎙 accepted).
+        try:
+            self.session.set_on_gate_decision(self._publish_gate_decision)
+        except AttributeError:
+            # Older AudioSession (test fixture / pre-refactor build)
+            # without the gate-decision API — skip silently.
+            pass
         self.session.start()
         self._log(
             "audio session started; will publish "
@@ -63,7 +72,15 @@ class AudioSessionNode(Node):
 
     def tick(self) -> None:
         """Pull one committed phrase per tick and publish it as a
-        :class:`Transcript`."""
+        :class:`Transcript`.
+
+        ``session.next_phrase()`` runs the full input pipeline —
+        non-speech filter + self-speech filter + LLM <ignore>/<reply>
+        gate — and only returns CONFIRMED phrases.  Anything that
+        fails the gate is dropped here and a GateDecision event was
+        already emitted to the bus via the callback wired in
+        setup().  The brain therefore never sees ambient noise or
+        TV / movie audio."""
         phrase = self.session.next_phrase(timeout=self._poll_timeout_s)
         if not phrase:
             return
@@ -81,12 +98,32 @@ class AudioSessionNode(Node):
         except Exception:  # noqa: BLE001
             pass
         try:
+            self.session.set_on_gate_decision(None)
+        except (AttributeError, Exception):  # noqa: BLE001
+            pass
+        try:
             self.session.stop()
         except Exception as exc:  # noqa: BLE001
             self._log(f"audio session stop error: {type(exc).__name__}: {exc}")
 
     def _publish_user_speech_start(self) -> None:
         self.bus.publish(topics.UserSpeechStart(node_id=self.name))
+
+    def _publish_gate_decision(self, decision) -> None:
+        """Forward gate decisions to the bus so interfaces can render
+        them.  Both accepted (audit trail) and ignored (operator's
+        voice-activity log).  Callback runs on the polling thread;
+        must not block."""
+        try:
+            self.bus.publish(topics.GateDecision(
+                accepted=bool(decision.accepted),
+                text=str(decision.text)[:200],
+                reason=str(decision.reason),
+                node_id=self.name,
+            ))
+        except Exception:  # noqa: BLE001
+            # Logging callback must never wedge the audio loop.
+            pass
 
 
 # Back-compat aliases for one release while downstream imports move.

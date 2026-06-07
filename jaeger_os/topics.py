@@ -49,6 +49,7 @@ import msgspec
 SENSE_AUDIO_IN = "/sense/audio_in"
 SENSE_TRANSCRIPT = "/sense/transcript"
 SENSE_USER_SPEECH_START = "/sense/user_speech_start"
+SENSE_GATE_DECISION = "/sense/gate_decision"
 SENSE_CAMERA_FRAME = "/sense/camera_frame"
 # Back-compat alias for code that still imports the old 0.4 draft name.
 # Do not register this as a separate topic; raw frames live on
@@ -131,6 +132,35 @@ class UserSpeechStart(TopicMessage):
     a phrase; transcript is the later semantic user utterance.
     """
     topic: Literal["/sense/user_speech_start"] = SENSE_USER_SPEECH_START
+
+
+class GateDecision(TopicMessage):
+    """Per-phrase decision the audio session's input pipeline made
+    about whether to publish a transcript.
+
+    Published by the audio session node for EVERY phrase that passes
+    the STT stage — including ignored ones — so interfaces can
+    render their voice-activity log (🤫 ignored / 🎙 accepted).
+    Only ACCEPTED phrases also become a ``Transcript`` on
+    ``/sense/transcript`` and reach the brain.
+
+    Reason values:
+      ``llm_reply``   — LLM gate accepted as addressed to assistant
+      ``llm_ignore``  — LLM gate rejected as not addressed
+      ``non_speech``  — non-speech marker filter dropped it
+      ``self_speech`` — self-speech similarity filter dropped it
+      ``no_client``   — gate skipped (no LLM client wired yet)
+      ``gate_off``    — operator disabled LLM gate via config
+      ``llm_error:<Type>`` — gate call failed; accepted as fallback
+
+    Pattern (operator-locked 2026-06-07): the node owns its full
+    input pipeline.  This topic exists so the operator sees what
+    the gate decided without the brain having to know voice exists.
+    """
+    topic: Literal["/sense/gate_decision"] = SENSE_GATE_DECISION
+    accepted: bool = False
+    text: str = ""
+    reason: str = ""
 
 
 class CameraFrame(TopicMessage):
@@ -269,6 +299,7 @@ TOPIC_TO_CLASS: dict[str, type[TopicMessage]] = {
     SENSE_AUDIO_IN: AudioInFrame,
     SENSE_TRANSCRIPT: Transcript,
     SENSE_USER_SPEECH_START: UserSpeechStart,
+    SENSE_GATE_DECISION: GateDecision,
     SENSE_CAMERA_FRAME: CameraFrame,
     SENSE_TOUCH: TouchReading,
     SENSE_PROPRIO: ProprioReading,

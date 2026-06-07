@@ -119,18 +119,19 @@ def assemble_prompt(
     # assembler doesn't have to depend on the voice config schema.
     # Sub-agents skip — they speak through the agent surface, not the
     # mic.
-    import os as _os
-    if mode != "subagent" and _os.environ.get("JAEGER_VOICE_GATE") == "1":
-        from .rules import VOICE_LLM_GATE_RULE
-        parts.append(VOICE_LLM_GATE_RULE.strip())
-        # Active follow-up addressed_hint — strict default-ignore when
-        # idle, permissive default-reply when we're inside the
-        # follow-up window after a recent reply.  voice_loop /
-        # voice_session toggle JAEGER_VOICE_ACTIVE_FOLLOWUP per turn.
-        # VoiceLLM parity: plugins/llm_core/node.py:93-103.
-        if _os.environ.get("JAEGER_VOICE_ACTIVE_FOLLOWUP") == "1":
-            from .rules import VOICE_FOLLOWUP_HINT_RULE
-            parts.append(VOICE_FOLLOWUP_HINT_RULE.strip())
+    # 2026-06-07 architectural change (operator-locked):
+    # VOICE_LLM_GATE_RULE no longer rides the brain's system prompt.
+    # The AudioSession node owns its full input pipeline — it runs
+    # the LLM gate against the brain's client BEFORE publishing
+    # /sense/transcript, so the brain never sees ambient noise or
+    # TV / movie audio.  Brain becomes a pure conversation partner;
+    # voice protocol is the node's concern.  See:
+    # dev_docs/0.4.0_voice_gate_unification_prompt.md and
+    # jaeger_os/core/audio/session.py:_classify_phrase_llm.
+    #
+    # JAEGER_VOICE_GATE and JAEGER_VOICE_ACTIVE_FOLLOWUP env vars
+    # are now legacy — kept for one release in case some interface
+    # still toggles them, but they no longer affect the brain prompt.
 
     # Skill index — sub-agents don't need it (they were given a
     # specific task; ranging across the skill library would expand

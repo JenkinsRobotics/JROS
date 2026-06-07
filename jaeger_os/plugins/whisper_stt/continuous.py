@@ -68,11 +68,16 @@ class WhisperSTTContinuous:
         require_wake_word: bool = False,
         wake_phrases: tuple[str, ...] = DEFAULT_WAKE_PHRASES,
         wake_match_threshold: float = 0.78,
-        followup_window_s: float = 15.0,
+        # 0.4.0 alignment with the proven
+        # ``dev_tools/audio_smoke/voice_assistant_persistent.py``
+        # reference (operator-validated 2026-06-06).  Prior values
+        # (15s follow-up, 12s max phrase, avaudio mic) had drifted
+        # heavier and degraded wake-word transcription accuracy.
+        followup_window_s: float = 10.0,
         sample_rate: int = 16000,
         block_ms: int = 30,
         phrase_timeout_s: float = 1.0,
-        max_phrase_s: float = 12.0,
+        max_phrase_s: float = 8.0,
         transcribe_every_s: float = 0.6,
         min_transcribe_s: float = 0.4,
         energy_threshold: float = 0.005,
@@ -82,7 +87,7 @@ class WhisperSTTContinuous:
         input_device: Any = None,
         aec: Any = None,
         far_end_buffer: Any = None,
-        audio_backend: str = "avaudio",
+        audio_backend: str = "sounddevice",
         voice_processing: bool | None = None,
     ) -> None:
         from pywhispercpp.model import Model as STTModel

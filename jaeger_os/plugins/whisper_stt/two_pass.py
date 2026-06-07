@@ -198,21 +198,27 @@ class WhisperSTTTwoPass:
         require_wake_word: bool = False,
         wake_phrases: tuple[str, ...] = DEFAULT_WAKE_PHRASES,
         wake_match_threshold: float = 0.78,
-        followup_window_s: float = 15.0,
+        # 0.4.0 alignment: defaults match the proven reference
+        # ``dev_tools/audio_smoke/voice_assistant_persistent.py``
+        # the operator validated 2026-06-06.  Prior JROS values
+        # (1000ms hangover, 12s max phrase, 15s follow-up, avaudio
+        # mic) had drifted longer/heavier and degraded wake-word
+        # transcription accuracy in practice.
+        followup_window_s: float = 10.0,
         sample_rate: int = 16000,
         frame_ms: int = 30,
         vad_aggressiveness: int = 2,
         pre_roll_ms: int = 240,
         post_padding_ms: int = 250,
-        silence_hangover_ms: int = 1000,
+        silence_hangover_ms: int = 700,
         min_speech_ms: int = 400,
-        max_speech_ms: int = 12000,
+        max_speech_ms: int = 8000,
         barge_in_ms: int = 200,
         mic_queue_max_frames: int = 200,
         input_device: Any = None,
         aec: Any = None,
         far_end_buffer: Any = None,
-        audio_backend: str = "avaudio",
+        audio_backend: str = "sounddevice",
         voice_processing: bool | None = None,
     ) -> None:
         from pywhispercpp.model import Model as STTModel

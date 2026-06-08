@@ -86,6 +86,23 @@ def _find_wake_in_text(
     return False, ""
 
 
+def stt_verbose() -> bool:
+    """Per-phrase STT debug prints (``[heard] ...``, ``[skipped ...]``,
+    ``[follow-up] ...``) go to stdout when ``JAEGER_STT_VERBOSE=1``.
+
+    Operator-flipped 2026-06-07 after live testing showed the debug
+    output dominated the conversation pane during normal voice use.
+    The boot-time setup prints (``[stt-cont] Loading...`` etc.)
+    still fire regardless — they're once-per-session, not noise.
+
+    Set the env var in the operator's shell or instance config when
+    troubleshooting voice; otherwise the voice-activity log in the
+    TUI (controlled by ``/quiet``) is the operator's view of the
+    pipeline."""
+    import os as _os
+    return _os.environ.get("JAEGER_STT_VERBOSE") == "1"
+
+
 def _warm_stt(model, label: str, sample_rate: int) -> None:
     """Run a 1.5-second silence transcription so the first real phrase doesn't
     pay model setup cost. Whisper rejects audio under 1000 ms (skips

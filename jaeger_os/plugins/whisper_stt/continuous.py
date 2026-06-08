@@ -49,6 +49,7 @@ from ._base import (
     is_non_speech_marker,
     _normalize,
     _warm_stt,
+    stt_verbose,
 )
 
 
@@ -376,20 +377,24 @@ class WhisperSTTContinuous:
         # wake matcher already rejects marker text downstream.
         marker_drop = not self.require_wake_word or in_followup_window
         if marker_drop and is_non_speech_marker(text):
-            print(f"[skipped — non-speech: {text!r}]", flush=True)
+            if stt_verbose():
+                print(f"[skipped — non-speech: {text!r}]", flush=True)
             return
 
         # ``require_wake_word`` off → every committed phrase is a turn.
         # The legacy ``[heard]`` line stays so existing logs / tests
-        # don't change shape.
+        # don't change shape — but only when JAEGER_STT_VERBOSE=1, so
+        # normal voice use doesn't bury the conversation pane.
         if not self.require_wake_word:
-            print(f"[heard]  {text!r}", flush=True)
+            if stt_verbose():
+                print(f"[heard]  {text!r}", flush=True)
             self._committed_q.put(text)
             return
         # In the follow-up window the previous turn already gated the
         # mic; this phrase rides through without a wake word.
         if in_followup_window:
-            print(f"[follow-up]  {text!r}", flush=True)
+            if stt_verbose():
+                print(f"[follow-up]  {text!r}", flush=True)
             self._state = "WAKE"
             self._committed_q.put(text)
             return
@@ -397,16 +402,17 @@ class WhisperSTTContinuous:
         if command:
             # Wake-word matched at the head — emit ``[heard]`` for the
             # trigger so logs show which utterance opened the turn.
-            print(f"[heard]  {text!r}", flush=True)
+            if stt_verbose():
+                print(f"[heard]  {text!r}", flush=True)
             self._state = "WAKE"
             self._committed_q.put(command)
             return
-        # VOICE-4: pre-wake transcripts must surface visibly so the
-        # user sees the mic IS listening and what it heard, AND knows
-        # it wasn't sent to the agent. Without this the always-on mic
-        # feels broken on every utterance that didn't open with a
-        # wake phrase.
-        print(f"[mic heard {text!r} — not sent]", flush=True)
+        # VOICE-4 (legacy): pre-wake transcripts surface to stdout so
+        # an operator debugging "the mic isn't responding" sees what
+        # it heard.  Verbose-gated now — the voice-activity log in
+        # the TUI is the operator's normal view.
+        if stt_verbose():
+            print(f"[mic heard {text!r} — not sent]", flush=True)
 
     # ── Public phrase pump ─────────────────────────────────────────────
     def next_phrase(self, timeout: float | None = 1.0) -> str | None:

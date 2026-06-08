@@ -133,11 +133,21 @@ def test_pre_wake_transcript_is_logged_as_not_sent(capsys, monkeypatch):
     import queue as _queue
     stub._committed_q = _queue.Queue()
 
-    stub._commit("ambient podcast audio about nothing")
-    out = capsys.readouterr().out
-    assert "not sent" in out
-    assert "ambient podcast audio about nothing" in out
-    # Nothing was queued.
+    # 2026-06-07: stt_verbose() gates the "not sent" stdout print
+    # since the TUI's voice-activity log replaced inline debug output
+    # for the common case.  This test still verifies the BEHAVIOUR
+    # (phrase not committed) and asserts the verbose-mode log path
+    # still works when JAEGER_STT_VERBOSE=1.
+    import os
+    os.environ["JAEGER_STT_VERBOSE"] = "1"
+    try:
+        stub._commit("ambient podcast audio about nothing")
+        out = capsys.readouterr().out
+        assert "not sent" in out
+        assert "ambient podcast audio about nothing" in out
+    finally:
+        os.environ.pop("JAEGER_STT_VERBOSE", None)
+    # Nothing was queued — the load-bearing behavioural assertion.
     assert stub._committed_q.empty()
 
 

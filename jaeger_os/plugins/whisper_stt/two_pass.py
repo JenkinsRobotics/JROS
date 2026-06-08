@@ -36,6 +36,7 @@ from ._base import (
     _find_wake_in_text,
     is_non_speech_marker,
     _warm_stt,
+    stt_verbose,
 )
 
 
@@ -368,42 +369,53 @@ class WhisperSTTTwoPass:
             # marker text.
             if not self.require_wake_word or self._state == "FOLLOWUP":
                 if is_non_speech_marker(fast_text):
-                    print(f"[skipped — non-speech: {fast_text!r}]", flush=True)
+                    if stt_verbose():
+                        print(f"[skipped — non-speech: {fast_text!r}]",
+                              flush=True)
                     continue
 
             if not self.require_wake_word:
-                print(f"[heard]  {fast_text!r}", flush=True)
+                if stt_verbose():
+                    print(f"[heard]  {fast_text!r}", flush=True)
                 command = self._accurate_transcribe(audio).strip() or fast_text
                 # Re-check after accurate pass — markers can survive the
                 # fast pass and surface only on the accurate model.
                 if is_non_speech_marker(command):
-                    print(f"[skipped — non-speech: {command!r}]", flush=True)
+                    if stt_verbose():
+                        print(f"[skipped — non-speech: {command!r}]",
+                              flush=True)
                     continue
             elif self._state == "FOLLOWUP":
-                print(f"[heard]  {fast_text!r}", flush=True)
+                if stt_verbose():
+                    print(f"[heard]  {fast_text!r}", flush=True)
                 command = self._accurate_transcribe(audio).strip() or fast_text
                 if is_non_speech_marker(command):
-                    print(f"[follow-up skipped — non-speech: {command!r}]",
-                          flush=True)
+                    if stt_verbose():
+                        print(f"[follow-up skipped — non-speech: "
+                              f"{command!r}]", flush=True)
                     continue
-                print(f"[follow-up] {command!r}", flush=True)
+                if stt_verbose():
+                    print(f"[follow-up] {command!r}", flush=True)
             else:
                 matched, remainder = self._find_wake(fast_text)
                 if not matched:
-                    # VOICE-4: pre-wake transcripts surface visibly so
-                    # the user sees what the mic heard AND knows it
-                    # wasn't sent. Was a silent ``continue`` — felt
-                    # broken on every utterance without a wake phrase.
-                    print(f"[mic heard {fast_text!r} — not sent]",
-                          flush=True)
+                    # VOICE-4 (legacy): pre-wake transcripts surface
+                    # so the user sees what the mic heard AND knows it
+                    # wasn't sent.  Verbose-gated now — the TUI's
+                    # voice-activity log is the normal operator view.
+                    if stt_verbose():
+                        print(f"[mic heard {fast_text!r} — not sent]",
+                              flush=True)
                     continue
                 # Wake matched — the trigger utterance lands in the log.
-                print(f"[heard]  {fast_text!r}", flush=True)
+                if stt_verbose():
+                    print(f"[heard]  {fast_text!r}", flush=True)
                 accurate_text = self._accurate_transcribe(audio)
                 a_matched, a_remainder = self._find_wake(accurate_text)
                 if a_matched and (a_remainder or not remainder):
                     remainder = a_remainder
-                    print(f"[heard*] {accurate_text!r}", flush=True)
+                    if stt_verbose():
+                        print(f"[heard*] {accurate_text!r}", flush=True)
                 if remainder:
                     command = remainder
                 else:
@@ -413,9 +425,11 @@ class WhisperSTTTwoPass:
                     try:
                         cmd_audio, cmd_fast = self._phrase_q.get(timeout=6.0)
                     except queue.Empty:
-                        print("[no command — back to wake]", flush=True)
+                        if stt_verbose():
+                            print("[no command — back to wake]", flush=True)
                         continue
-                    print(f"[heard]  {cmd_fast!r}", flush=True)
+                    if stt_verbose():
+                        print(f"[heard]  {cmd_fast!r}", flush=True)
                     command = self._accurate_transcribe(cmd_audio).strip() or cmd_fast
 
             if not command:

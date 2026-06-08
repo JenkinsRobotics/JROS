@@ -1,18 +1,27 @@
-# JROS 0.5 Roadmap — Personality + Avatar + Streaming
+# JROS 0.5 Roadmap — Animation + Personality + Skill Tree + Streaming
 
-**Status:** draft (2026-06-07) — proposal for operator review
-**Pre-req:** 0.4.0 shipped (node architecture, voice loop fully bus-routed, Tracks A/B/C-skeleton landed)
-**Target:** the agent gets a face and a personality the audience cares about
+**Status:** active (2026-06-08) — foundation scaffolded; iterating
+**Branch:** `origin/0.5.0`
+**Pre-req:** 0.4.0 shipped + tagged + merged to main (commit fc8eea1)
+**Target:** the agent grows visibly — XP-driven skill tree, Mochi-vendored
+animation node, Swift-native renderer, structured personality, streaming mode.
 
 ## The position
 
-0.4 wired the spine.  0.5 gives it a soul and a face.
+0.4 wired the spine (nodes, bus, voice).  0.5 makes it visibly alive
+and continuously evolving.
 
-> **An agentic AI you can stream.**
-> Structured personality (HEXACO + expression + domain weights) the
-> agent USES on every turn — not just at wizard time.  A Live2D
-> avatar driven by the bus the rest of JROS already speaks.  A
-> stream mode operators can point OBS at and call a YouTube show.
+> **An embodied, continuously-improving agent — animation +
+> personality + skill tree.**
+>
+> The agent has a Mochi-style face rendered by a Mac-native Swift
+> app.  It carries structured personality (HEXACO + expression
+> sliders + domain weights) into every turn.  Every node + skill is
+> a tree node — earns XP through use, levels up, unlocks more
+> capable variants.  Multi-track timelines coordinate performances
+> across animation + speech + sound + (future) motion + light.
+> A streaming mode the operator points OBS at and calls a YouTube
+> show.
 
 The architecture decisions from 0.4 carry over verbatim:
 
@@ -23,23 +32,56 @@ The architecture decisions from 0.4 carry over verbatim:
 * msgspec for transport schemas; Pydantic for config + manifest.
 * Make it exist first, then make it good.
 
-## The single biggest decision
+New operator-locked architectural principles (2026-06-08):
 
-**0.5 vendors working pipelines from
-[Open-LLM-VTuber](https://github.com/Open-LLM-VTuber/Open-LLM-VTuber)
-with attribution; we OWN the resulting code.**
+* **Conscious / unconscious model** (from 0.4) — peripheral nodes
+  filter / gate / reflex so the brain only engages on confirmed
+  signals.  See 0.4 CHANGELOG for the audio-side codification.
+* **Skill-tree evolution** — every node + skill has progression
+  levels.  XP accumulates from real use.  Skills unlock skills
+  through prerequisites.  See `dev_docs/SKILL_TREE.md` for the
+  load-bearing pattern.
+* **Animation levels** — L1 static → L2 sprite → L3 gif → L4 video
+  + procedural → L5 rigged (deferred) → L6 generative (deferred).
+  Each level is a skill node.
 
-What "vendor" means:
+## The vendoring decisions
 
-* We copy specific files (Live2D loader + lip-sync algorithm + idle
-  animations + Cubism SDK glue) into our repo.
-* Once in tree, the code is ours — we modify freely, test under our
-  discipline, decide what to backport from upstream.
-* Open-LLM-VTuber gets credit in
-  `dev_docs/library_review/open_llm_vtuber.md`, in `README.md`'s
-  acknowledgments, and inline at the file headers of vendored code.
-* We do NOT depend on their package, submodule them, or sit on
-  their release schedule.
+**Mochi → JROS animation node.** The operator's prior animation work
+at `/Users/jonathanjenkins/GITHUB/Mochi/` is Apache 2.0 and ships
+nearly the exact architecture we want.  The 7 handler types (image,
+bitmap, sprite, gif, video, math, media) become the 0.5 adapter
+implementations spanning L1-L4.  Mscript stays as a one-way
+compiler input (existing `.mscript` files compile to Timeline at
+load time); no new mscript is authored.  See
+`dev_docs/library_review/mochi_demo.md` for the full audit +
+vendoring map.
+
+**Swift renderer at `apps/JROS-Avatar/`.** Mac-native rendering;
+ships with the framework.  Python AnimationNode publishes pixel
+buffers over WebSocket; the Swift app displays them.  Phased plan
+in `dev_docs/0.5.0_swift_renderer_plan.md`; Phase 1 scaffold
+(window + WebSocket + decoder) shipped 2026-06-08.
+
+**Open-LLM-VTuber → reference only.** The earlier plan was to
+vendor their Live2D pipeline.  Operator pivoted to Mochi-style
+faces (simpler, robot/companion identity, no Live2D licence
+complexity).  Open-LLM-VTuber stays as architectural reference for
+WebSocket-driven avatar patterns.  Live2D becomes L5 — a deferred
+adapter slot, not the foundation.
+
+## Foundation scaffolded 2026-06-08 (already on the branch)
+
+| Component | Where | What |
+|---|---|---|
+| Skill-tree pattern | `dev_docs/SKILL_TREE.md` | XP-driven progression contract — every node + skill obeys this |
+| Skill-tree runtime | `jaeger_os/skill_tree/` | msgspec schemas + registry + atomic persistence + listener API |
+| New bus topics | `jaeger_os/topics.py` | `AnimationCommand`, `AnimationStop`, `AnimationState`, `TimelineCommand`, `TimelineProgress`, `XpAwarded`, `SkillLevelUp`, `SkillUnlocked`, `SkillMastered` |
+| Mochi audit | `dev_docs/library_review/mochi_demo.md` | Vendoring map for 7 handler types + L1-L4 mapping |
+| AnimationNode | `jaeger_os/nodes/animation/` | Node skeleton + adapter Protocol + frame callback seam |
+| Timeline schema | `jaeger_os/timeline/` + `dev_docs/0.5.0_timeline_schema.md` | OTIO-inspired multi-track JSON; mscript-compile path defined |
+| Swift renderer | `apps/JROS-Avatar/` + `dev_docs/0.5.0_swift_renderer_plan.md` | SwiftPM scaffold: window + WebSocket + FrameDecoder + tests |
+| Tests | `dev_tests/jaeger_os/skill_tree/` + `dev_tests/jaeger_os/nodes/test_animation.py` + `dev_tests/jaeger_os/timeline/` + `apps/JROS-Avatar/Tests/` | 17 skill-tree + 5 animation + 7 timeline + 4 Swift = **33 new tests** |
 
 What we write ourselves:
 

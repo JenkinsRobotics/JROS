@@ -65,12 +65,23 @@ ACT_AUDIO_OUT = "/act/audio_out"
 ACT_MOTION = "/act/motion"
 ACT_LIGHT = "/act/light"
 
+# 0.5 — animation / timeline / skill-tree topics.
+ACT_ANIMATION = "/act/animation"
+ACT_TIMELINE = "/act/timeline"
+SENSE_ANIMATION_STATE = "/sense/animation_state"
+SENSE_TIMELINE_PROGRESS = "/sense/timeline_progress"
+SENSE_XP_AWARDED = "/sense/xp_awarded"
+SENSE_SKILL_LEVEL_UP = "/sense/skill_level_up"
+SENSE_SKILL_UNLOCKED = "/sense/skill_unlocked"
+SENSE_SKILL_MASTERED = "/sense/skill_mastered"
+
 # Control topics — interrupt / coordination commands ("stop /
 # pause / resume what's in flight") rather than "do this action".
 # Kept under ``/act/`` so the SUB-filter prefix at the brain side
 # stays uniform; future control topics (mic_pause,
 # stt_open_followup) will sit alongside.
 ACT_SPEECH_STOP = "/act/speech_stop"
+ACT_ANIMATION_STOP = "/act/animation_stop"
 
 
 # ── common envelope ────────────────────────────────────────────────
@@ -293,6 +304,107 @@ class LightCommand(TopicMessage):
     duration_ms: int = 0
 
 
+# ── 0.5 animation / timeline / skill-tree ──────────────────────────
+
+class AnimationCommand(TopicMessage):
+    """Brain → animation_node: play an animation clip.
+
+    The ``adapter`` field names which Mochi-vendored adapter handles
+    rendering (image/bitmap/sprite/gif/video/math).  ``asset_path``
+    is relative to the active instance's ``avatar/`` directory.
+    ``params`` carries adapter-specific options (fit_mode, loop,
+    speed, etc.).  ``duration_ms=0`` means play to natural end
+    (image: hold; gif: one loop pass; video: full duration).
+
+    Mochi parity: ImageHandler, GifHandler, etc.  See
+    dev_docs/library_review/mochi_demo.md for the vendoring map."""
+    topic: Literal["/act/animation"] = ACT_ANIMATION
+    adapter: str = "image"
+    asset_path: str = ""
+    duration_ms: int = 0
+    params: dict = msgspec.field(default_factory=dict)
+
+
+class AnimationStop(TopicMessage):
+    """Stop the currently playing animation; revert to idle/default."""
+    topic: Literal["/act/animation_stop"] = ACT_ANIMATION_STOP
+    reason: str = "interrupted"
+
+
+class TimelineCommand(TopicMessage):
+    """Brain → animation_node + tts_node + motor_node: play a
+    multi-track timeline (greeting, performance, scripted sequence).
+
+    The timeline body is a JSON-serialised OTIO-shaped dict carried
+    inline OR a name resolved against ``<instance>/timelines/*.json``.
+    Bus consumers (animation node for animation tracks, tts node for
+    speech tracks, etc.) extract their relevant track and schedule
+    its events.
+
+    See dev_docs/0.5.0_timeline_schema.md for the schema."""
+    topic: Literal["/act/timeline"] = ACT_TIMELINE
+    name: str = ""                # named timeline from instance dir; "" → inline
+    timeline_json: str = ""       # serialised when inline
+    loop: bool = False
+
+
+class AnimationState(TopicMessage):
+    """Animation node → bus: current state for the operator / UI /
+    visualisation to observe."""
+    topic: Literal["/sense/animation_state"] = SENSE_ANIMATION_STATE
+    adapter: str = ""
+    asset_path: str = ""
+    state: str = "idle"           # "idle" | "playing" | "stopping"
+    progress: float = 0.0         # 0..1 within current asset
+    elapsed_ms: int = 0
+
+
+class TimelineProgress(TopicMessage):
+    """Animation node / timeline runner → bus: timeline scheduling
+    progress.  Lets the brain know when scripted sequences finish."""
+    topic: Literal["/sense/timeline_progress"] = SENSE_TIMELINE_PROGRESS
+    timeline_name: str = ""
+    state: str = "running"        # "running" | "complete" | "interrupted"
+    elapsed_ms: int = 0
+    duration_ms: int = 0
+
+
+class XpAwarded(TopicMessage):
+    """Skill-tree XP grant event.  Emitted by ``xp_emitter`` whenever
+    a tool dispatch / bench pass / milestone awards XP to a skill.
+    Subscribers: the skill_tree registry (which persists state), and
+    eventual visualisation surfaces.
+
+    See dev_docs/SKILL_TREE.md for the XP-progression contract."""
+    topic: Literal["/sense/xp_awarded"] = SENSE_XP_AWARDED
+    skill_id: str = ""
+    amount: int = 0
+    reason: str = ""
+    metadata: dict = msgspec.field(default_factory=dict)
+
+
+class SkillLevelUp(TopicMessage):
+    """Skill-tree level-up event.  Fired by the registry when a skill
+    crosses its xp_to_next_level threshold."""
+    topic: Literal["/sense/skill_level_up"] = SENSE_SKILL_LEVEL_UP
+    skill_id: str = ""
+    new_level: int = 0
+
+
+class SkillUnlocked(TopicMessage):
+    """Skill-tree unlock event.  Fired when a skill's prerequisites
+    are all satisfied, transitioning it from ``locked`` →
+    ``available``."""
+    topic: Literal["/sense/skill_unlocked"] = SENSE_SKILL_UNLOCKED
+    skill_id: str = ""
+
+
+class SkillMastered(TopicMessage):
+    """Skill-tree mastery event.  Fired when XP crosses xp_to_mastery."""
+    topic: Literal["/sense/skill_mastered"] = SENSE_SKILL_MASTERED
+    skill_id: str = ""
+
+
 # ── registry + lookup ─────────────────────────────────────────────
 
 TOPIC_TO_CLASS: dict[str, type[TopicMessage]] = {
@@ -304,10 +416,19 @@ TOPIC_TO_CLASS: dict[str, type[TopicMessage]] = {
     SENSE_TOUCH: TouchReading,
     SENSE_PROPRIO: ProprioReading,
     SENSE_SPOKEN: SpokenAck,
+    SENSE_ANIMATION_STATE: AnimationState,
+    SENSE_TIMELINE_PROGRESS: TimelineProgress,
+    SENSE_XP_AWARDED: XpAwarded,
+    SENSE_SKILL_LEVEL_UP: SkillLevelUp,
+    SENSE_SKILL_UNLOCKED: SkillUnlocked,
+    SENSE_SKILL_MASTERED: SkillMastered,
     ACT_SPEECH: SpeechCommand,
     ACT_AUDIO_OUT: AudioOutFrame,
     ACT_MOTION: MotionCommand,
     ACT_LIGHT: LightCommand,
+    ACT_ANIMATION: AnimationCommand,
+    ACT_ANIMATION_STOP: AnimationStop,
+    ACT_TIMELINE: TimelineCommand,
     ACT_SPEECH_STOP: SpeechStop,
 }
 

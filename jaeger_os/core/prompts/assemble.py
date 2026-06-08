@@ -119,19 +119,49 @@ def assemble_prompt(
     # assembler doesn't have to depend on the voice config schema.
     # Sub-agents skip — they speak through the agent surface, not the
     # mic.
-    # 2026-06-07 architectural change (operator-locked):
-    # VOICE_LLM_GATE_RULE no longer rides the brain's system prompt.
-    # The AudioSession node owns its full input pipeline — it runs
-    # the LLM gate against the brain's client BEFORE publishing
-    # /sense/transcript, so the brain never sees ambient noise or
-    # TV / movie audio.  Brain becomes a pure conversation partner;
-    # voice protocol is the node's concern.  See:
-    # dev_docs/0.4.0_voice_gate_unification_prompt.md and
-    # jaeger_os/core/audio/session.py:_classify_phrase_llm.
+    # Voice-mode LLM gate (opt-in via ``config.voice.llm_gate``).
     #
-    # JAEGER_VOICE_GATE and JAEGER_VOICE_ACTIVE_FOLLOWUP env vars
-    # are now legacy — kept for one release in case some interface
-    # still toggles them, but they no longer affect the brain prompt.
+    # Why this rides the BRAIN's system prompt — not a separate
+    # gate call (2026-06-07 perf regression discovered live + bench-
+    # confirmed in dev_benchmark/voice_gate_latency.py):
+    #
+    # We briefly tried a node-owned gate where AudioSession would
+    # make a separate ``client.chat()`` call with its own gate prompt
+    # to classify phrases before publishing /sense/transcript.  That
+    # is architecturally cleaner (node owns its full domain), but
+    # llama-cpp uses a SINGLE KV-cache slot — switching between two
+    # different system prompts (gate ~800 tokens, brain ~14K tokens)
+    # invalidated the prefill each time.  Result: 50× slowdown on
+    # voice turns (0.39s warm brain → 19.79s after-gate brain) per
+    # `dev_benchmark/voice_gate_latency.py`.
+    #
+    # The fix matches VoiceLLM's actual approach — single-pass:
+    #   * Brain's system prompt carries the gate rule from boot
+    #     (this block, when JAEGER_VOICE_GATE=1 at prewarm time)
+    #   * Brain's response begins with <ignore> or <reply>
+    #   * Voice consumer (TUI / voice_loop) parses the leading tag
+    #     and suppresses speech on <ignore>
+    #   * Deterministic filters in AudioSession still own their
+    #     domain (non-speech markers, self-speech, etc.) — they
+    #     reject obvious junk BEFORE it reaches the brain so the
+    #     gate only has to decide on borderline cases
+    #
+    # JAEGER_VOICE_GATE=1 must be set BEFORE build_system_prompt so
+    # the rule is baked into the cached prompt at boot — both
+    # boot paths in main.py do this; see beee2f6 for the regression
+    # this prevents.  voice_loop/voice_session also set it
+    # defensively at construction time as a safety net.
+    import os as _os
+    if mode != "subagent" and _os.environ.get("JAEGER_VOICE_GATE") == "1":
+        from .rules import VOICE_LLM_GATE_RULE
+        parts.append(VOICE_LLM_GATE_RULE.strip())
+        # Active follow-up addressed_hint — strict default-ignore
+        # when idle, permissive default-reply when we're inside the
+        # follow-up window after a recent reply.  voice_loop /
+        # voice_session toggle JAEGER_VOICE_ACTIVE_FOLLOWUP per turn.
+        if _os.environ.get("JAEGER_VOICE_ACTIVE_FOLLOWUP") == "1":
+            from .rules import VOICE_FOLLOWUP_HINT_RULE
+            parts.append(VOICE_FOLLOWUP_HINT_RULE.strip())
 
     # Skill index — sub-agents don't need it (they were given a
     # specific task; ranging across the skill library would expand

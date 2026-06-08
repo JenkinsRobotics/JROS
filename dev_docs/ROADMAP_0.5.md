@@ -76,12 +76,31 @@ adapter slot, not the foundation.
 |---|---|---|
 | Skill-tree pattern | `dev_docs/SKILL_TREE.md` | XP-driven progression contract — every node + skill obeys this |
 | Skill-tree runtime | `jaeger_os/skill_tree/` | msgspec schemas + registry + atomic persistence + listener API |
+| Skill-tree XP wiring | `jaeger_os/skill_tree/xp_emitter.py` | Bus subscriber that applies `XpAwarded` events to the registry + mirrors state events back onto the bus |
+| Default catalog | `jaeger_os/skill_tree/seed.py` | Pre-populated skill graph: animation L1-L6 + voice + vision + motor + light + core tools |
 | New bus topics | `jaeger_os/topics.py` | `AnimationCommand`, `AnimationStop`, `AnimationState`, `TimelineCommand`, `TimelineProgress`, `XpAwarded`, `SkillLevelUp`, `SkillUnlocked`, `SkillMastered` |
 | Mochi audit | `dev_docs/library_review/mochi_demo.md` | Vendoring map for 7 handler types + L1-L4 mapping |
-| AnimationNode | `jaeger_os/nodes/animation/` | Node skeleton + adapter Protocol + frame callback seam |
-| Timeline schema | `jaeger_os/timeline/` + `dev_docs/0.5.0_timeline_schema.md` | OTIO-inspired multi-track JSON; mscript-compile path defined |
-| Swift renderer | `apps/JROS-Avatar/` + `dev_docs/0.5.0_swift_renderer_plan.md` | SwiftPM scaffold: window + WebSocket + FrameDecoder + tests |
-| Tests | `dev_tests/jaeger_os/skill_tree/` + `dev_tests/jaeger_os/nodes/test_animation.py` + `dev_tests/jaeger_os/timeline/` + `apps/JROS-Avatar/Tests/` | 17 skill-tree + 5 animation + 7 timeline + 4 Swift = **33 new tests** |
+| AnimationNode | `jaeger_os/nodes/animation/` | Node + adapter Protocol + frame callback seam to renderer |
+| Animation adapters L1-L4 | `jaeger_os/nodes/animation/adapters/` | image / bitmap / sprite / gif / math — vendored from Mochi |
+| FrameBridge | `jaeger_os/nodes/animation/bridge.py` | WebSocket server ships frames to the Swift app + any browser-source client |
+| Timeline schema | `jaeger_os/timeline/schema.py` + `dev_docs/0.5.0_timeline_schema.md` | OTIO-inspired multi-track JSON; mscript-compile path defined |
+| Timeline runner | `jaeger_os/timeline/runner.py` | Wall-clock multi-track dispatcher; per-track bus publishing; interrupt-clean |
+| Personality module | `jaeger_os/personality/` | HEXACO + SPECIAL + Expression + Domains + speech patterns; `compose_block` produces system-prompt language; wired into `assemble_prompt` |
+| Swift renderer | `apps/JROS-Avatar/` + `dev_docs/0.5.0_swift_renderer_plan.md` | SwiftPM scaffold: window + WebSocket + FrameDecoder + 4 XCTests |
+| Tests | `dev_tests/jaeger_os/{skill_tree,timeline,personality}/` + `dev_tests/jaeger_os/nodes/test_{animation,image_adapter,bitmap_adapter,sprite_adapter,gif_adapter,math_adapter,frame_bridge,animation_e2e}.py` | **+116 new Python tests + 4 Swift tests; total 2000+ passing** |
+
+## End-to-end milestones reached
+
+* **Animation pipeline proven end-to-end** (commit `db20e6e`).  Real
+  AnimationCommand on the bus → ImageAdapter renders frame →
+  FrameBridge ships over WebSocket → byte-perfect arrival at a real
+  WebSocket client.  XP awarded.
+* **Multi-track performances dispatchable** (commit `513deeb`).  A
+  Timeline JSON drives TimelineRunner; per-clip events fire at
+  their `t_offset_ms` on the right bus topics.
+* **Personality affects every brain turn** (commit `09bb04a`).  An
+  instance with `<instance>/personality.json` gets a structured
+  HEXACO + Expression block appended to its system prompt.
 
 What we write ourselves:
 

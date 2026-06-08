@@ -109,6 +109,31 @@ def assemble_prompt(
         if soul:
             parts.append(soul)
 
+        # 0.5: structured personality block, when present.  Per
+        # operator's prior work in Lilith-AI, persisted at
+        # <instance>/personality.json with HEXACO + SPECIAL +
+        # Expression sliders + knowledge domain weights + speech
+        # patterns.  ``compose_block`` turns those structured
+        # 0..1 values into language ("very high directness",
+        # "moderate sarcasm", etc.).
+        try:
+            from pathlib import Path
+            personality_path = Path(layout.root) / "personality.json"
+            if personality_path.exists():
+                from jaeger_os.personality import (
+                    compose_block,
+                    load_personality,
+                )
+                personality = load_personality(personality_path)
+                block = compose_block(personality)
+                if block:
+                    parts.append(block)
+        except Exception:  # noqa: BLE001
+            # A broken personality file must NEVER take down the
+            # boot — operator gets the legacy identity prompt; they
+            # can fix the file at leisure.
+            pass
+
     parts.append(MANDATORY_TOOL_RULES.strip())
     parts.append(OPERATING_DISCIPLINE.strip())
     parts.append(TOOL_USAGE_RULES.strip())

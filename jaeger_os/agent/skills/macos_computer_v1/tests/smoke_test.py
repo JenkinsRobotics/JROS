@@ -13,7 +13,7 @@ from __future__ import annotations
 # subprocess (`python smoke_test.py`), CWD is the skill folder and
 # the repo root may not be on ``sys.path``.  Walk four parents up
 # (tests/ → macos_computer_v1/ → skills/ → jaeger_os/ → repo root)
-# and prepend it so the ``from jaeger_os.skills...`` imports below
+# and prepend it so the ``from jaeger_os.agent.skills...`` imports below
 # resolve.
 import os.path as _osp
 import sys as _sys
@@ -26,10 +26,10 @@ def main() -> int:
     # Engine imports — every tier must load even when its runtime
     # backend (PyObjC for AX, Playwright for browser) isn't ready;
     # ``is_available`` returns the reason.
-    from jaeger_os.skills.macos_computer_v1.engines.ax_engine import AXEngine
-    from jaeger_os.skills.macos_computer_v1.engines.applescript_engine import AppleScriptEngine
-    from jaeger_os.skills.macos_computer_v1.engines.browser_engine import BrowserEngine
-    from jaeger_os.skills.macos_computer_v1.engines.vision_engine import VisionEngine
+    from jaeger_os.agent.skills.macos_computer_v1.engines.ax_engine import AXEngine
+    from jaeger_os.agent.skills.macos_computer_v1.engines.applescript_engine import AppleScriptEngine
+    from jaeger_os.agent.skills.macos_computer_v1.engines.browser_engine import BrowserEngine
+    from jaeger_os.agent.skills.macos_computer_v1.engines.vision_engine import VisionEngine
 
     for cls in (AXEngine, AppleScriptEngine, BrowserEngine, VisionEngine):
         eng = cls()
@@ -39,8 +39,8 @@ def main() -> int:
 
     # Planner — confidence selection must work without firing any
     # engine (pure metadata read).
-    from jaeger_os.skills.macos_computer_v1.engines import Action
-    from jaeger_os.skills.macos_computer_v1 import planner
+    from jaeger_os.agent.skills.macos_computer_v1.engines import Action
+    from jaeger_os.agent.skills.macos_computer_v1 import planner
 
     # An open_url action should ladder to browser_engine (priority 20)
     # over ax (30) and vision (90). AppleScript abstains.

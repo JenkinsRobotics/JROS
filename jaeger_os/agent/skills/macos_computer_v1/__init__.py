@@ -40,7 +40,7 @@ def register(host: Any) -> None:
     skill loader's parent-less ``spec_from_file_location`` import
     path. By the time we're called, the agent is fully booted and
     the inner modules import normally via the package path."""
-    from jaeger_os.skills.macos_computer_v1.macos_computer import register as _register
+    from jaeger_os.agent.skills.macos_computer_v1.macos_computer import register as _register
     _register(host)
 
 
@@ -51,19 +51,19 @@ def register(host: Any) -> None:
 
 def computer_do(goal: Any) -> dict:
     """High-level computer control — see ``macos_computer.computer_do``."""
-    from jaeger_os.skills.macos_computer_v1.macos_computer import computer_do as _impl
+    from jaeger_os.agent.skills.macos_computer_v1.macos_computer import computer_do as _impl
     return _impl(goal)
 
 
 def computer_use(action: str, target: str = "", **kwargs: Any) -> dict:
     """Dispatch ONE action — see ``macos_computer.computer_use``."""
-    from jaeger_os.skills.macos_computer_v1.macos_computer import computer_use as _impl
+    from jaeger_os.agent.skills.macos_computer_v1.macos_computer import computer_use as _impl
     return _impl(action=action, target=target, **kwargs)
 
 
 def computer_look(app: str = "", include_screenshot: bool = False) -> dict:
     """Read-only screen snapshot — see ``macos_computer.computer_look``."""
-    from jaeger_os.skills.macos_computer_v1.macos_computer import computer_look as _impl
+    from jaeger_os.agent.skills.macos_computer_v1.macos_computer import computer_look as _impl
     return _impl(app=app, include_screenshot=include_screenshot)
 
 

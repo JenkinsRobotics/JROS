@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import Any
 
 # skills/ sits at the package root:  core/skills/ → core/ → jaeger_os/ → skills/
-_SKILLS_DIR = Path(__file__).resolve().parent.parent.parent / "skills"
+_SKILLS_DIR = Path(__file__).resolve().parent.parent.parent / "agent" / "skills"
 
 # JROS code skills are named "<name>_v<N>" and carry a Python module —
 # skill_loader.py owns those; they are not playbooks.

@@ -30,7 +30,7 @@ import subprocess
 import time
 from typing import Any
 
-from jaeger_os.skills.macos_computer_v1.engines import Action, Engine, EngineResult
+from jaeger_os.agent.skills.macos_computer_v1.engines import Action, Engine, EngineResult
 
 
 _NAME = "applescript"

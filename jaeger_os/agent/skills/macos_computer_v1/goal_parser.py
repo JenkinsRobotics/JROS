@@ -34,7 +34,7 @@ from __future__ import annotations
 
 import re
 
-from jaeger_os.skills.macos_computer_v1.engines import Action
+from jaeger_os.agent.skills.macos_computer_v1.engines import Action
 
 
 # Recognised single-key names for ``press X``. Anything else falls

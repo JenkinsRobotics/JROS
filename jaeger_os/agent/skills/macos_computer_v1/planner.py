@@ -25,11 +25,11 @@ from __future__ import annotations
 import time
 from typing import Iterable
 
-from jaeger_os.skills.macos_computer_v1.engines import Action, Engine, EngineResult
-from jaeger_os.skills.macos_computer_v1.engines.applescript_engine import AppleScriptEngine
-from jaeger_os.skills.macos_computer_v1.engines.ax_engine import AXEngine
-from jaeger_os.skills.macos_computer_v1.engines.browser_engine import BrowserEngine
-from jaeger_os.skills.macos_computer_v1.engines.vision_engine import VisionEngine
+from jaeger_os.agent.skills.macos_computer_v1.engines import Action, Engine, EngineResult
+from jaeger_os.agent.skills.macos_computer_v1.engines.applescript_engine import AppleScriptEngine
+from jaeger_os.agent.skills.macos_computer_v1.engines.ax_engine import AXEngine
+from jaeger_os.agent.skills.macos_computer_v1.engines.browser_engine import BrowserEngine
+from jaeger_os.agent.skills.macos_computer_v1.engines.vision_engine import VisionEngine
 
 
 # Default ladder order, top to bottom (highest priority first).

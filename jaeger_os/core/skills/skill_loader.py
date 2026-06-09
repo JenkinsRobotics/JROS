@@ -66,7 +66,7 @@ from jaeger_os.core.skills.manifest_v3 import (
 # M3.5 rename; the new name matches `<instance_dir>/skills/` for symmetry
 # (same word, different zone).
 # core/skills/ lives two levels deeper than the framework root, so reach up two.
-CORE_SKILLS_DIR = Path(__file__).resolve().parent.parent.parent / "skills"
+CORE_SKILLS_DIR = Path(__file__).resolve().parent.parent.parent / "agent" / "skills"
 
 
 _SKILL_RE = re.compile(r"^(?P<name>[A-Za-z][A-Za-z0-9_]*)_v(?P<v>\d+)$")

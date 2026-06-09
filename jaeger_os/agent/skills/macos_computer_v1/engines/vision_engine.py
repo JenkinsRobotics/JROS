@@ -10,7 +10,7 @@ Most common real-world cases: canvas / WebGL apps, games, image
 viewers, design tools (Figma, Photoshop) whose UI sits inside a
 single big AX object, or any app that just doesn't ship AX support.
 
-Delegates to the universal :mod:`jaeger_os.skills.computer_use`
+Delegates to the universal :mod:`jaeger_os.agent.skills.computer_use`
 skill's primitives (screenshot, click_xy, type_text). That keeps
 the screenshot loop in ONE place — improvements to it (better
 OCR, vision-LM grounding, etc.) benefit both this engine and any
@@ -22,7 +22,7 @@ from __future__ import annotations
 import time
 from typing import Any
 
-from jaeger_os.skills.macos_computer_v1.engines import Action, Engine, EngineResult
+from jaeger_os.agent.skills.macos_computer_v1.engines import Action, Engine, EngineResult
 
 
 _NAME = "vision"
@@ -81,7 +81,7 @@ class VisionEngine:
         # loaded if vision actually fires (most runs won't need them
         # on macOS once applescript + ax cover the common cases).
         try:
-            from jaeger_os.skills.computer_use_v1 import computer_use as _v1
+            from jaeger_os.agent.skills.computer_use_v1 import computer_use as _v1
         except Exception as exc:  # noqa: BLE001
             return EngineResult(
                 ok=False, engine=_NAME,

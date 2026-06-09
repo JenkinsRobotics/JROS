@@ -8,7 +8,7 @@ into the prompt, so the library can't bloat context.
 
 from __future__ import annotations
 
-from jaeger_os.core.skills import playbook_skills as pb
+from jaeger_os.agent.skill_registry import playbook_skills as pb
 from jaeger_os.core.tools import skill
 
 

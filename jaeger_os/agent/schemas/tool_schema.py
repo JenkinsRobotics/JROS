@@ -41,7 +41,7 @@ class ToolDef:
     callers):
 
       * ``toolset``           — canonical category the tool belongs
-        to (matches a key in :mod:`jaeger_os.core.skills.toolsets`
+        to (matches a key in :mod:`jaeger_os.agent.skill_registry.toolsets`
         ``TOOLSETS``). Lets the registry derive visibility instead
         of the parallel name-set map. Empty string = unclassified.
       * ``permission_tier``   — the tier the ``@requires_tier``

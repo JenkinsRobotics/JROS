@@ -162,7 +162,7 @@ def test_system_health_is_NOT_in_agent_surface() -> None:
 
     Pin all three surfaces here so a future "let's just put it back"
     refactor gets caught by this test."""
-    from jaeger_os.core.skills.toolsets import CORE, TOOLSETS
+    from jaeger_os.agent.skill_registry.toolsets import CORE, TOOLSETS
     assert "system_health" not in CORE, (
         "system_health must NOT be in CORE — re-adding it brings back "
         "the prefill stall. Use ``jaeger health`` CLI verb instead."

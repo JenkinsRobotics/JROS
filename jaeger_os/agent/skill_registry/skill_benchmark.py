@@ -35,7 +35,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from jaeger_os.core.skills.skill_package import find_skill_dir
+from jaeger_os.agent.skill_registry.skill_package import find_skill_dir
 
 
 _BENCH_TIMEOUT_S = 120
@@ -159,7 +159,7 @@ def benchmark_skill(layout: Any, skill_name: str) -> dict[str, Any]:
     # benchmark_history.jsonl behaviour above.
     cap_result: dict[str, Any] = {}
     try:
-        from jaeger_os.core.skills.capability_state import record_benchmark_result
+        from jaeger_os.agent.skill_registry.capability_state import record_benchmark_result
         cap_result = record_benchmark_result(
             skill_folder=skill_dir,
             benchmark_payload=parsed,

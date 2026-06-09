@@ -35,7 +35,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from jaeger_os.core.skills.playbook_skills import PlaybookSkill, discover_playbooks
+from jaeger_os.agent.skill_registry.playbook_skills import PlaybookSkill, discover_playbooks
 
 _PINNED_MARKER = ".pinned"
 _ARCHIVED_FROM = ".archived_from"
@@ -167,7 +167,7 @@ def _archive_dir() -> Path:
         from jaeger_os.core.tools._common import get_layout
         return get_layout().root / "skills_archived"
     except Exception:  # noqa: BLE001
-        from jaeger_os.core.skills.playbook_skills import _SKILLS_DIR
+        from jaeger_os.agent.skill_registry.playbook_skills import _SKILLS_DIR
         return _SKILLS_DIR.parent / "skills_archived"
 
 

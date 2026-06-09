@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 
 from jaeger_os.agent import clear_registry, has_tool
-from jaeger_os.core.skills.skill_loader import _ToolCapturingAgent
+from jaeger_os.agent.skill_registry.skill_loader import _ToolCapturingAgent
 
 
 class _FakeAgent:

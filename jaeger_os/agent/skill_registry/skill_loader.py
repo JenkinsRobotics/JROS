@@ -54,7 +54,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterable
 
 from jaeger_os.core.instance.instance import InstanceLayout
-from jaeger_os.core.skills.manifest_v3 import (
+from jaeger_os.agent.skill_registry.manifest_v3 import (
     Manifest,
     ManifestError,
     legacy_stub_manifest,
@@ -70,7 +70,7 @@ CORE_SKILLS_DIR = Path(__file__).resolve().parent.parent.parent / "agent" / "ski
 
 
 _SKILL_RE = re.compile(r"^(?P<name>[A-Za-z][A-Za-z0-9_]*)_v(?P<v>\d+)$")
-# (V3 ID validation lives in jaeger_os.core.skills.manifest_v3 now.)
+# (V3 ID validation lives in jaeger_os.agent.skill_registry.manifest_v3 now.)
 
 
 def _semver_tuple(v: str) -> tuple[int, ...]:
@@ -615,7 +615,7 @@ def load_and_register(
             register(capturing)
             if capturing.captured:
                 try:
-                    from jaeger_os.core.skills.toolsets import register_skill_toolset
+                    from jaeger_os.agent.skill_registry.toolsets import register_skill_toolset
                     register_skill_toolset(skill.name, capturing.captured,
                                            summary=_skill_summary(skill))
                 except Exception:  # noqa: BLE001
@@ -655,7 +655,7 @@ def load_and_register(
     # separately. Mention the count here so the operator sees the full
     # surface, not just the Python-module slice.
     try:
-        from jaeger_os.core.skills.playbook_skills import discover_playbooks
+        from jaeger_os.agent.skill_registry.playbook_skills import discover_playbooks
         pb_count = len(discover_playbooks())
         if pb_count:
             print(f"[jaeger-skills] {pb_count} playbook skill(s) available "

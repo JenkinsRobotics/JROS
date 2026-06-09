@@ -45,7 +45,7 @@ def test_visible_tool_groups_filters_to_CORE_when_scoping_on(monkeypatch):
     monkeypatch.delenv("JAEGER_FULL_TOOLS", raising=False)
 
     from jaeger_os.interfaces.tui.status import _visible_tool_groups
-    from jaeger_os.core.skills.toolsets import CORE
+    from jaeger_os.agent.skill_registry.toolsets import CORE
     groups, visible, total = _visible_tool_groups()
 
     # Every displayed tool is in CORE (the model-visible set).
@@ -177,7 +177,7 @@ def test_skill_view_auto_loads_required_toolsets(monkeypatch, tmp_path):
     dispatcher auto-loads them and reports the result. Saves a
     round-trip ``load_toolset`` call."""
     from jaeger_os.core.tools import skills as skills_tools
-    from jaeger_os.core.skills import playbook_skills as _pb
+    from jaeger_os.agent.skill_registry import playbook_skills as _pb
 
     # Make a real on-disk skill file so the dispatcher's
     # ``s.path.read_text`` succeeds.
@@ -208,7 +208,7 @@ def test_skill_view_auto_loads_required_toolsets(monkeypatch, tmp_path):
         loaded.append(name)
         return True
 
-    from jaeger_os.core.skills import toolsets as _ts
+    from jaeger_os.agent.skill_registry import toolsets as _ts
     monkeypatch.setattr(_ts, "enable_toolset", fake_enable, raising=True)
     monkeypatch.setattr(_ts, "active_toolset_names",
                         lambda: {"files", "code"}, raising=True)

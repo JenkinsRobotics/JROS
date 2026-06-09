@@ -43,7 +43,7 @@ def fake_playbooks(monkeypatch):
         _stub_playbook("epsilon", "code"),
         _stub_playbook("zeta",    "research"),
     ]
-    from jaeger_os.core.skills import playbook_skills as _pb
+    from jaeger_os.agent.skill_registry import playbook_skills as _pb
     monkeypatch.setattr(_pb, "available_playbooks", lambda: list(corpus))
     return corpus
 

@@ -26,7 +26,7 @@ from types import SimpleNamespace
 import pytest
 
 from jaeger_os.core import tools
-from jaeger_os.core.skills.toolsets import (
+from jaeger_os.agent.skill_registry.toolsets import (
     CORE, LEAN_CORE, enable_toolset, reset_toolsets, tool_visible,
 )
 

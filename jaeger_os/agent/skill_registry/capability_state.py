@@ -25,7 +25,7 @@ from typing import Any
 
 import yaml
 
-from jaeger_os.core.skills.manifest_v3 import Capability, Manifest
+from jaeger_os.agent.skill_registry.manifest_v3 import Capability, Manifest
 
 
 STATE_SCHEMA = "jros.skill_state/v1"
@@ -327,7 +327,7 @@ def record_benchmark_result(
     "reason": str?}``.  Never raises — benchmark recording must not
     crash the caller.
     """
-    from jaeger_os.core.skills.manifest_v3 import load_manifest_from_folder
+    from jaeger_os.agent.skill_registry.manifest_v3 import load_manifest_from_folder
 
     try:
         manifest = load_manifest_from_folder(skill_folder)

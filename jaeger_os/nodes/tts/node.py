@@ -38,6 +38,7 @@ right away rather than waiting for a timeout.
 from __future__ import annotations
 
 import queue
+import threading
 import time
 from typing import Any, Protocol
 
@@ -201,10 +202,25 @@ class TTSNode(Node):
     def _handle(self, msg: topics.SpeechCommand) -> None:
         t0 = time.perf_counter()
         self._active_correlation_id = msg.correlation_id
+        # 0.5 lip-sync proxy: emit /sense/tts_chunk events at ~30 Hz
+        # while the synthesizer runs.  Amplitude is a sin-wave
+        # placeholder; real RMS sampling is a 0.5.x followup once
+        # Kokoro exposes streaming audio.
+        amp_stop = threading.Event()
+        cid_for_chunks = msg.correlation_id or ""
+        amp_thread = threading.Thread(
+            target=self._tts_amplitude_pulse,
+            args=(amp_stop, cid_for_chunks),
+            name=f"tts-amp-{cid_for_chunks[:8] or 'anon'}",
+            daemon=True,
+        )
+        amp_thread.start()
         try:
             result = self.synthesizer.speak(msg.text)
         except Exception as exc:  # noqa: BLE001
             self._log(f"speak() raised: {type(exc).__name__}: {exc}")
+            amp_stop.set()
+            amp_thread.join(timeout=0.5)
             self._publish_ack(
                 msg, ok=False,
                 reason=f"{type(exc).__name__}: {exc}",
@@ -212,7 +228,20 @@ class TTSNode(Node):
             )
             return
         finally:
+            amp_stop.set()
+            amp_thread.join(timeout=0.5)
             self._active_correlation_id = None
+        # Final 0-amplitude chunk so the face's mouth closes
+        # cleanly when the utterance ends.
+        try:
+            self.bus.publish(topics.TtsChunk(
+                amplitude=0.0,
+                is_final=True,
+                node_id=self.name,
+                correlation_id=cid_for_chunks,
+            ))
+        except Exception:  # noqa: BLE001
+            pass
         ok = bool(result.get("spoken", False))
         # Prefer the synthesizer's elapsed if it gives one (more
         # accurate — includes synth time, not just playback) but
@@ -222,6 +251,41 @@ class TTSNode(Node):
         )
         reason = result.get("reason") if not ok else None
         self._publish_ack(msg, ok=ok, duration_s=duration_s, reason=reason)
+
+    def _tts_amplitude_pulse(
+        self,
+        stop_event: threading.Event,
+        correlation_id: str,
+    ) -> None:
+        """Emit ``/sense/tts_chunk`` events at ~30 Hz with a sin
+        amplitude shape until ``stop_event`` is set.
+
+        0.5.0 lip-sync proxy: not real audio sampling, but a
+        believable mouth-open/close cycle so Lilith looks like
+        she's saying something rather than staring blankly.  The
+        sin frequency (~5 Hz) approximates syllable rate; the
+        small jitter keeps it from looking mechanical.
+        """
+        import math
+        import random
+        interval_s = 1.0 / 30.0
+        t0 = time.perf_counter()
+        while not stop_event.is_set():
+            t = time.perf_counter() - t0
+            # Sin pulse with a small noise floor + jitter.
+            base = (math.sin(2 * math.pi * 5.0 * t) + 1.0) / 2.0
+            jitter = random.uniform(-0.1, 0.1)
+            amplitude = max(0.0, min(1.0, base * 0.7 + 0.15 + jitter))
+            try:
+                self.bus.publish(topics.TtsChunk(
+                    amplitude=amplitude,
+                    is_final=False,
+                    node_id=self.name,
+                    correlation_id=correlation_id,
+                ))
+            except Exception:  # noqa: BLE001
+                return
+            stop_event.wait(timeout=interval_s)
 
     def _publish_ack(
         self,

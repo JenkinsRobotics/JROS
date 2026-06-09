@@ -59,6 +59,7 @@ SENSE_VISION_ANALYSIS = "/sense/vision_analysis"
 SENSE_TOUCH = "/sense/touch"
 SENSE_PROPRIO = "/sense/proprio"
 SENSE_SPOKEN = "/sense/spoken"
+SENSE_TTS_CHUNK = "/sense/tts_chunk"
 
 ACT_SPEECH = "/act/speech"
 ACT_AUDIO_OUT = "/act/audio_out"
@@ -231,6 +232,26 @@ class SpokenAck(TopicMessage):
     ok: bool = False
     duration_s: float = 0.0
     reason: str | None = None  # populated when ok=False
+
+
+class TtsChunk(TopicMessage):
+    """Per-chunk TTS amplitude event.  Published at ~30 Hz by the TTS
+    node during ``synthesizer.speak()``; drives lip-sync on the
+    AnimationNode side.
+
+    0.5.0 ships with a sin-wave amplitude proxy — the chunks fire
+    at a fixed rate while synthesis is in progress, with amplitude
+    oscillating to simulate mouth movement.  0.5.x will replace
+    this with real RMS sampling from Kokoro's audio buffer once
+    the synthesizer exposes a streaming callback.
+
+    Amplitude is normalised to ``[0.0, 1.0]``.  Subscribers that
+    want decibels or raw samples should request a different topic
+    (not yet defined).
+    """
+    topic: Literal["/sense/tts_chunk"] = SENSE_TTS_CHUNK
+    amplitude: float = 0.0          # 0.0..1.0
+    is_final: bool = False          # True on the last chunk of an utterance
 
 
 # ── /act/* ─────────────────────────────────────────────────────────

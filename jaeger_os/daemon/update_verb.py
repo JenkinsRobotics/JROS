@@ -68,11 +68,11 @@ def _run_upgrade(method: str) -> int:
 
 def _list_stale_instances() -> list[dict[str, Any]]:
     """Walk ``~/.jaeger/instances/`` for instances whose
-    ``manifest.json:core_version`` is not the installed
-    ``CORE_VERSION``. Each entry: ``{name, path, current_version}``.
+    ``manifest.json:schema_version`` is not the installed
+    ``SCHEMA_VERSION``. Each entry: ``{name, path, current_version}``.
     """
     from jaeger_os.core.instance.instance import user_instances_root
-    from jaeger_os.core.instance.schemas import CORE_VERSION
+    from jaeger_os.core.instance.schemas import SCHEMA_VERSION
 
     root = user_instances_root()
     if not root.exists():
@@ -85,10 +85,10 @@ def _list_stale_instances() -> list[dict[str, Any]]:
         if not mf.exists():
             continue
         try:
-            current = json.loads(mf.read_text(encoding="utf-8")).get("core_version")
+            current = json.loads(mf.read_text(encoding="utf-8")).get("schema_version")
         except (OSError, json.JSONDecodeError):
             continue
-        if current and current != CORE_VERSION:
+        if current and current != SCHEMA_VERSION:
             stale.append({
                 "name": inst_dir.name,
                 "path": inst_dir,

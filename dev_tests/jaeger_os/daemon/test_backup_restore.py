@@ -29,7 +29,7 @@ def fake_instance(tmp_path, monkeypatch):
     (inst / "identity.yaml").write_text("name: Test\n", encoding="utf-8")
     (inst / "config.yaml").write_text("ctx: 32768\n", encoding="utf-8")
     (inst / "manifest.json").write_text(
-        '{"instance_name":"test","core_version":"1.1.0"}',
+        '{"instance_name":"test","schema_version":"1.1.0"}',
         encoding="utf-8",
     )
     (inst / "soul.md").write_text("# test agent\n", encoding="utf-8")
@@ -233,7 +233,7 @@ def test_restore_refuses_newer_archive(fake_instance, tmp_path):
         zf.writestr("MANIFEST.json", json.dumps({
             "schema": "jaeger-backup",
             "instance_name": "test",
-            "core_version": "99.0.0",  # impossibly future
+            "schema_version": "99.0.0",  # impossibly future
         }))
     with pytest.raises(B.RestoreError, match="newer framework"):
         B.restore_instance(archive)

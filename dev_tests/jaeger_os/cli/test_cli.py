@@ -38,7 +38,7 @@ def sandbox(tmp_path: Path, monkeypatch) -> Path:
         "  ctx: 8192\n"
     )
     (inst / "manifest.json").write_text(
-        '{"core_version": "1.2.0", '
+        '{"schema_version": "1.2.0", '
         '"instance_name": "test", '
         '"created_at": "2026-06-08"}'
     )

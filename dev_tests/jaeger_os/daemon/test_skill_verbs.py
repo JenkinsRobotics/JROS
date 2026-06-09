@@ -46,7 +46,7 @@ def fake_layout(tmp_path, monkeypatch):
         encoding="utf-8",
     )
     (inst / "manifest.json").write_text(
-        '{"instance_name":"default","core_version":"1.1.0"}',
+        '{"instance_name":"default","schema_version":"1.1.0"}',
         encoding="utf-8",
     )
     (inst / "skills").mkdir()

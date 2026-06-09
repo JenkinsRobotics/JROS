@@ -84,13 +84,13 @@ def _backup_manifest(name: str, *,
                      include_skills: bool,
                      files: list[str]) -> dict[str, Any]:
     from jaeger_os import __version__ as jver
-    from jaeger_os.core.instance.schemas import CORE_VERSION
+    from jaeger_os.core.instance.schemas import SCHEMA_VERSION
     return {
         "schema": "jaeger-backup",
         "schema_version": 1,
         "created_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "created_with_framework": jver,
-        "core_version": CORE_VERSION,
+        "schema_version": SCHEMA_VERSION,
         "instance_name": name,
         "include_credentials": include_credentials,
         "include_skills": include_skills,
@@ -203,12 +203,12 @@ def restore_instance(archive: Path, *,
     manifest = _read_backup_manifest(archive)
     # Future-archive guard: refuse to restore something a newer
     # framework wrote — we don't ship downgrade migrations.
-    archive_core = manifest.get("core_version")
-    from jaeger_os.core.instance.schemas import CORE_VERSION
-    if archive_core and _ver_gt(archive_core, CORE_VERSION):
+    archive_core = manifest.get("schema_version")
+    from jaeger_os.core.instance.schemas import SCHEMA_VERSION
+    if archive_core and _ver_gt(archive_core, SCHEMA_VERSION):
         raise RestoreError(
             f"archive was created by a newer framework "
-            f"(core {archive_core!r} > installed {CORE_VERSION!r}). "
+            f"(core {archive_core!r} > installed {SCHEMA_VERSION!r}). "
             "Upgrade jaeger-os before restoring."
         )
 

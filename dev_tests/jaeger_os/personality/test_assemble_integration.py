@@ -33,7 +33,7 @@ def layout(tmp_path: Path):
     )
     layout.config_path.write_text("model:\n  model_path: /tmp/x.gguf\n")
     layout.manifest_path.write_text(
-        '{"core_version": "1.0.0", "instance_name": "t", "created_at": "2026"}'
+        '{"schema_version": "1.0.0", "instance_name": "t", "created_at": "2026"}'
     )
     return layout
 

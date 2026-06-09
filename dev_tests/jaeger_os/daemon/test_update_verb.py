@@ -19,8 +19,8 @@ from jaeger_os.daemon import update_verb as U
 # ── helpers ────────────────────────────────────────────────────────
 
 
-def _make_instance(home: Path, name: str, core_version: str = "1.0.0") -> Path:
-    """Build a minimal valid 0.2.0 instance dir under HOME."""
+def _make_instance(home: Path, name: str, schema_version: str = "0.5.0") -> Path:
+    """Build a minimal valid instance dir under HOME."""
     inst = home / ".jaeger_os" / "instances" / name
     inst.mkdir(parents=True)
     (inst / "identity.yaml").write_text(f"name: {name}\nrole: r\npersonality: p\n",
@@ -30,7 +30,7 @@ def _make_instance(home: Path, name: str, core_version: str = "1.0.0") -> Path:
         encoding="utf-8",
     )
     (inst / "manifest.json").write_text(
-        json.dumps({"instance_name": name, "core_version": core_version,
+        json.dumps({"instance_name": name, "schema_version": schema_version,
                     "created_at": "2026-01-01T00:00:00+00:00"}),
         encoding="utf-8",
     )
@@ -55,22 +55,22 @@ def test_list_stale_finds_old_manifests(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("JAEGER_HOME", str(tmp_path))
     monkeypatch.delenv("JAEGER_INSTANCE_DIR", raising=False)
-    # 1.0.0 != current 1.1.0 → stale.
-    _make_instance(tmp_path, "default", core_version="1.0.0")
-    _make_instance(tmp_path, "work", core_version="1.0.0")
+    # 0.4.0 != current SCHEMA_VERSION → stale.
+    _make_instance(tmp_path, "default", schema_version="0.4.0")
+    _make_instance(tmp_path, "work", schema_version="0.4.0")
     stale = U._list_stale_instances()
     names = sorted(s["name"] for s in stale)
     assert names == ["default", "work"]
     for s in stale:
-        assert s["current_version"] == "1.0.0"
+        assert s["current_version"] == "0.4.0"
 
 
 def test_list_stale_skips_current_version(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("JAEGER_HOME", str(tmp_path))
     monkeypatch.delenv("JAEGER_INSTANCE_DIR", raising=False)
-    from jaeger_os.core.instance.schemas import CORE_VERSION
-    _make_instance(tmp_path, "default", core_version=CORE_VERSION)
+    from jaeger_os.core.instance.schemas import SCHEMA_VERSION
+    _make_instance(tmp_path, "default", schema_version=SCHEMA_VERSION)
     assert U._list_stale_instances() == []
 
 
@@ -115,7 +115,7 @@ def test_check_exits_1_when_stale(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("JAEGER_HOME", str(tmp_path))
     monkeypatch.delenv("JAEGER_INSTANCE_DIR", raising=False)
-    _make_instance(tmp_path, "default", core_version="1.0.0")
+    _make_instance(tmp_path, "default", schema_version="0.4.0")
     code = U._cmd_update_argv(["--check"])
     assert code == 1
     out = capsys.readouterr().out
@@ -132,7 +132,7 @@ def test_update_runs_upgrade_and_skips_migrate_on_no_migrate(tmp_path, monkeypat
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("JAEGER_HOME", str(tmp_path))
     monkeypatch.delenv("JAEGER_INSTANCE_DIR", raising=False)
-    _make_instance(tmp_path, "default", core_version="1.0.0")
+    _make_instance(tmp_path, "default", schema_version="0.4.0")
 
     upgrade_calls: list[list[str]] = []
 
@@ -153,9 +153,9 @@ def test_update_runs_upgrade_and_skips_migrate_on_no_migrate(tmp_path, monkeypat
     assert code == 0
     # Upgrade was attempted.
     assert any("install" in c and "-U" in c for c in upgrade_calls)
-    # Migration was NOT run — the manifest is still 1.0.0.
+    # Migration was NOT run — the manifest is still at the old version.
     inst_mf = tmp_path / ".jaeger_os" / "instances" / "default" / "manifest.json"
-    assert json.loads(inst_mf.read_text())["core_version"] == "1.0.0"
+    assert json.loads(inst_mf.read_text())["schema_version"] == "0.4.0"
 
 
 def test_update_dev_checkout_prints_hint(tmp_path, monkeypatch, capsys):

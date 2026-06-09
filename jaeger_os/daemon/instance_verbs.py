@@ -368,7 +368,7 @@ def _instance_inspect(argv: list[str]) -> int:
     try:
         manifest = load_json(layout.manifest_path, Manifest)
         print("# manifest.json")
-        print(f"  core_version:    {manifest.core_version}")
+        print(f"  schema_version:  {manifest.schema_version}")
         print(f"  created_at:      {manifest.created_at}")
         print(f"  last_started_at: {manifest.last_started_at or '(never)'}")
     except Exception as exc:  # noqa: BLE001

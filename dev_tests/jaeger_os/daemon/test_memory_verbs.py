@@ -53,7 +53,7 @@ def live_instance(tmp_path, monkeypatch):
         encoding="utf-8",
     )
     (inst / "manifest.json").write_text(
-        '{"instance_name":"default","core_version":"1.2.0"}', encoding="utf-8",
+        '{"instance_name":"default","schema_version":"1.2.0"}', encoding="utf-8",
     )
 
     # Populate the SQL store with a sample row per table.

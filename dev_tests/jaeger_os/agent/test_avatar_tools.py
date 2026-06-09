@@ -92,8 +92,10 @@ def test_set_avatar_state_publishes_animation_command(
         time.sleep(0.02)
     assert len(captured_animation_cmds) == 1
     cmd = captured_animation_cmds[0]
-    assert cmd.adapter == "math"  # happy → math/faces/happy.py per default
-    assert "happy" in cmd.asset_path
+    assert cmd.adapter == "math"
+    # All emotions share the same MathScript; the emotion is in params.
+    assert "lilith_face.py" in cmd.asset_path
+    assert cmd.params.get("emotion") == "happy"
 
 
 def test_set_avatar_state_unknown_emotion_errors(

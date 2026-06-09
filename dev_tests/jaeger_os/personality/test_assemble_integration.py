@@ -45,7 +45,7 @@ def test_assemble_prompt_works_without_personality_json(
 ) -> None:
     """When there's no personality.json, the prompt assembles
     cleanly without the compose_block section."""
-    from jaeger_os.core.prompts.assemble import assemble_prompt
+    from jaeger_os.agent.prompts.assemble import assemble_prompt
     out = assemble_prompt(layout, mode="agent")
     assert "How I express myself" not in out
 
@@ -60,7 +60,7 @@ def test_assemble_prompt_includes_compose_block(layout) -> None:
     )
     save_personality(p, layout.root / "personality.json")
 
-    from jaeger_os.core.prompts.assemble import assemble_prompt
+    from jaeger_os.agent.prompts.assemble import assemble_prompt
     out = assemble_prompt(layout, mode="agent")
     assert "## How I express myself (calibrated)" in out
     assert "directness: very high" in out
@@ -74,7 +74,7 @@ def test_broken_personality_json_is_tolerated(layout) -> None:
     (layout.root / "personality.json").write_text(
         "{ not actually json }"
     )
-    from jaeger_os.core.prompts.assemble import assemble_prompt
+    from jaeger_os.agent.prompts.assemble import assemble_prompt
     out = assemble_prompt(layout, mode="agent")
     # Should still assemble without raising; just won't include
     # the personality block.
@@ -93,7 +93,7 @@ def test_subagent_mode_skips_personality(layout) -> None:
     )
     save_personality(p, layout.root / "personality.json")
 
-    from jaeger_os.core.prompts.assemble import assemble_prompt
+    from jaeger_os.agent.prompts.assemble import assemble_prompt
     out = assemble_prompt(layout, mode="subagent",
                           goal="quick task",
                           context="some context")

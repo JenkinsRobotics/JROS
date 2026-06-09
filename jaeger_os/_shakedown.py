@@ -75,7 +75,7 @@ def _load_client_and_agent(root: Path):
     from jaeger_os.main import (
         LlamaCppPythonClient, _get_agent, _pipeline,
     )
-    from jaeger_os.core.prompts.prompts import build_system_prompt
+    from jaeger_os.agent.prompts.prompts import build_system_prompt
     from jaeger_os.core.instance.schemas import Config, load_yaml
 
     layout = InstanceLayout(root=root)

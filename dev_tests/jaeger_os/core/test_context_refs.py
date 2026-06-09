@@ -7,7 +7,7 @@ tests need no real filesystem path or network.
 
 from __future__ import annotations
 
-from jaeger_os.core.prompts.context_refs import expand_references
+from jaeger_os.agent.prompts.context_refs import expand_references
 
 
 def _reader(mapping):

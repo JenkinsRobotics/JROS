@@ -14,7 +14,7 @@ import pytest
 
 from jaeger_os.core.instance.instance import InstanceLayout
 from jaeger_os.core.memory.memory import load_identity_string
-from jaeger_os.core.prompts.prompts import (
+from jaeger_os.agent.prompts.prompts import (
     JAEGER_OS_CONTEXT,
     OPERATING_DISCIPLINE,
     RUNTIME_TAIL_BASE,

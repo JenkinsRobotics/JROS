@@ -3,10 +3,10 @@
 Pre-consolidation, this module held the constants, the dynamic
 block builders, and the assembly function. It now re-exports those
 from their new homes so any external caller that imports from
-``jaeger_os.core.prompts.prompts`` keeps working unchanged:
+``jaeger_os.agent.prompts.prompts`` keeps working unchanged:
 
-    from jaeger_os.core.prompts import build_system_prompt          # preferred
-    from jaeger_os.core.prompts.prompts import build_system_prompt  # legacy ok
+    from jaeger_os.agent.prompts import build_system_prompt          # preferred
+    from jaeger_os.agent.prompts.prompts import build_system_prompt  # legacy ok
 
 The Core / Safety / Instance split is:
 
@@ -17,7 +17,7 @@ The Core / Safety / Instance split is:
     core/safety/safety_rules.py    — Three Laws wrap
     instance/<name>/{identity,soul,config} — per-instance overrides
 
-New code should import directly from ``jaeger_os.core.prompts``
+New code should import directly from ``jaeger_os.agent.prompts``
 (re-exports the public surface) — this file exists only so a
 ``from .prompts import …`` somewhere we haven't migrated yet
 doesn't break.
@@ -47,7 +47,7 @@ from .rules import (  # noqa: F401
 
 def build_system_prompt(layout: InstanceLayout) -> str:
     """Assemble the live-agent system prompt. Back-compat shim — new
-    code should call :func:`jaeger_os.core.prompts.assemble_prompt`
+    code should call :func:`jaeger_os.agent.prompts.assemble_prompt`
     with an explicit ``mode``."""
     return _assemble(layout, mode="agent")
 

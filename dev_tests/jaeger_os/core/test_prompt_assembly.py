@@ -24,7 +24,7 @@ from pathlib import Path
 
 import pytest
 
-from jaeger_os.core.prompts import (
+from jaeger_os.agent.prompts import (
     AUTO_BOARD_PROMPT,
     PromptMode,
     assemble_prompt,
@@ -32,7 +32,7 @@ from jaeger_os.core.prompts import (
     cron_prompt,
     deep_think_directive,
 )
-from jaeger_os.core.prompts.rules import (
+from jaeger_os.agent.prompts.rules import (
     JAEGER_OS_CONTEXT,
     MANDATORY_TOOL_RULES,
     OPERATING_DISCIPLINE,

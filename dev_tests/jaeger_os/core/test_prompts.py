@@ -8,7 +8,7 @@ the always-on OPERATING_DISCIPLINE block, and the optional per-instance
 from __future__ import annotations
 
 from jaeger_os.core.instance.instance import InstanceLayout
-from jaeger_os.core.prompts.prompts import _load_soul, build_system_prompt
+from jaeger_os.agent.prompts.prompts import _load_soul, build_system_prompt
 
 
 # ── operating discipline ────────────────────────────────────────────

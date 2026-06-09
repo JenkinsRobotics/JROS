@@ -12,7 +12,7 @@ from __future__ import annotations
 import pytest
 
 from jaeger_os.core.models import model_discovery
-from jaeger_os.core import tools
+from jaeger_os.agent import tools
 from jaeger_os.core.instance.instance import InstanceLayout
 from jaeger_os.core.safety.permissions import (
     AllowAllProvider,

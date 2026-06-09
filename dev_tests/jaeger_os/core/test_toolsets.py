@@ -171,7 +171,7 @@ def test_every_registered_tool_is_classified_or_explicit_fail_open(monkeypatch) 
     # to cover the always-on path — and assert only against what's
     # available.
     from jaeger_os.agent.schemas.tool_registry import get_tools  # noqa
-    import jaeger_os.core.tools  # noqa — pulls module-level registrations
+    import jaeger_os.agent.tools  # noqa — pulls module-level registrations
 
     all_classified: set[str] = set(ts.CORE)
     for members in ts.TOOLSETS.values():

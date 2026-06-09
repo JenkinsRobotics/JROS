@@ -20,7 +20,7 @@ from typing import Any
 
 import pytest
 
-from jaeger_os.core.tools import skills as skill_tool
+from jaeger_os.agent.tools import skills as skill_tool
 
 
 def _stub_playbook(name: str, category: str, desc: str = "") -> Any:

@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import pytest
 
-from jaeger_os.core import tools
+from jaeger_os.agent import tools
 from jaeger_os.core.instance.instance import InstanceLayout
 
 

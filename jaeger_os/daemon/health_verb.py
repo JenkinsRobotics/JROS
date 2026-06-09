@@ -95,7 +95,7 @@ def _bind_layout(instance_name: str | None):
             InstanceLayout, default_instance_name, resolve_instance_dir,
         )
         from jaeger_os.core.memory import memory as _memmod
-        from jaeger_os.core.tools import _common as _tcommon
+        from jaeger_os.agent.tools import _common as _tcommon
     except Exception as exc:  # noqa: BLE001
         print(f"[jaeger health] could not load runtime: {exc}",
               file=sys.stderr)

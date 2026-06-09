@@ -176,7 +176,7 @@ def test_skill_view_auto_loads_required_toolsets(monkeypatch, tmp_path):
     """When a viewed skill declares ``requires_toolsets``, the
     dispatcher auto-loads them and reports the result. Saves a
     round-trip ``load_toolset`` call."""
-    from jaeger_os.core.tools import skills as skills_tools
+    from jaeger_os.agent.tools import skills as skills_tools
     from jaeger_os.agent.skill_registry import playbook_skills as _pb
 
     # Make a real on-disk skill file so the dispatcher's

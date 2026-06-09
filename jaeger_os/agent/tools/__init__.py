@@ -3,8 +3,8 @@
 Mirrors python_pydantic_ai/core/tools/ for cross-framework structural
 parity. Use either form:
 
-    from jaeger_os.core import tools             # then tools.get_time(...)
-    from jaeger_os.core.tools import get_time    # direct import
+    from jaeger_os.agent import tools             # then tools.get_time(...)
+    from jaeger_os.agent.tools import get_time    # direct import
 
 Categories:
 

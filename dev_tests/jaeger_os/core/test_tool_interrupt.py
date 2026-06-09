@@ -21,7 +21,7 @@ import time
 import pytest
 
 from jaeger_os.core.runtime import tool_interrupt
-from jaeger_os.core import tools
+from jaeger_os.agent import tools
 from jaeger_os.core.runtime.tool_interrupt import ToolInterrupted, run_interruptible
 
 

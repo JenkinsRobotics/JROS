@@ -192,7 +192,7 @@ def test_memory_integrity_passes_for_valid_json(tmp_path):
 def test_tool_registry_check_no_agent_reports_skip(tmp_path):
     """Without a booted agent the check can't resolve CORE / LEAN_CORE
     names (they're the agent-facing aliases registered at boot time,
-    not the function symbols in jaeger_os.core.tools). The check
+    not the function symbols in jaeger_os.agent.tools). The check
     surfaces a single 'not checked' row so the doctor stays useful
     when run from the CLI without a live session."""
     out = _check_tool_registry()

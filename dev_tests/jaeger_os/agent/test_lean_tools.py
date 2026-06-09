@@ -37,7 +37,7 @@ def stub_tools():
     ``clear_registry`` which wipes ``describe_tool`` too; re-register
     it here so the meta-tool is reachable in any test ordering."""
     from jaeger_os.agent.schemas.tool_registry import has_tool
-    from jaeger_os.core.tools.meta import describe_tool as _desc
+    from jaeger_os.agent.tools.meta import describe_tool as _desc
 
     if not has_tool("describe_tool"):
         register_tool_from_function(_desc)

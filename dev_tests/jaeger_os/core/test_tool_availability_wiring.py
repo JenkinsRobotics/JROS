@@ -18,7 +18,7 @@ from __future__ import annotations
 from pydantic import BaseModel
 
 from jaeger_os.agent.schemas.tool_schema import ToolDef
-from jaeger_os.core.tools.availability import (
+from jaeger_os.agent.tools.availability import (
     _TOOL_TO_PLUGIN,
     wire_availability_checks,
 )
@@ -94,7 +94,7 @@ def test_unavailable_plugin_makes_tool_unavailable(monkeypatch):
     tools = {"text_to_speech": _td("text_to_speech")}
     wire_availability_checks(_StubAgent(tools))
     # Patch the plugin lister to report kokoro_tts as not ready.
-    from jaeger_os.core.tools import plugins as _plugins_mod
+    from jaeger_os.agent.tools import plugins as _plugins_mod
 
     def _fake_list():
         return {"plugins": [
@@ -107,7 +107,7 @@ def test_unavailable_plugin_makes_tool_unavailable(monkeypatch):
 def test_ready_plugin_keeps_tool_available(monkeypatch):
     tools = {"text_to_speech": _td("text_to_speech")}
     wire_availability_checks(_StubAgent(tools))
-    from jaeger_os.core.tools import plugins as _plugins_mod
+    from jaeger_os.agent.tools import plugins as _plugins_mod
 
     def _fake_list():
         return {"plugins": [
@@ -124,7 +124,7 @@ def test_messaging_aggregates_across_bridges(monkeypatch):
     configured."""
     tools = {"send_message": _td("send_message")}
     wire_availability_checks(_StubAgent(tools))
-    from jaeger_os.core.tools import plugins as _plugins_mod
+    from jaeger_os.agent.tools import plugins as _plugins_mod
 
     def _fake_list_no_bridge():
         return {"plugins": [
@@ -151,7 +151,7 @@ def test_unknown_plugin_fails_open(monkeypatch):
     forward compatibility."""
     tools = {"text_to_speech": _td("text_to_speech")}
     wire_availability_checks(_StubAgent(tools))
-    from jaeger_os.core.tools import plugins as _plugins_mod
+    from jaeger_os.agent.tools import plugins as _plugins_mod
 
     def _fake_list_empty():
         return {"plugins": []}

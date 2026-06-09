@@ -140,7 +140,7 @@ def test_default_checks_have_unique_names():
 
 
 def test_check_memory_uses_explicit_submodule_imports():
-    """``from jaeger_os.core.tools import memory`` resolves to the
+    """``from jaeger_os.agent.tools import memory`` resolves to the
     umbrella *function* (re-exported in __init__), not the submodule —
     so the probe must import remember/recall/forget by name to avoid
     the shadowing. Pin the actual import lines (not docstring text)
@@ -155,10 +155,10 @@ def test_check_memory_uses_explicit_submodule_imports():
     ]
     code_text = "\n".join(code_lines)
     # The fix: explicit submodule path.
-    assert "from jaeger_os.core.tools.memory import" in code_text
+    assert "from jaeger_os.agent.tools.memory import" in code_text
     # The trap: package-level import that shadows the submodule with
     # the re-exported umbrella function.
-    assert "from jaeger_os.core.tools import memory" not in code_text
+    assert "from jaeger_os.agent.tools import memory" not in code_text
 
 
 def test_check_memory_round_trip_succeeds_on_bound_layout(tmp_path):
@@ -169,7 +169,7 @@ def test_check_memory_round_trip_succeeds_on_bound_layout(tmp_path):
     from types import SimpleNamespace
     from jaeger_os.core.memory import memory as memmod
     from jaeger_os.core.memory import sqlite_store
-    from jaeger_os.core.tools import _common
+    from jaeger_os.agent.tools import _common
     from jaeger_os.core.diagnostics.probe import _check_memory
 
     sqlite_store.close()

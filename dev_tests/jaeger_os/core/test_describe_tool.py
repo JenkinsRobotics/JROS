@@ -18,7 +18,7 @@ from jaeger_os.agent.schemas.tool_registry import (
     has_tool, register_tool_instance,
 )
 from jaeger_os.agent.schemas.tool_schema import ToolDef
-from jaeger_os.core.tools.meta import describe_tool
+from jaeger_os.agent.tools.meta import describe_tool
 
 
 class _Args(BaseModel):

@@ -64,7 +64,7 @@ def test_read_tools_carry_the_read_only_tier() -> None:
 
 def test_run_shell_impl_is_privileged() -> None:
     # `terminal` wraps run_shell, which is gated at the implementation.
-    from jaeger_os.core.tools.code import run_shell
+    from jaeger_os.agent.tools.code import run_shell
     assert get_tier(run_shell) == PermissionTier.PRIVILEGED
 
 

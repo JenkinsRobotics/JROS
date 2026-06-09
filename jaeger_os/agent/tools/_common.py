@@ -62,7 +62,7 @@ def bind(layout: InstanceLayout,
 
 def _require_layout() -> InstanceLayout:
     if _layout is None:
-        raise RuntimeError("tools not bound — call jaeger_os.core.tools.bind(layout) first")
+        raise RuntimeError("tools not bound — call jaeger_os.agent.tools.bind(layout) first")
     return _layout
 
 

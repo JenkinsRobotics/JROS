@@ -151,7 +151,7 @@ class KokoroTTS:
         candidate = self._backend_override
         if not candidate:
             try:
-                from jaeger_os.core.tools._common import _require_layout
+                from jaeger_os.agent.tools._common import _require_layout
                 from jaeger_os.core.instance.schemas import Config, load_yaml
                 layout = _require_layout()
                 cfg = load_yaml(layout.config_path, Config)

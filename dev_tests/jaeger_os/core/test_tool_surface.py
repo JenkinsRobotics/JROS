@@ -12,7 +12,7 @@ name, or losing a merged one) fails loudly.
 
 from __future__ import annotations
 
-from jaeger_os.core import tools
+from jaeger_os.agent import tools
 
 
 RETIRED = ["launch_url", "open_file", "open_app", "speak_file", "read_background"]

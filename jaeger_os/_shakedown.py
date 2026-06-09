@@ -70,7 +70,7 @@ def _stage_instance(root: Path) -> None:
 
 
 def _load_client_and_agent(root: Path):
-    from jaeger_os.core import tools as jaeger_tools
+    from jaeger_os.agent import tools as jaeger_tools
     from jaeger_os.core.instance.instance import InstanceLayout
     from jaeger_os.main import (
         LlamaCppPythonClient, _get_agent, _pipeline,

@@ -18,11 +18,11 @@ from pathlib import Path
 import pytest
 
 from jaeger_os.core.instance.instance import InstanceLayout
-from jaeger_os.core.tools._common import (
+from jaeger_os.agent.tools._common import (
     SandboxError, _require_layout, _resolve_write,
 )
-import jaeger_os.core.tools._common as _common
-from jaeger_os.core.tools import files as file_tools
+import jaeger_os.agent.tools._common as _common
+from jaeger_os.agent.tools import files as file_tools
 
 
 # ── layout / ensure_dirs ────────────────────────────────────────────
@@ -159,7 +159,7 @@ def test_workspace_override_redirects_writes(tmp_path, monkeypatch):
     """When ``bind(..., workspace_override=...)`` is called, every
     ``workspace/...`` write lands at the override path instead of
     ``<instance>/workspace/``."""
-    from jaeger_os.core import tools as jaeger_tools
+    from jaeger_os.agent import tools as jaeger_tools
 
     inst_root = tmp_path / "inst"
     inst_root.mkdir()
@@ -182,7 +182,7 @@ def test_workspace_override_redirects_writes(tmp_path, monkeypatch):
 
 def test_workspace_override_creates_target_dir(tmp_path):
     """``bind()`` creates the override dir if it doesn't exist."""
-    from jaeger_os.core import tools as jaeger_tools
+    from jaeger_os.agent import tools as jaeger_tools
 
     inst = tmp_path / "inst"
     inst.mkdir()
@@ -197,7 +197,7 @@ def test_workspace_override_creates_target_dir(tmp_path):
 
 def test_workspace_override_expands_user(tmp_path, monkeypatch):
     """``~/Documents/foo`` is expanded relative to $HOME."""
-    from jaeger_os.core import tools as jaeger_tools
+    from jaeger_os.agent import tools as jaeger_tools
 
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
     (tmp_path / "home").mkdir()

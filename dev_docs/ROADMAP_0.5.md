@@ -40,7 +40,11 @@ New operator-locked architectural principles (2026-06-08):
 * **Skill-tree evolution** — every node + skill has progression
   levels.  XP accumulates from real use.  Skills unlock skills
   through prerequisites.  See `dev_docs/SKILL_TREE.md` for the
-  load-bearing pattern.
+  load-bearing pattern, and
+  [`dev_docs/0.5.x_skill_tree_evolution_plan.md`](0.5.x_skill_tree_evolution_plan.md)
+  for the planned evolution from "registry + log" to
+  "behaviour-shaping system" (prompt-feedback, behaviour-shaping,
+  visualisation).
 * **Animation levels** — L1 static → L2 sprite → L3 gif → L4 video
   + procedural → L5 rigged (deferred) → L6 generative (deferred).
   Each level is a skill node.

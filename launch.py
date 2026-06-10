@@ -320,7 +320,7 @@ def _check_instance_manifest() -> tuple[bool, str]:
         if not layout.manifest_path.exists():
             return False, f"manifest missing at {layout.manifest_path}"
         manifest = load_yaml(layout.manifest_path, Manifest)
-        return True, (f"core_version={manifest.core_version}  "
+        return True, (f"schema_version={manifest.schema_version}  "
                       f"instance={manifest.instance_name!r}")
     except Exception as exc:  # noqa: BLE001
         return False, f"manifest load failed: {exc}"

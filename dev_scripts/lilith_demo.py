@@ -37,7 +37,12 @@ FACE_SCRIPT = (
 )
 
 OUT_GIF = Path("/tmp/lilith_demo.gif")
-WIDTH, HEIGHT = 256, 256
+# Lilith renders NATIVELY at 64x64 (LED matrix target).  We
+# nearest-neighbor upscale for viewing so the pixel art reads
+# crisp on a regular Mac screen.
+NATIVE = 64
+SCALE = 8
+WIDTH, HEIGHT = NATIVE, NATIVE
 FPS = 24
 
 
@@ -76,6 +81,13 @@ def render_emotion(emotion: str, seconds: float) -> list[Image.Image]:
         img = Image.frombytes(
             "RGBA", (WIDTH, HEIGHT), frame.data,
         ).convert("RGB")
+        # Nearest-neighbor upscale so the pixel art reads big
+        # + crisp on a normal display.  Native 64x64 frame
+        # → 512x512 preview.
+        img = img.resize(
+            (WIDTH * SCALE, HEIGHT * SCALE),
+            Image.NEAREST,
+        )
         frames.append(img)
     return frames
 

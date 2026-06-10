@@ -291,8 +291,8 @@ def _check_skill_matrix(env: dict[str, str]) -> tuple[bool, str]:
                 resolve_instance_dir,
             )
             from jaeger_os.core.instance.instance import InstanceLayout
-            from jaeger_os.core.skills.skill_loader import discover_skills
-            from jaeger_os.core.skills.playbook_skills import discover_playbooks
+            from jaeger_os.agent.skill_registry.skill_loader import discover_skills
+            from jaeger_os.agent.skill_registry.playbook_skills import discover_playbooks
             root = Path(resolve_instance_dir(INSTANCE_NAME))
             layout = InstanceLayout(root=root)
             skills = discover_skills(layout)

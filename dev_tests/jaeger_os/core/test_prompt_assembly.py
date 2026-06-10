@@ -158,7 +158,7 @@ def test_subagent_mode_skips_the_board_digest(tmp_path):
     # to prove the test's negative assertion is meaningful.
     mem = tmp_path / "memory"
     mem.mkdir(parents=True, exist_ok=True)
-    from jaeger_os.core.background.board import board_for_layout
+    from jaeger_os.agent.background.board import board_for_layout
     board_for_layout(_layout(tmp_path)).add("parent's todo", column="ready")
 
     sub_out = assemble_prompt(_layout(tmp_path), mode="subagent", goal="x")

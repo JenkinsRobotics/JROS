@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from rich.console import Console
 
-from jaeger_os.core.background.board import Card
+from jaeger_os.agent.background.board import Card
 from jaeger_os.interfaces.tui.board_view import (
     render_board,
     render_board_empty_hint,

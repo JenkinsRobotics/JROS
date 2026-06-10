@@ -17,7 +17,7 @@ import json
 import types
 from pathlib import Path
 
-from jaeger_os.core.background import processes as proc
+from jaeger_os.agent.background import processes as proc
 
 
 def _make_layout(tmp_path: Path) -> object:

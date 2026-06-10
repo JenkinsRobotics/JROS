@@ -23,7 +23,7 @@ from pathlib import Path
 
 import pytest
 
-from jaeger_os.core.background.board import (
+from jaeger_os.agent.background.board import (
     Board,
     board_digest,
     board_for_layout,

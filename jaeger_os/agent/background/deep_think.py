@@ -31,7 +31,7 @@ import uuid
 from dataclasses import asdict, dataclass, field
 from typing import Any, Literal
 
-from jaeger_os.core.background.board import Board, board_for_layout
+from jaeger_os.agent.background.board import Board, board_for_layout
 
 
 TaskStatus = Literal["pending", "in_progress", "done", "failed"]

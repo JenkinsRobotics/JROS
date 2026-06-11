@@ -39,9 +39,25 @@ Copy-paste this entire file into the review tool's input.
 
 ## 0. Prime the pattern search — lessons from prior reviews
 
-The Mochi review (just completed) surfaced 5 real bugs we'd missed.
-The VoiceLLM review (running now) is hunting the in-process analogs.
-Watch for the same families here, translated to the agent loop:
+The Mochi review surfaced 5 real bugs we'd missed.  The VoiceLLM
+review surfaced **even better findings, including the operator's
+worst possible bug class**: silent permanent failure in a
+daily-driver path.  The operator wants the JROS reviewer to
+**look for the JROS analogs of EVERY VoiceLLM finding** and
+implement equivalent improvements.  The mapping table below is
+the priority queue for this review — flag every JROS analog
+even if it's a near-miss.
+
+### Hard prior — the four VoiceLLM findings most likely to recur in JROS
+
+| VoiceLLM finding | JROS analog to hunt | Why JROS is exposed |
+|---|---|---|
+| **Context overflow → silent permanent mute.** LLM thread dies on `ValueError` raise from `create_chat_completion`, `finally` appends empty assistant turn, every subsequent turn fails identically until restart. Only manifests in long sessions. | `JaegerAgent.run_turn`: what happens when `ContextOverflow` is raised mid-turn?  Does the loop's `finally` (if any) leave `self.messages` in a state that *deterministically* re-fails?  Does the operator see ANY surfaced error, or does the agent silently stop responding?  This is the bug-class the operator most cares about because daily-driver use produces long sessions. | JROS has more context-consumers (skills, MCP, deep-think, runtime_bridge) and a bigger system prompt + persona context.  Multi-instance design means the same overflow can happen in voice OR deep-think OR scheduler simultaneously. |
+| **Metrics never measure listen/STT time** — all timestamps set at receive-of-`stt.text`, so the entire silence-hangover + transcription pass is invisible.  The project's "feels faster" claim is unverifiable from its own data. | Whatever JROS records per-turn — is each timestamp recorded at the EARLIEST point that work begins, not the receive point in the orchestrator?  Audit `runtime_bridge.py` + any metrics writer for "we record this when the message arrives" pattern. | JROS has more inter-node hops than VoiceLLM (animation node, vision, motor).  Each hop is a place where "timestamp at receive" loses real latency. |
+| **Bus is a work queue, not pub/sub** — `tts.audio_chunk` subscribers are architecturally unreachable because `queue.Queue.get()` removes the message; second subscriber would steal from the orchestrator. | JROS uses ZMQ which IS real pub/sub, so this exact bug doesn't apply.  BUT — look for places where ZMQ subscribe patterns are wrong: is anything assumed reachable that isn't, e.g. multi-subscriber on a PUSH/PULL socket? | The architecture is right but the wiring may not be. |
+| **Doc-as-fiction in STATUS.md + architecture docs**, where the project's stated workflow is "fresh LLM reads docs first" — every drift item is a planted false memory. | JROS has FAR more docs than VoiceLLM (`docs/0.5.0_*` plans, ROADMAP files, SKILL_TREE.md, STATUS.md).  Audit them.  Each unbuilt-but-confidently-described item is a session-time tax. | JROS is the operator's primary repo for LLM-assisted work.  Doc fiction here hurts the most. |
+
+### Watch for the SAME pattern families Mochi surfaced too:
 
 | Family | Mochi instance | JROS agent loop has the same risk because… |
 |---|---|---|
@@ -455,21 +471,39 @@ git log --oneline jaeger_os/agent | head -50
 
 ## 10. Output I want from the reviewer
 
-In order of value:
+**Operator's specific directive for this review (verbatim):**
 
-1. **Direct answers to Section 8 questions** — specific, actionable.
-   Section 0 pattern matches first if found.
-2. **A prioritised list of issues found** — severity × effort.
+> *"also for jros prefer have it implement the improvements from
+> VoiceLLM"*
+
+So this is not just a review — the reviewer is **expected to
+implement** JROS-side equivalents of the VoiceLLM findings where
+they apply.  Order:
+
+1. **Section 0 hard-prior hunt first.**  The 4-row table at the top
+   is the highest-priority work.  For each VoiceLLM finding, find
+   the JROS analog and IMPLEMENT THE FIX in the same review round.
+   The context-overflow-silent-mute bug is the operator's #1 worry
+   for daily-driver use — if a JROS analog exists, fix it.
+2. **Direct answers to Section 8 questions** — specific, actionable.
+3. **A prioritised list of issues found** — severity × effort.
    Bugs first (especially `disarm_interrupt`-class), then over-
-   engineering / organisation, then doc-vs-code drift.
-3. **A concrete "if I were you, I'd do X next" recommendation**
-   for the next 5-10 commits.  Operator's order is
-   "performance + organisation + reliability" — not new features.
-4. **One brutally honest piece of feedback** about something
+   engineering / organisation, then doc-vs-code drift.  Note which
+   ones you fixed already vs which need operator approval.
+4. **A concrete "if I were you, I'd do X next" recommendation**
+   for the next 5-10 commits the operator should ship.  Operator's
+   priority is "performance + organisation + reliability" — not
+   new features.
+5. **One brutally honest piece of feedback** about something
    that's wrong / over-engineered / structurally bad — even if it
    doesn't fit a numbered category.
 
 Don't pad with "what's good" — focus on what to fix + what's next.
+
+**Hard out-of-scope reminder** — see top of brief.  App/daemon
+architecture changes need an explicit plan + operator approval
+before any implementation.  Don't unilaterally refactor the
+single-process model.
 
 ---
 

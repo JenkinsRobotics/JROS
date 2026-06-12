@@ -133,6 +133,14 @@ class Transcript(TopicMessage):
     language: str = "en"
     is_final: bool = True
     duration_s: float = 0.0
+    # Speech-side timing (VoiceLLM metrics port): ``time.perf_counter()``
+    # stamps from the STT engine — when the VAD silence hangover closed
+    # the phrase, and when the accurate transcription finished. 0.0 =
+    # unknown (engine doesn't report). perf_counter values are only
+    # comparable WITHIN one process — fine for the voice loop's
+    # speech-end→speak latency, meaningless across machines.
+    speech_end_pc: float = 0.0
+    stt_done_pc: float = 0.0
 
 
 class UserSpeechStart(TopicMessage):

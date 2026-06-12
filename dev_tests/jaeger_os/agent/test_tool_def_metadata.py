@@ -49,7 +49,11 @@ def test_defaults_match_pre_metadata_construction():
     t = _td()
     assert t.toolset == ""
     assert t.permission_tier == ""
-    assert t.side_effect == "read"
+    # "" = unclassified — the conservative default. The old "read"
+    # default silently classified every unannotated tool as
+    # side-effect-free, which would have made the loop parallel-
+    # dispatch and dedup write-side tools.
+    assert t.side_effect == ""
     assert t.max_result_chars == 0
     assert t.check_fn is None
     assert t.requires_env == ()

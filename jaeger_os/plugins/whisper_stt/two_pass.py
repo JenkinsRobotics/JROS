@@ -48,7 +48,7 @@ class _VadWorker(threading.Thread):
         self,
         mic: _MicStream,
         fast_model,
-        phrase_q: "queue.Queue[tuple[np.ndarray, str]]",
+        phrase_q: "queue.Queue[tuple[np.ndarray, str, float]]",
         stop_event: threading.Event,
         *,
         sample_rate: int,
@@ -60,6 +60,8 @@ class _VadWorker(threading.Thread):
         min_speech_ms: int,
         max_speech_ms: int,
         barge_in_ms: int = 200,
+        short_phrase_max_ms: int = 1500,
+        short_phrase_hangover_ms: int = 350,
     ) -> None:
         import webrtcvad
 
@@ -72,6 +74,16 @@ class _VadWorker(threading.Thread):
         self.frame_ms = frame_ms
         self.vad = webrtcvad.Vad(vad_aggressiveness)
         self.silence_blocks_to_end = max(1, silence_hangover_ms // frame_ms)
+        # Short-phrase early commit (VoiceLLM operator-feedback port):
+        # quick utterances ("yes please", "good night") don't carry
+        # mid-sentence pauses, so they commit after a much shorter
+        # hangover instead of waiting out the full one — ~40% snappier
+        # on exactly the turns where latency is most noticeable.
+        # ``short_phrase_max_ms=0`` disables the path.
+        self.short_phrase_max_blocks = max(0, short_phrase_max_ms // frame_ms)
+        self.short_hangover_blocks = max(
+            1, short_phrase_hangover_ms // frame_ms,
+        )
         self.min_speech_blocks = max(1, min_speech_ms // frame_ms)
         self.max_speech_blocks = max(self.min_speech_blocks, max_speech_ms // frame_ms)
         self.pre_roll_blocks = max(0, pre_roll_ms // frame_ms)
@@ -104,6 +116,10 @@ class _VadWorker(threading.Thread):
         return self.vad.is_speech(pcm, self.sample_rate)
 
     def _finalize(self, chunks: list[np.ndarray]) -> None:
+        # The moment the hangover closed the phrase — the honest
+        # "user stopped talking" timestamp every downstream latency
+        # number hangs off (VoiceLLM metrics port).
+        t_speech_end = time.perf_counter()
         audio = np.concatenate(chunks, axis=0).astype(np.float32).reshape(-1)
         audio = np.concatenate([audio, np.zeros(self.post_pad_samples, dtype=np.float32)])
         try:
@@ -113,7 +129,7 @@ class _VadWorker(threading.Thread):
             print(f"[stt-fast] {exc}", file=sys.stderr)
             text = ""
         if text:
-            self.phrase_q.put((audio, text))
+            self.phrase_q.put((audio, text, t_speech_end))
 
     def run(self) -> None:
         pre_roll: collections.deque[np.ndarray] = collections.deque(maxlen=self.pre_roll_blocks)
@@ -163,11 +179,24 @@ class _VadWorker(threading.Thread):
                 except Exception:
                     pass
 
+            # Short utterances commit on the shorter hangover — they
+            # don't carry mid-sentence pauses, so waiting out the full
+            # window is pure dead air. ``speech_blocks`` counts voiced
+            # frames only (trailing silence increments ``silent_blocks``
+            # instead), so it IS the utterance length.
+            hangover_blocks = (
+                self.short_hangover_blocks
+                if (
+                    self.short_phrase_max_blocks
+                    and speech_blocks <= self.short_phrase_max_blocks
+                )
+                else self.silence_blocks_to_end
+            )
             phrase_done = (
                 in_speech
                 and speech_blocks >= self.min_speech_blocks
                 and (
-                    silent_blocks >= self.silence_blocks_to_end
+                    silent_blocks >= hangover_blocks
                     or speech_blocks >= self.max_speech_blocks
                 )
             )
@@ -215,6 +244,13 @@ class WhisperSTTTwoPass:
         min_speech_ms: int = 400,
         max_speech_ms: int = 8000,
         barge_in_ms: int = 200,
+        # Short-phrase early commit (VoiceLLM operator-feedback port):
+        # utterances shorter than ``short_phrase_max_ms`` commit after
+        # only ``short_phrase_hangover_ms`` of silence — quick replies
+        # ("yes please", "good night") land ~40% faster. Set
+        # ``short_phrase_max_ms=0`` to disable.
+        short_phrase_max_ms: int = 1500,
+        short_phrase_hangover_ms: int = 350,
         mic_queue_max_frames: int = 200,
         input_device: Any = None,
         aec: Any = None,
@@ -258,7 +294,7 @@ class WhisperSTTTwoPass:
             audio_backend=audio_backend,
             voice_processing=voice_processing,
         )
-        self._phrase_q: queue.Queue[tuple[np.ndarray, str]] = queue.Queue()
+        self._phrase_q: queue.Queue[tuple[np.ndarray, str, float]] = queue.Queue()
         self._stop = threading.Event()
         self._worker = _VadWorker(
             self.mic, self._fast, self._phrase_q, self._stop,
@@ -268,10 +304,18 @@ class WhisperSTTTwoPass:
             silence_hangover_ms=silence_hangover_ms,
             min_speech_ms=min_speech_ms, max_speech_ms=max_speech_ms,
             barge_in_ms=barge_in_ms,
+            short_phrase_max_ms=short_phrase_max_ms,
+            short_phrase_hangover_ms=short_phrase_hangover_ms,
         )
 
         self._state = "WAKE"
         self._followup_deadline = 0.0
+        # Speech-side timing of the most recent committed phrase
+        # (VoiceLLM metrics port). Read by the audio session right
+        # after ``next_phrase`` returns — same thread, no race.
+        #   speech_end — perf_counter when the hangover closed the phrase
+        #   stt_done   — perf_counter when the accurate pass finished
+        self.last_phrase_timing: dict[str, float] = {}
 
     # ── Lifecycle ──────────────────────────────────────────────────────
     def start(self) -> None:
@@ -341,7 +385,9 @@ class WhisperSTTTwoPass:
         phrase. Returns the transcript string, or None on timeout."""
         while not self._stop.is_set():
             try:
-                audio, fast_text = self._phrase_q.get(timeout=timeout)
+                audio, fast_text, t_speech_end = self._phrase_q.get(
+                    timeout=timeout,
+                )
             except queue.Empty:
                 # No phrase pending — ONLY now is it safe to expire the
                 # follow-up window.  Doing it before ``get`` lost a race
@@ -423,7 +469,9 @@ class WhisperSTTTwoPass:
                     with self._phrase_q.mutex:
                         self._phrase_q.queue.clear()
                     try:
-                        cmd_audio, cmd_fast = self._phrase_q.get(timeout=6.0)
+                        cmd_audio, cmd_fast, t_speech_end = self._phrase_q.get(
+                            timeout=6.0,
+                        )
                     except queue.Empty:
                         if stt_verbose():
                             print("[no command — back to wake]", flush=True)
@@ -436,5 +484,13 @@ class WhisperSTTTwoPass:
                 continue
 
             self._state = "WAKE"
+            # Speech-side timing for this phrase — speech end stamped
+            # by the VAD worker at hangover close, STT done stamped
+            # here after the accurate pass. The audio session threads
+            # these into the Transcript message.
+            self.last_phrase_timing = {
+                "speech_end": t_speech_end,
+                "stt_done": time.perf_counter(),
+            }
             return command
         return None

@@ -147,6 +147,13 @@ TOOLSETS: dict[str, frozenset[str]] = {
     "media": frozenset({
         "text_to_speech", "listen", "vision_analyze", "image_generate",
     }),
+    "avatar": frozenset({
+        # BETA — these register with ``beta=True``, so they reach the
+        # agent only in dev mode (JAEGER_DEV_MODE=1 / --dev) while
+        # Mochi is the animation testbed. Classified here so the
+        # exhaustive-classification audit holds either way.
+        "set_avatar_state", "play_timeline",
+    }),
     "web": frozenset({
         # ``web_search`` and ``web_extract`` are in CORE; weather is
         # loadable so it doesn't bloat routing for chat-heavy users.
@@ -198,6 +205,7 @@ TOOLSET_SUMMARY: dict[str, str] = {
     "files": "append, delete, patch, search files; list the workspace",
     "code": "shell/terminal, ssh, install packages, venv exec",
     "media": "text-to-speech, mic capture, vision, image generation",
+    "avatar": "avatar face + animation timelines (BETA — dev mode only)",
     "web": "weather lookups (web_search / web_extract are always-on)",
     "memory_granular": "the pre-umbrella remember/recall/forget tools",
     "board": "granular board_view/add/move/update (kanban is always-on)",

@@ -84,11 +84,18 @@ class AudioSessionNode(Node):
         phrase = self.session.next_phrase(timeout=self._poll_timeout_s)
         if not phrase:
             return
+        # Speech-side timing rides the transcript so the voice loop
+        # can report honest user-stops-talking → robot-starts-talking
+        # latency (VoiceLLM metrics port). Same-process perf_counter
+        # values; 0.0 when the engine doesn't report.
+        timing = getattr(self.session, "last_phrase_timing", {}) or {}
         self.bus.publish(topics.Transcript(
             text=phrase,
             is_final=True,
             language="en",
             node_id=self.name,
+            speech_end_pc=float(timing.get("speech_end", 0.0) or 0.0),
+            stt_done_pc=float(timing.get("stt_done", 0.0) or 0.0),
         ))
 
     def teardown(self) -> None:

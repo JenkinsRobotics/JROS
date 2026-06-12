@@ -36,7 +36,7 @@ def test_stale_timeout_fires_when_call_hangs():
         time.sleep(5.0)
         return "should not reach"
 
-    with pytest.raises(StaleCallTimeout, match="no response after"):
+    with pytest.raises(StaleCallTimeout, match="no progress for"):
         interruptible_call(
             _hang, ev, poll_interval=0.05, stale_timeout=0.3,
         )
@@ -355,3 +355,48 @@ def test_stalled_message_mentions_recovery_path():
     stall_messages = [s for s in seen_thoughts if "stalled" in s.lower()]
     assert stall_messages, "expected a 'stalled' notice in the thinking stream"
     assert "jaeger kill" in stall_messages[0]
+
+
+# ── progress-aware stale detection ─────────────────────────────────
+
+
+def test_progress_touches_keep_long_healthy_call_alive():
+    """A call whose worker reports progress (chunks/tokens flowing)
+    must survive a stale_timeout shorter than its total duration —
+    'stale' means silence, not slowness."""
+    from jaeger_os.agent.loop.interrupt import CallProgress
+
+    ev = threading.Event()
+    prog = CallProgress()
+
+    def _slow_but_alive() -> str:
+        for _ in range(8):
+            time.sleep(0.1)   # total 0.8s, well past the 0.3s cap
+            prog.touch()
+        return "finished"
+
+    out = interruptible_call(
+        _slow_but_alive, ev,
+        poll_interval=0.02, stale_timeout=0.3, progress=prog,
+    )
+    assert out == "finished"
+
+
+def test_progress_silence_still_trips_stale():
+    """With a progress beacon attached, a worker that STOPS reporting
+    progress trips the detector after the quiet period."""
+    from jaeger_os.agent.loop.interrupt import CallProgress
+
+    ev = threading.Event()
+    prog = CallProgress()
+
+    def _goes_quiet() -> str:
+        prog.touch()
+        time.sleep(5.0)       # silence — no more touches
+        return "should not reach"
+
+    with pytest.raises(StaleCallTimeout, match="no progress for"):
+        interruptible_call(
+            _goes_quiet, ev,
+            poll_interval=0.02, stale_timeout=0.3, progress=prog,
+        )

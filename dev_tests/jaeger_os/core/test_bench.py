@@ -606,3 +606,68 @@ def test_bench_scope_still_defers_higher_tiers_to_outer():
         # other tests.
         from jaeger_os.core.safety.permissions import DenyAllProvider
         install_policy(PermissionPolicy(confirmation=DenyAllProvider()))
+
+
+# ── v1.2 loop-health telemetry ──────────────────────────────────────
+
+
+def _mk_row(**over):
+    from jaeger_os.core.bench.runner import BenchRow
+    base = dict(
+        id="x", prompt="p", tags=["routing"], tools_called=[],
+        answer="a", elapsed_s=1.0, routing_ok=True, ordered_ok=None,
+        answer_ok=None, no_hallucination=True, safety_ok=None,
+        error=None, case_pass=True,
+    )
+    base.update(over)
+    return BenchRow(**base)
+
+
+def test_loop_health_metrics_aggregates_ttft_and_halts():
+    from jaeger_os.core.bench.runner import _loop_health_metrics
+    rows = [
+        _mk_row(ttft_s=0.4, iterations=2),
+        _mk_row(ttft_s=0.8, iterations=4),
+        _mk_row(ttft_s=None, iterations=1, skipped_final=True),
+        _mk_row(halt_reason="hit max_iterations=24 without a final answer",
+                iterations=24, case_pass=False),
+        _mk_row(halt_reason="interrupted", iterations=3, case_pass=False),
+    ]
+    m = _loop_health_metrics(rows)
+    assert m["ttft_reported"] == 2
+    assert m["ttft_avg_s"] == 0.6
+    assert m["halted_turns"] == 2
+    # Parameterised reasons group by their stem.
+    assert m["halt_reasons"]["hit max_iterations"] == 1
+    assert m["halt_reasons"]["interrupted"] == 1
+    assert m["skip_final_turns"] == 1
+    assert m["avg_iterations"] == round((2 + 4 + 1 + 24 + 3) / 5, 2)
+
+
+def test_loop_health_metrics_in_summary():
+    from jaeger_os.core.bench.runner import summarise
+    rows = [_mk_row(ttft_s=0.5, iterations=2)]
+    summary = summarise(rows)
+    metrics = summary["metrics"]
+    assert metrics["ttft_reported"] == 1
+    assert metrics["ttft_p50_s"] == 0.5
+    assert metrics["halted_turns"] == 0
+    assert metrics["halt_reasons"] == {}
+
+
+def test_v12_corpus_additions_present():
+    from jaeger_os.core.bench.cases import BENCHMARK_VERSION, CASES, all_tags
+    assert BENCHMARK_VERSION == "1.2"
+    ids = {c.id for c in CASES}
+    assert {"ms_chain_hours_file", "ms_chain_status_report",
+            "par_three_reads", "par_two_reads",
+            "mem_snapshot_store", "mem_snapshot_recall"} <= ids
+    assert "parallel" in all_tags()
+    # The deep chains are genuinely 4 tools, ordered.
+    chain = next(c for c in CASES if c.id == "ms_chain_hours_file")
+    assert len(chain.expected_tools) == 4 and chain.ordered
+    # The memory pair crosses sessions (store/recall on different agents).
+    store = next(c for c in CASES if c.id == "mem_snapshot_store")
+    recall = next(c for c in CASES if c.id == "mem_snapshot_recall")
+    assert store.session and recall.session
+    assert store.session != recall.session

@@ -37,6 +37,8 @@ def register_tool(
     *,
     interactive: bool = False,
     dangerous: bool = False,
+    beta: bool = False,
+    side_effect: str = "",
 ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
     """Decorator: bind ``fn`` as the handler for tool ``name``.
 
@@ -64,6 +66,8 @@ def register_tool(
             fn=fn,
             interactive=interactive,
             dangerous=dangerous,
+            beta=beta,
+            side_effect=side_effect,
         ))
         return fn
 
@@ -77,6 +81,8 @@ def register_tool_from_function(
     description: str | None = None,
     interactive: bool = False,
     dangerous: bool = False,
+    beta: bool = False,
+    side_effect: str = "",
 ) -> Any:
     """Decorator that registers ``fn`` by introspecting its signature.
 
@@ -115,6 +121,8 @@ def register_tool_from_function(
             fn=target,
             interactive=interactive,
             dangerous=dangerous,
+            beta=beta,
+            side_effect=side_effect,
         ))
         return target
 

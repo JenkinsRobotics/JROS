@@ -241,3 +241,60 @@ def test_tool_label_leaves_other_tools_unchanged() -> None:
 
     assert _tool_label("read_file") == "read_file"
     assert _tool_label("web_search") == "web_search"
+
+
+# ── /model use mlx — backend switching ──────────────────────────────
+
+
+def _wire_model_switch(ctx, monkeypatch):
+    """Stub the heavy edges of ``/model use``: discovery, yaml persist,
+    and the instance reboot. Returns (cfg, reboots) for assertions."""
+    from jaeger_os.core.instance import schemas as schemas_mod
+    from jaeger_os.core.models import model_discovery as disc_mod
+    import jaeger_os.main as main_mod
+
+    cfg = schemas_mod.Config(
+        instance_name="test",
+        model=schemas_mod.ModelConfig(model_path="/models/old.gguf"),
+    )
+    monkeypatch.setitem(main_mod._pipeline, "config", cfg)
+    monkeypatch.setattr(
+        disc_mod, "discover_local_mlx",
+        lambda: [{
+            "name": "Qwen3.5-9B-MLX-4bit",
+            "path": "/models/mlx/Qwen3.5-9B-MLX-4bit",
+            "size_gb": 5.1, "source": "lm studio",
+        }],
+    )
+    monkeypatch.setattr(schemas_mod, "dump_yaml", lambda path, c: None)
+    reboots: list[str] = []
+    monkeypatch.setattr(ctx.tui, "switch_instance", reboots.append)
+    return cfg, reboots
+
+
+def test_model_use_mlx_switches_backend(ctx, monkeypatch) -> None:
+    slash_mod = slash
+    cfg, reboots = _wire_model_switch(ctx, monkeypatch)
+    slash_mod.dispatch("/model use mlx Qwen3.5-9B-MLX-4bit", ctx)
+    assert cfg.model.backend == "mlx_lm"
+    assert cfg.model.model_path == "/models/mlx/Qwen3.5-9B-MLX-4bit"
+    assert cfg.external_model.enabled is False
+    assert reboots  # the brain reboot was requested
+
+
+def test_model_use_mlx_single_model_autoselects(ctx, monkeypatch) -> None:
+    cfg, reboots = _wire_model_switch(ctx, monkeypatch)
+    slash.dispatch("/model use mlx", ctx)  # no name — one candidate
+    assert cfg.model.backend == "mlx_lm"
+    assert cfg.model.model_path.endswith("Qwen3.5-9B-MLX-4bit")
+    assert reboots
+
+
+def test_model_use_local_resets_backend_from_mlx(ctx, monkeypatch) -> None:
+    cfg, reboots = _wire_model_switch(ctx, monkeypatch)
+    cfg.model.backend = "mlx_lm"  # previously on MLX
+    slash.dispatch("/model use local", ctx)
+    # Without the reset, ``backend: mlx_lm`` pointed at a .gguf fails
+    # to load on the next boot.
+    assert cfg.model.backend == "llama_cpp_python"
+    assert reboots

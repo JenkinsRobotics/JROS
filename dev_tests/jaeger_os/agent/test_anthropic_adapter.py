@@ -328,3 +328,120 @@ def test_health_check_returns_failure_on_client_exception():
     assert health["ok"] is False
     assert "RuntimeError" in health["detail"]
     assert "boom" in health["detail"]
+
+
+# ── transport-level streaming (call) ───────────────────────────────
+
+
+def test_call_prefers_messages_stream_and_returns_final_message():
+    """When the client exposes ``messages.stream``, ``call`` iterates
+    the events (feeding the progress beacon) and returns
+    ``get_final_message()`` — the same object shape ``create``
+    returns, so ``parse_response`` is unchanged."""
+    import threading
+
+    final = _mk_response(["streamed answer"])
+
+    class _FakeStreamCtx:
+        def __init__(self) -> None:
+            self.entered = False
+            self.exited = False
+
+        def __enter__(self):
+            self.entered = True
+            return self
+
+        def __exit__(self, *exc):
+            self.exited = True
+            return False
+
+        def __iter__(self):
+            return iter(["event1", "event2", "event3"])
+
+        def get_final_message(self):
+            return final
+
+    ctx = _FakeStreamCtx()
+
+    class _StreamingMessages:
+        def __init__(self) -> None:
+            self.last_kwargs = None
+
+        def stream(self, **kwargs):
+            self.last_kwargs = kwargs
+            return ctx
+
+        def create(self, **_):
+            raise AssertionError("create must not be used when stream exists")
+
+    class _StreamingClient:
+        def __init__(self) -> None:
+            self.messages = _StreamingMessages()
+
+    client = _StreamingClient()
+    adapter = AnthropicAdapter(api_key="dummy", client=client)
+    raw = adapter.call(
+        {"model": "m", "max_tokens": 16, "messages": []},
+        threading.Event(),
+    )
+    assert raw is final
+    assert ctx.entered and ctx.exited
+    assert client.messages.last_kwargs["model"] == "m"
+
+
+def test_call_interrupt_mid_stream_closes_stream_and_raises():
+    """An interrupt observed between stream events must exit the
+    context manager (closing the HTTP stream → the provider stops
+    generating) and surface AgentInterrupted."""
+    import threading
+
+    from jaeger_os.agent.loop.interrupt import AgentInterrupted
+
+    ev = threading.Event()
+
+    class _FakeStreamCtx:
+        def __init__(self) -> None:
+            self.exited = False
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            self.exited = True
+            return False
+
+        def __iter__(self):
+            def _gen():
+                yield "event1"
+                ev.set()
+                yield "event2"
+                yield "event3"
+            return _gen()
+
+        def get_final_message(self):
+            raise AssertionError("must not aggregate after interrupt")
+
+    ctx = _FakeStreamCtx()
+
+    class _StreamingClient:
+        class messages:  # noqa: N801 — mimics SDK attribute shape
+            @staticmethod
+            def stream(**_):
+                return ctx
+
+    adapter = AnthropicAdapter(api_key="dummy", client=_StreamingClient())
+    with pytest.raises(AgentInterrupted):
+        adapter.call({"model": "m", "messages": []}, ev)
+    assert ctx.exited is True
+
+
+def test_call_falls_back_to_create_when_stream_missing():
+    """Injected stubs / exotic gateways without ``messages.stream``
+    keep working through plain ``create``."""
+    import threading
+
+    client = _FakeClient(_mk_response(["plain answer"]))
+    adapter = AnthropicAdapter(api_key="dummy", client=client)
+    raw = adapter.call({"model": "m", "messages": []}, threading.Event())
+    parsed = adapter.parse_response(raw)
+    assert parsed["content"] == "plain answer"

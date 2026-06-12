@@ -17,6 +17,7 @@ from typing import Any
 import pytest
 
 from jaeger_os.agent import LocalLlamaAdapter
+from jaeger_os.agent.loop.interrupt import AgentInterrupted
 
 
 class _FakeLlama:
@@ -441,40 +442,44 @@ def test_call_wires_logits_processor_for_clean_abort():
         proc[0]([1, 2], scores)
 
 
-def test_stale_abort_stops_generation_and_keeps_instance_usable():
-    """End-to-end: a decode that would run forever is stopped by the
-    abort flag when the stall watchdog fires, and a SUBSEQUENT call on
-    the same instance still succeeds (no cascade)."""
+def test_stale_abort_stops_wedged_decode_and_keeps_instance_usable():
+    """End-to-end: a WEDGED decode (no tokens flowing — the logits
+    processor never runs, like a hang inside prefill) trips the
+    no-progress watchdog, the abort flag is set for the worker to
+    honour, the context is reset, and a SUBSEQUENT call on the same
+    instance still succeeds (no cascade)."""
     import time as _time
 
-    class _StallingLlama:
-        """First call blocks in a token loop until the abort flag makes
-        the logits_processor raise (simulating a long decode that
-        honours the processor, like real llama-cpp); later calls return
-        normally — proving the instance is still usable."""
-        def __init__(self) -> None:
+    class _WedgedLlama:
+        """First call hangs WITHOUT producing tokens (the processor is
+        never invoked, so no progress is reported); it polls the abort
+        flag the way a real decode notices ``stopping_criteria`` and
+        exits once the watchdog's on_abandon sets it. Later calls
+        return normally — proving the instance is still usable."""
+        def __init__(self, abort_flag: Any) -> None:
             self.calls = 0
             self.resets = 0
-            self.last_kwargs: dict[str, Any] | None = None
+            self._abort = abort_flag
 
         def reset(self) -> None:
             self.resets += 1
 
         def create_chat_completion(self, **kwargs: Any) -> Any:
-            self.last_kwargs = kwargs
             self.calls += 1
             if self.calls == 1:
-                proc = kwargs.get("logits_processor") or []
                 for _ in range(2000):
-                    for p in proc:
-                        p([1], [0.0])  # raises _AbortGeneration when flag set
+                    if self._abort.is_set():
+                        from jaeger_os.agent.adapters.local_llama import (
+                            _AbortGeneration,
+                        )
+                        raise _AbortGeneration()
                     _time.sleep(0.005)
             return _mk_response("partial")
 
-    llama = _StallingLlama()
-    a = LocalLlamaAdapter(llama=llama)
-    # Tight stale timeout → watchdog fires → on_abandon sets flag →
-    # the spinning "decode" sees it and returns → join completes.
+    a = LocalLlamaAdapter(llama=_FakeLlama(_mk_response("seed")))
+    llama = _WedgedLlama(a._abort_flag)
+    a._llama = llama
+    a._client = None  # rebuild facade around the wedged stub
     with pytest.raises(Exception) as ei:
         a.call({"model": "x", "messages": []}, threading.Event(),
                stale_timeout=0.2)
@@ -483,10 +488,36 @@ def test_stale_abort_stops_generation_and_keeps_instance_usable():
     # starts clean (prevents the post-abort segfault cascade).
     assert llama.resets >= 1
     # The instance is NOT poisoned: a fresh call still works.
-    a._abort_flag.clear()
     out = a.call({"model": "x", "messages": []}, threading.Event())
     assert out is not None
     assert llama.calls >= 2
+
+
+def test_token_progress_prevents_false_stall_on_slow_decode():
+    """A slow-but-HEALTHY decode (tokens flowing, total time well past
+    the stale cap) must NOT be killed: the per-token progress beacon
+    keeps resetting the no-progress timer. This is the daily-driver
+    case the old total-elapsed semantics broke — every long local
+    answer died at the cap."""
+    import time as _time
+
+    class _SlowHealthyLlama:
+        def create_chat_completion(self, **kwargs: Any) -> Any:
+            proc = kwargs.get("logits_processor") or []
+            # ~0.6s of 'decoding', touching progress every 20ms.
+            for _ in range(30):
+                for p in proc:
+                    p([1], [0.0])
+                _time.sleep(0.02)
+            return _mk_response("long answer, finished healthy")
+
+    a = LocalLlamaAdapter(llama=_SlowHealthyLlama())
+    # stale cap far below total duration; with per-token progress the
+    # call must still complete.
+    out = a.call({"model": "x", "messages": []}, threading.Event(),
+                 stale_timeout=0.2)
+    parsed = a.parse_response(out)
+    assert parsed["content"] == "long answer, finished healthy"
 
 
 def test_parse_response_decodes_native_tool_calls():
@@ -742,28 +773,88 @@ def test_in_process_call_raises_stale_timeout_when_model_hangs():
     )
 
 
-def test_in_process_call_ignores_caller_interrupt_event():
-    """Local llama-cpp must not abandon the decode thread when the
-    agent interrupt event is already set; the loop discards the result
-    after return instead."""
+def test_in_process_call_honours_caller_interrupt_event():
+    """The REAL interrupt event flows through to ``interruptible_call``
+    with the cooperative-abort hooks attached.
+
+    History: an earlier revision swapped in an uncancellable dummy
+    event, so a voice barge-in mid-decode did nothing until the
+    generation ran to completion — minutes of dead air on a reasoning
+    model. The cooperative abort (on_abandon sets the abort flag, the
+    logits processor stops the decode at the next token, the context
+    is reset) makes interrupting exactly as safe as the stall path,
+    so the event must NOT be blocked any more."""
     import threading
     from unittest.mock import patch
 
     fake = _FakeLlama(_mk_response("ok"))
     a = LocalLlamaAdapter(llama=fake)
     caller_event = threading.Event()
-    caller_event.set()
     seen: dict[str, Any] = {}
 
     def _spy(fn, ev, **kw):
         seen["same_event"] = ev is caller_event
-        seen["event_set"] = ev.is_set()
+        seen["has_abandon_hook"] = kw.get("on_abandon") is not None
+        seen["joins_worker"] = (kw.get("join_on_abandon") or 0) > 0
+        seen["has_progress"] = kw.get("progress") is not None
         return fn()
 
     with patch("jaeger_os.agent.adapters.openai.interruptible_call", _spy):
         a.call({"model": "x", "messages": []}, caller_event)
 
-    assert seen == {"same_event": False, "event_set": False}
+    assert seen == {
+        "same_event": True,
+        "has_abandon_hook": True,
+        "joins_worker": True,
+        "has_progress": True,
+    }
+
+
+def test_interrupt_mid_decode_aborts_cooperatively_and_resets():
+    """End-to-end: an interrupt that fires while the decode is running
+    stops the generation at the next token (via the abort flag), the
+    context is reset, and AgentInterrupted reaches the caller."""
+    import threading
+    import time as _time
+
+    class _SpinningLlama:
+        """Simulates a decode in progress: invokes the logits processor
+        per 'token' (like real llama-cpp) until the abort raises."""
+        def __init__(self) -> None:
+            self.resets = 0
+            self.last_kwargs: dict[str, Any] | None = None
+
+        def reset(self) -> None:
+            self.resets += 1
+
+        def create_chat_completion(self, **kwargs: Any) -> Any:
+            self.last_kwargs = kwargs
+            proc = kwargs.get("logits_processor") or []
+            for _ in range(2000):
+                for p in proc:
+                    p([1], [0.0])  # raises _AbortGeneration once flag set
+                _time.sleep(0.005)
+            return _mk_response("ran to completion")
+
+    llama = _SpinningLlama()
+    a = LocalLlamaAdapter(llama=llama)
+    ev = threading.Event()
+
+    def _barge_in() -> None:
+        _time.sleep(0.15)
+        ev.set()
+
+    t = threading.Thread(target=_barge_in)
+    t.start()
+    started = _time.perf_counter()
+    with pytest.raises(AgentInterrupted):
+        a.call({"model": "x", "messages": []}, ev, stale_timeout=30.0)
+    elapsed = _time.perf_counter() - started
+    t.join()
+    # The 2000×5ms spin would run ~10s to completion; the barge-in must
+    # cut it short within the poll+join budget.
+    assert elapsed < 3.0
+    assert llama.resets >= 1
 
 
 def test_call_does_not_mutate_input_messages():

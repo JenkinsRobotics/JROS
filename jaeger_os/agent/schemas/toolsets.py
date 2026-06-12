@@ -145,6 +145,16 @@ JAEGER_TOOLSETS: dict[str, ToolsetDef] = {
         tools=["text_to_speech", "vision_analyze", "image_generate", "listen"],
         includes=[],
     ),
+    "avatar": ToolsetDef(
+        description=(
+            "Avatar face expressions + animation timelines. BETA — the "
+            "tools register beta=True, so they only reach the agent in "
+            "dev mode (JAEGER_DEV_MODE=1 / --dev) while Mochi is the "
+            "animation testbed."
+        ),
+        tools=["set_avatar_state", "play_timeline"],
+        includes=[],
+    ),
     "delegate": ToolsetDef(
         description="Hand off subtasks to a fresh agent, clarify, or ask for help.",
         tools=["delegate_task", "clarify", "help_me"],

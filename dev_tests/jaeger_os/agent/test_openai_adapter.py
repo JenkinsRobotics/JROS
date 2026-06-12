@@ -286,7 +286,9 @@ def test_format_messages_temperature_top_p_max_tokens_carried_through():
 
 def test_call_dispatches_to_chat_completions_with_merged_kwargs():
     fake = _FakeClient(_mk_response("hi"))
-    a = OpenAIAdapter(provider="openai", model="x", client=fake)
+    a = OpenAIAdapter(
+        provider="openai", model="x", stream_transport=False, client=fake,
+    )
     out = a.call(
         {"model": "x", "messages": [], "max_tokens": 4096, "temperature": 0.0, "top_p": 0.95},
         threading.Event(),
@@ -297,16 +299,145 @@ def test_call_dispatches_to_chat_completions_with_merged_kwargs():
     assert fake.chat.completions.last_kwargs["seed"] == 42
 
 
-def test_call_passes_stream_true_when_streaming_enabled():
-    fake = _FakeClient(_mk_response("hi"))
-    a = OpenAIAdapter(provider="openai", model="x", streaming=True, client=fake)
+def _mk_chunk(
+    content: str | None = None,
+    tool_call: dict[str, Any] | None = None,
+    finish_reason: str | None = None,
+    usage: dict[str, int] | None = None,
+) -> Any:
+    """One streaming chunk in the SDK's delta shape."""
+    tcs = None
+    if tool_call is not None:
+        tcs = [SimpleNamespace(
+            index=tool_call.get("index", 0),
+            id=tool_call.get("id"),
+            function=SimpleNamespace(
+                name=tool_call.get("name"),
+                arguments=tool_call.get("arguments"),
+            ),
+        )]
+    delta = SimpleNamespace(content=content, tool_calls=tcs)
+    choice = SimpleNamespace(delta=delta, finish_reason=finish_reason)
+    return SimpleNamespace(
+        choices=[choice],
+        usage=SimpleNamespace(**usage) if usage else None,
+    )
+
+
+class _FakeStream:
+    """Iterable of chunks with a ``close`` the aggregator must call."""
+
+    def __init__(self, chunks: list[Any]) -> None:
+        self._chunks = list(chunks)
+        self.closed = False
+
+    def __iter__(self):
+        return iter(self._chunks)
+
+    def close(self) -> None:
+        self.closed = True
+
+
+def test_call_streams_transport_by_default_and_aggregates():
+    """Default posture: the request is streamed (``stream=True`` on the
+    wire) and the chunks are re-aggregated into the plain response
+    shape ``parse_response`` reads — fragmented tool-call arguments
+    reassembled, usage captured, stream closed."""
+    stream = _FakeStream([
+        _mk_chunk(content="Hello "),
+        _mk_chunk(content="world"),
+        _mk_chunk(tool_call={"index": 0, "id": "c1", "name": "bump",
+                             "arguments": '{"x"'}),
+        _mk_chunk(tool_call={"index": 0, "arguments": ": 5}"}),
+        _mk_chunk(finish_reason="tool_calls",
+                  usage={"prompt_tokens": 7, "completion_tokens": 3,
+                         "total_tokens": 10}),
+    ])
+
+    class _StreamingClient:
+        def __init__(self) -> None:
+            self.chat = SimpleNamespace(completions=self)
+            self.last_kwargs: dict[str, Any] | None = None
+
+        def create(self, **kwargs: Any) -> Any:
+            self.last_kwargs = kwargs
+            return stream
+
+    client = _StreamingClient()
+    a = OpenAIAdapter(provider="openai", model="x", client=client)
+    raw = a.call({"model": "x", "messages": []}, threading.Event())
+
+    assert client.last_kwargs["stream"] is True
+    # The real OpenAI endpoint also gets the usage opt-in.
+    assert client.last_kwargs["stream_options"] == {"include_usage": True}
+    assert stream.closed is True
+
+    parsed = a.parse_response(raw)
+    assert parsed["content"] == "Hello world"
+    assert parsed["tool_calls"][0]["name"] == "bump"
+    assert parsed["tool_calls"][0]["arguments"] == {"x": 5}
+    assert parsed["finish_reason"] == "tool_calls"
+    assert raw["usage"]["total_tokens"] == 10
+
+
+def test_call_compat_providers_do_not_send_stream_options():
+    """LM Studio / Ollama / Gemini-compat servers may reject the
+    OpenAI-only ``stream_options`` field — it must stay off the wire
+    for every provider except the real endpoint."""
+    stream = _FakeStream([_mk_chunk(content="ok", finish_reason="stop")])
+
+    class _StreamingClient:
+        def __init__(self) -> None:
+            self.chat = SimpleNamespace(completions=self)
+            self.last_kwargs: dict[str, Any] | None = None
+
+        def create(self, **kwargs: Any) -> Any:
+            self.last_kwargs = kwargs
+            return stream
+
+    client = _StreamingClient()
+    a = OpenAIAdapter(provider="lmstudio", model="x", client=client)
     a.call({"model": "x", "messages": []}, threading.Event())
-    assert fake.chat.completions.last_kwargs["stream"] is True
+    assert client.last_kwargs["stream"] is True
+    assert "stream_options" not in client.last_kwargs
 
 
-def test_call_omits_stream_when_streaming_disabled():
+def test_call_interrupt_mid_stream_closes_and_raises():
+    """An interrupt observed between chunks must close the HTTP stream
+    (so the server stops generating) and surface AgentInterrupted."""
+    from jaeger_os.agent.loop.interrupt import AgentInterrupted
+
+    ev = threading.Event()
+
+    class _EndlessStream(_FakeStream):
+        def __iter__(self):
+            def _gen():
+                yield _mk_chunk(content="a")
+                ev.set()  # interrupt arrives while streaming
+                yield _mk_chunk(content="b")
+                yield _mk_chunk(content="c")
+            return _gen()
+
+    stream = _EndlessStream([])
+
+    class _StreamingClient:
+        def __init__(self) -> None:
+            self.chat = SimpleNamespace(completions=self)
+
+        def create(self, **kwargs: Any) -> Any:
+            return stream
+
+    a = OpenAIAdapter(provider="openai", model="x", client=_StreamingClient())
+    with pytest.raises(AgentInterrupted):
+        a.call({"model": "x", "messages": []}, ev)
+    assert stream.closed is True
+
+
+def test_call_omits_stream_when_transport_streaming_disabled():
     fake = _FakeClient(_mk_response("hi"))
-    a = OpenAIAdapter(provider="openai", model="x", streaming=False, client=fake)
+    a = OpenAIAdapter(
+        provider="openai", model="x", stream_transport=False, client=fake,
+    )
     a.call({"model": "x", "messages": []}, threading.Event())
     assert "stream" not in fake.chat.completions.last_kwargs
 
@@ -402,11 +533,15 @@ def test_parse_response_accepts_dict_shape_for_streaming_aggregators():
 # ── capabilities + health ──────────────────────────────────────────
 
 
-def test_supports_streaming_follows_constructor_flag():
-    a = OpenAIAdapter(provider="openai", model="x", streaming=False)
-    b = OpenAIAdapter(provider="openai", model="x", streaming=True)
+def test_supports_streaming_is_false_token_streaming_not_exposed():
+    """Transport-level streaming is an implementation detail of
+    ``call`` — the loop still receives one whole message per step, so
+    the capability the loop would key off stays False regardless of
+    the transport flag."""
+    a = OpenAIAdapter(provider="openai", model="x", stream_transport=False)
+    b = OpenAIAdapter(provider="openai", model="x", stream_transport=True)
     assert a.supports("streaming") is False
-    assert b.supports("streaming") is True
+    assert b.supports("streaming") is False
 
 
 def test_supports_parallel_tools_true_by_default():
@@ -478,7 +613,8 @@ def test_openai_adapter_drives_jaeger_agent_loop_to_completion():
                 return self._responses.pop(0)
 
         adapter = OpenAIAdapter(
-            provider="openai", model="x", client=_ScriptedClient(responses),
+            provider="openai", model="x", stream_transport=False,
+            client=_ScriptedClient(responses),
         )
         agent = JaegerAgent(adapter=adapter)
         result = agent.run_turn("bump 5")

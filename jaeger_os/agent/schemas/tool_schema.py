@@ -15,15 +15,33 @@ Flags worth knowing:
     Reserved for tools like ``move_joint``, ``drive_velocity``,
     ``send_message`` — anything the operator might want confirmed,
     audited, or scoped behind a permission tier on hardware.
+  • ``beta=True``         — still being stabilised (e.g. the avatar /
+    animation tools while Mochi is the testbed). Beta tools are
+    excluded from the agent's catalogue — invisible to the model AND
+    undispatchable — unless dev mode is on (``JAEGER_DEV_MODE=1``),
+    so a half-tested tool can't break a daily-driver session.
 """
 
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, field
+import os
+from dataclasses import dataclass
 from typing import Any, Callable
 
 from pydantic import BaseModel
+
+
+def dev_mode_enabled() -> bool:
+    """Whether this process runs in dev mode (``JAEGER_DEV_MODE`` set
+    to ``1`` / ``true`` / ``yes`` / ``on``).
+
+    Dev mode is the gate for ``ToolDef.beta`` tools: outside it the
+    agent never sees them. Read per call (not cached) so tests and a
+    long-lived daemon can flip it without a restart."""
+    return (os.environ.get("JAEGER_DEV_MODE") or "").strip().lower() in (
+        "1", "true", "yes", "on",
+    )
 
 
 @dataclass
@@ -48,9 +66,14 @@ class ToolDef:
         decorator on ``fn`` enforces. Carried here so the doctor
         and ``describe_tool`` can report it without re-introspecting.
       * ``side_effect``       — one of ``"read"`` / ``"write"`` /
-        ``"external"`` / ``"hardware"``. Coarser than tier; used
-        by the audit log and the agent's reasoning about "is this
-        safe to call without asking?".
+        ``"external"`` / ``"hardware"``, or ``""`` (unclassified —
+        the default). The loop treats ONLY an explicit ``"read"``
+        as safe for parallel dispatch, batch dedup, and
+        changing-result polling tolerance; unclassified tools get
+        the conservative write-side treatment. The old default of
+        ``"read"`` silently classified every unannotated tool as
+        side-effect-free, which would have parallel-dispatched
+        ``speak`` and friends.
       * ``max_result_chars``  — per-tool result size budget. When
         set, the context guard truncates this tool's result at
         this cap instead of the global one. ``0`` = use the
@@ -72,10 +95,11 @@ class ToolDef:
     fn: Callable[..., Any]
     interactive: bool = False
     dangerous: bool = False
+    beta: bool = False
     # Registry metadata — see class docstring.
     toolset: str = ""
     permission_tier: str = ""
-    side_effect: str = "read"
+    side_effect: str = ""
     max_result_chars: int = 0
     check_fn: Callable[[], bool] | None = None
     requires_env: tuple[str, ...] = ()
@@ -166,4 +190,4 @@ class ToolDef:
         return self.fn(**validated.model_dump())
 
 
-__all__ = ["ToolDef"]
+__all__ = ["ToolDef", "dev_mode_enabled"]

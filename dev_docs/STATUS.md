@@ -28,6 +28,63 @@ has actually been exercised and works.
 
 ---
 
+## Findings & fixes — 2026-06-12 hardware framework + JP01 sim package (0.5.0)
+
+Implements docs/JROS_HARDWARE_FRAMEWORK_PLAN.md §4.2 steps 1+2.
+Everything below is unit-tested (56 new tests, all headless against
+MockTransport); **nothing has touched real hardware** — every JP01
+controller ships `simulated: true` and the capability tools are
+beta-gated (`JAEGER_DEV_MODE=1` to see them) until live-walked.
+
+- **`jaeger_os/hardware/` framework** — `Transport` ABC
+  (`SerialTransport` lazy-pyserial, `ZmqReqTransport` with the JP01
+  relay target-wrapping + REQ reopen-on-timeout, `MockTransport`);
+  `Protocol` ABC (`AsciiBracketProtocol` — the JP01
+  `HEADER[payload]\n` dialect with partial-line buffering +
+  heartbeat classification; `JsonLineProtocol`); `Link` =
+  Transport × Protocol with primary→relay fallback and a
+  crash-proof RX reader thread; `load_package` — topology.yaml →
+  msgspec-validated `PackageSpec` (unknown fields, dangling
+  controller refs, dotless capability names, bad estop scopes, and
+  `requires_framework` version mismatches all refuse loudly at load).
+- **Capabilities → ordinary tools** — `register_package_capabilities`
+  groups `subsystem.action` capabilities into per-subsystem umbrella
+  tools (kanban/memory precedent). Dispatch order per call:
+  permission tier → e-stop latch (HARDWARE-tier actions fail closed;
+  reads and lights keep working; `allow_when_latched` exempts
+  `motion.stop`) → link health (offline = typed retryable error +
+  `check_fn` hides the tool) → per-action Pydantic validation →
+  handler. Nothing raises into the agent loop.
+- **Safety** — `/act/estop` latched topic (`EStop` struct) +
+  `EStopLatch`: any bus publisher latches; registered node-local L1
+  stops run once on engage; release is operator-only (non-operator
+  `engaged=False` on the wire is ignored). `/sense/node_health`
+  (`NodeHealth`) published at 1 Hz per controller by the package
+  runtime. Both structs registered in `TOPIC_TO_CLASS`.
+- **Permissions change** — tier 3 (HARDWARE) no longer hard-denies:
+  it routes through the confirmation provider like tiers 1/2/4. The
+  old unconditional deny was a leftover from the module's
+  Lilith-on-a-laptop origin ("reserved for JROS" — this IS JROS).
+  Fail-safe unchanged: no provider wired → `DenyAllProvider` refuses.
+- **JP01 package** (`hardware/packages/jp01/`) — topology.yaml with
+  surveyed truth (ports, bauds, Jetson relay path, no-IMU,
+  no-L0-watchdog warning flag); MC01/AVC01/VCC01 adapters that
+  implement the generic node Protocols (stock `MotorNode`/`LightNode`
+  drive them from `/act/motion`//`/act/light`) plus capability verbs
+  and an L1 `estop()`; firmware-shaped `simulator()` responders;
+  near-verbatim `devices/` builder ports; `boot.py` resolving the
+  topology's `adapter:` refs (declared = wired — no parallel map),
+  with atexit teardown that neutralizes motors + blanks LEDs.
+- **Agent surface** — `motion` / `lights` / `robot_vision` /
+  `telemetry` umbrella tools; `motion.stop` = MM[0,0,0] + L2 latch
+  (the agent can always stop, only the operator un-stops).
+  `config.yaml: hardware.package: jp01` boots it (warm-job,
+  best-effort, degrades per-controller).
+- Suite: **2,182 passed** (+57). Pre-existing skips unchanged
+  (lilith-face Mochi backdrop, process-slot flake).
+
+---
+
 ## Findings & fixes — 2026-06-12 VoiceLLM-updates port (0.5.0)
 
 VoiceLLM (the end-to-end voice testbed) shipped its own review fixes

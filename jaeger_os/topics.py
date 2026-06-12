@@ -283,6 +283,37 @@ class AudioOutFrame(TopicMessage):
     channels: int = 1
 
 
+ACT_ESTOP = "/act/estop"
+SENSE_NODE_HEALTH = "/sense/node_health"
+
+
+class EStop(TopicMessage):
+    """System e-stop — L2 of the hardware safety contract (see
+    docs/JROS_HARDWARE_FRAMEWORK_PLAN.md §2.8). Publishing with
+    ``engaged=True`` LATCHES the stop: every hardware node in the
+    package's ``safety.estop_scope`` executes its node-local stop on
+    receipt, and motion capabilities refuse while latched. Release
+    (``engaged=False``) is an explicit operator action — the framework
+    never auto-releases."""
+    topic: Literal["/act/estop"] = ACT_ESTOP
+    engaged: bool = True
+    reason: str = ""
+    source: str = ""   # "operator" / "agent" / "button" / "supervisor"
+
+
+class NodeHealth(TopicMessage):
+    """Periodic node liveness heartbeat. ``state`` mirrors
+    ``jaeger_os.nodes.base.NodeState`` values; ``link_connected`` and
+    ``last_controller_rx_age_s`` describe the hardware link when the
+    node owns one (0-default = not applicable)."""
+    topic: Literal["/sense/node_health"] = SENSE_NODE_HEALTH
+    node: str = ""
+    state: str = ""
+    link_connected: bool = False
+    last_controller_rx_age_s: float = 0.0
+    detail: str = ""
+
+
 class MotionCommand(TopicMessage):
     """Brain → motor_ctrl (JP01-MC01 ESP32): motion command.
 
@@ -459,6 +490,8 @@ TOPIC_TO_CLASS: dict[str, type[TopicMessage]] = {
     ACT_ANIMATION_STOP: AnimationStop,
     ACT_TIMELINE: TimelineCommand,
     ACT_SPEECH_STOP: SpeechStop,
+    ACT_ESTOP: EStop,
+    SENSE_NODE_HEALTH: NodeHealth,
 }
 
 ALL_TOPICS: tuple[str, ...] = tuple(TOPIC_TO_CLASS.keys())
@@ -479,14 +512,14 @@ __all__ = [
     "SENSE_CAMERA_FRAME", "SENSE_VISION", "SENSE_VISION_ANALYSIS",
     "SENSE_TOUCH", "SENSE_PROPRIO", "SENSE_SPOKEN",
     "ACT_SPEECH", "ACT_AUDIO_OUT", "ACT_MOTION", "ACT_LIGHT",
-    "ACT_SPEECH_STOP",
+    "ACT_SPEECH_STOP", "ACT_ESTOP", "SENSE_NODE_HEALTH",
     "ALL_TOPICS",
     # Envelope + concrete types
     "TopicMessage",
     "AudioInFrame", "Transcript", "UserSpeechStart", "CameraFrame",
     "TouchReading", "ProprioReading", "SpokenAck",
     "SpeechCommand", "AudioOutFrame", "MotionCommand", "LightCommand",
-    "SpeechStop",
+    "SpeechStop", "EStop", "NodeHealth",
     # Registry
     "TOPIC_TO_CLASS", "class_for_topic",
 ]

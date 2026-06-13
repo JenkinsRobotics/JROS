@@ -14,7 +14,7 @@ from pathlib import Path
 
 import pytest
 
-from jaeger_os.nodes.animation.adapters import MathAdapter, MathScript
+from jaeger_os.nodes.software.animation.adapters import MathAdapter, MathScript
 
 
 # ── persona YAML present + parseable ───────────────────────────────

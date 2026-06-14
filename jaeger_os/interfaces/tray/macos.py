@@ -518,5 +518,25 @@ def main(argv: list[str] | None = None) -> int:
     return 0
 
 
+def run_surface(ctx, spec):  # noqa: ARG001 — chassis Surface contract
+    """Chassis Surface factory (jaeger.toml ``[[surface]] tray``).
+
+    J5A stub — declared so the format-0.1 manifest validator's
+    ``factory`` field resolves to a callable. The tray runs as its
+    own ``python -m jaeger_os.interfaces.tray.macos`` subprocess
+    today and stays that way; this stub exists so the manifest
+    is complete. J5B keeps the tray-as-subprocess pattern (the
+    chassis only directly hosts in-shell Qt surfaces) and the
+    manifest surface entry just documents the contract.
+    """
+    raise NotImplementedError(
+        "JROS tray runs as its own subprocess "
+        "(python -m jaeger_os.interfaces.tray.macos); the chassis "
+        "doesn't host non-Qt surfaces in format 0.1. This stub "
+        "exists so jaeger.toml's [[surface]] tray factory resolves; "
+        "it is never invoked at boot."
+    )
+
+
 if __name__ == "__main__":  # pragma: no cover — GUI entry
     sys.exit(main())

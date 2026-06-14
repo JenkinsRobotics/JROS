@@ -1,5 +1,32 @@
 # JROS daemon-architecture planning brief
 
+> ## ⚠ STATUS — DEFERRED 2026-06-14
+>
+> Operator decision: JROS converges on **fused-mode** like Mochi
+> and CC01. The split-mode / persistent-core / Tier-1 daemon
+> architecture this brief proposes is **not** the current direction.
+>
+> What replaced it:
+> * JROS adopted Jaeger app format 0.1 in fused mode (J1–J5B
+>   commits, 2026-06-12 → 2026-06-14)
+> * The chassis owns slot + atexit teardown in the TUI process
+> * `--attach` plumbing was removed from `voice_loop` /
+>   `messaging_gateway` / `tray/macos.py` in J5C (2026-06-14) —
+>   each plugin loads its own model and runs standalone
+>
+> What stays valid in the brief:
+> * The four-tier model framing (Identity / Subagents / Hardware /
+>   Surfaces) — still the right mental model for JROS's
+>   long-term architecture, just not the chassis it ships on today
+> * The hardware-node lifecycle requirements — covered by
+>   format 0.1's `Supervisor` + `[[node]]` manifest entries
+>   (see Mochi's adoption for the working pattern)
+>
+> Why archived rather than deleted: the brief captures real
+> operator framing + four-tier reasoning that future split-mode
+> work (e.g. when JP01 real-time motor PID forces process
+> isolation) will want to re-read. Keep as historical artifact.
+
 **Date:** 2026-06-11
 **Audience:** an LLM-driven planning / design agent (or a senior
 engineer) who will produce a deeply-considered migration plan for

@@ -16,7 +16,7 @@ import pytest
 
 from jaeger_os.core.memory import memory as mem
 from jaeger_os.core.memory import sqlite_store
-from jaeger_os.daemon import memory_verbs
+from jaeger_os.cli.verbs import memory_verbs
 
 
 @pytest.fixture(autouse=True)
@@ -272,7 +272,7 @@ def test_stats_reports_vec_extension_state(live_instance, capsys):
 
 def test_cli_dispatcher_routes_memory_subcommand():
     """``jaeger memory`` (no verb) gets picked up by ``cli.dispatch``."""
-    from jaeger_os.daemon import cli
+    from jaeger_os.cli.verbs import dispatch as cli
     assert "memory" in cli.SUBCOMMANDS
     assert cli.is_daemon_subcommand(["memory", "stats"]) is True
     assert cli.is_daemon_subcommand(["memory", "export", "/tmp/x"]) is True

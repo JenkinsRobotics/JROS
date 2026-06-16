@@ -100,7 +100,7 @@ def _list_stale_instances() -> list[dict[str, Any]]:
 def _migrate_instance_with_backup(name: str) -> int:
     """Back up + migrate one instance. Returns 0 on success, 2 on
     failure (caller continues to the next instance)."""
-    from jaeger_os.daemon.backup_restore import backup_instance
+    from jaeger_os.cli.verbs.backup_restore import backup_instance
     from jaeger_os.core.instance.instance import (
         InstanceLayout, resolve_instance_dir,
     )

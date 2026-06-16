@@ -21,6 +21,7 @@ import pytest
 
 from jaeger_os.app import FRAMEWORK_FORMAT, JaegerApp  # noqa: E402
 from jaeger_os.app.app import SecondInstanceError, resolve_ref  # noqa: E402
+from jaeger_os.app.core import Core, CoreMainThreadError  # noqa: E402
 from jaeger_os.app.bus.api import MessageRegistry, RawMessage  # noqa: E402
 from jaeger_os.app.bus.inproc import InProcBus  # noqa: E402
 from jaeger_os.app.config import load_config, slice_for  # noqa: E402
@@ -514,3 +515,130 @@ def test_node_health_message_shape():
     h = NodeHealth(node="x", state="running", details={"a": 1}, ts=1.0)
     assert h.topic == "/sys/node_health"
     assert dataclasses.asdict(h)["details"] == {"a": 1}
+
+
+# ── core (Tier-1 host role) ────────────────────────────────────────
+
+@dataclasses.dataclass
+class _NodeUp:
+    """Published by the order-node in ITS setup. The core receives it
+    only if the core's subscription already existed — i.e. the core set
+    up BEFORE the node did. This is the identity-stable boot-order probe
+    (a shared module global can't cross the factory-import boundary:
+    pytest collects this file as ``app.test_app_format`` while the
+    manifest factory ref imports ``dev_tests.jaeger_os.app...`` — two
+    module objects, two globals)."""
+    topic: str = "/sense/node_up"
+
+
+class _ProbeCore(Core):
+    def __init__(self, *, bus: Any, **_: Any) -> None:
+        super().__init__(bus=bus)            # asserts the OS main thread
+        self.setup_called = False
+        self.stop_called = False
+        self.setup_on_main_thread = False
+        self.saw_node_setup = False
+
+    def setup(self) -> None:
+        import threading
+        self.setup_called = True
+        self.setup_on_main_thread = (
+            threading.current_thread() is threading.main_thread())
+        # subscribe on the MAIN thread, during init_core (before nodes)
+        self.bus.subscribe("/sense/node_up", self._on_node_up)
+
+    def _on_node_up(self, msg: Any) -> None:
+        self.saw_node_setup = True
+
+    def stop(self) -> None:
+        self.stop_called = True
+
+
+def make_probe_core(bus: Any, config: dict[str, Any]) -> _ProbeCore:
+    return _ProbeCore(bus=bus, **config)
+
+
+class _OrderNode(Node):
+    def __init__(self, *, bus: Any, **_: Any) -> None:
+        super().__init__(bus=bus, name="order-node", tick_interval_s=0.01)
+
+    def setup(self) -> None:
+        self.bus.publish(_NodeUp())
+
+
+def make_order_node(bus: Any, config: dict[str, Any]) -> Node:
+    return _OrderNode(bus=bus, **config)
+
+
+_CORE_MANIFEST = """
+[app]
+name = "core-app"
+requires_framework = ">=0.1"
+event_loop = "none"
+
+[bus]
+backend = "inproc"
+
+[core]
+factory = "dev_tests.jaeger_os.app.test_app_format:make_probe_core"
+
+[[node]]
+id = "order-node"
+tier = 3
+backend = "thread"
+factory = "dev_tests.jaeger_os.app.test_app_format:make_order_node"
+restart = "never"
+"""
+
+
+def test_manifest_parses_core(tmp_path):
+    spec = load_manifest(_write_app(tmp_path, _CORE_MANIFEST))
+    assert spec.core.factory == (
+        "dev_tests.jaeger_os.app.test_app_format:make_probe_core")
+    assert spec.core.enabled is True
+
+
+def test_manifest_refuses_enabled_core_without_factory(tmp_path):
+    bad = _CORE_MANIFEST.replace(
+        'factory = "dev_tests.jaeger_os.app.test_app_format:make_probe_core"',
+        "enabled = true")
+    with pytest.raises(ValueError, match="core.*needs"):
+        load_manifest(_write_app(tmp_path, bad))
+
+
+def test_core_constructed_off_main_thread_raises():
+    import threading
+    bus = InProcBus()
+    errs: list[Exception] = []
+
+    def build():
+        try:
+            _ProbeCore(bus=bus)
+        except CoreMainThreadError as exc:
+            errs.append(exc)
+
+    t = threading.Thread(target=build)
+    t.start()
+    t.join()
+    assert errs and isinstance(errs[0], CoreMainThreadError)
+    assert isinstance(_ProbeCore(bus=bus), Core)   # main thread: fine
+    bus.close()
+
+
+def test_core_inits_on_main_thread_before_nodes_and_is_not_supervised(tmp_path):
+    app = JaegerApp(_write_app(tmp_path, _CORE_MANIFEST)).boot()
+    try:
+        # built by the chassis, setup run on the OS main thread
+        assert app.core is not None and app.core.setup_called
+        assert app.core.setup_on_main_thread is True
+        # boot order: the core received the order-node's /sense/node_up,
+        # which is only possible if the core subscribed (in init_core)
+        # BEFORE the node published (in start_nodes) — core before nodes
+        assert _wait_for(lambda: app.core.saw_node_setup)
+        # the core is NOT a supervised node
+        node_ids = {row["id"] for row in app.supervisor.ls()}
+        assert "order-node" in node_ids
+        assert "core" not in node_ids and "core-app" not in node_ids
+    finally:
+        app.shutdown()
+    assert app.core.stop_called   # stop ran on shutdown, before bus close

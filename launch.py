@@ -1,30 +1,33 @@
 #!/usr/bin/env python3
 """launch.py — sandbox launcher for JROS.
 
-REVERT (2026-06-05): back to the 0.2.x-style in-process TUI as the
-main operator surface.  The Swift desktop app and Python daemon stay
-in the codebase ([apps/JaegerOS/] and [jaeger_os/daemon/]) so we don't
-lose the work — they're just no longer wired into this launcher.
+Surfaces (CLI/TUI → windowed-app migration, 2026-06-14):
 
-All 0.3.0 plugin upgrades stay active because the in-process TUI
-loads them directly:
+   ./launch --tui    CLI/TUI — the in-process TUI agent (today's
+                     surface; this terminal becomes the TUI).
+   ./launch          Windowed app — the PySide6 shell: menu-bar tray by
+                     default, chat / avatar / settings as on-demand
+                     windows, agent booted in-process.  Modelled on the
+                     jaeger_app_framework jros demo.  NOT BUILT YET — a
+                     bare ./launch currently points you at --tui.
+
+The in-process TUI loads the plugin stack directly:
 
    - persistent Kokoro player + avaudio_io bridge       (kokoro_tts/)
    - Whisper STT hardening (two-pass + fast/accurate)   (whisper_stt/)
    - persona prefill framework                          (instance bundle)
-   - skill system v3 (multi-axis manifest)              (core/skills/)
-   - Gemma 4 12B-it Q4 + updated registry               (core/models/)
+   - skill system v3 (multi-axis manifest)              (agent/skill_registry/)
+   - Gemma 4 + updated registry                         (core/models/)
    - bench infra (writer/aggregator dir fix)            (core/bench/)
 
-   ./launch                    boot the in-process TUI in this terminal
+   ./launch --tui              boot the in-process TUI in this terminal
+   ./launch --tui --no-voice   ... skipping voice startup
    ./launch --stop             kill a lingering TUI singleton
-   ./launch --restart          stop, then boot
+   ./launch --restart          stop, then boot the TUI
    ./launch --status           show whether a TUI is running
    ./launch --reset-audio      sudo killall coreaudiod
    ./launch --clean-logs       truncate <instance>/run/jaeger.log to 0
    ./launch --health           preflight checks
-   ./launch --no-voice         tell the TUI to skip voice startup
-                               (sets ``JAEGER_TUI_NO_VOICE=1``)
 
 The terminal becomes the TUI.  Ctrl-C / ``/quit`` ends the session;
 Gemma + Kokoro + Whisper unload cleanly with the process.
@@ -710,6 +713,30 @@ def cmd_boot(env: dict[str, str], *, no_voice: bool) -> int:
     return 1
 
 
+def cmd_boot_windowed(env: dict[str, str]) -> int:
+    """Exec into the windowed-app shell — PySide6 menu-bar tray + chat
+    window. The agent + model load INSIDE that process, on the main
+    thread (Metal-safe), before the window appears — so expect a short
+    load on boot, same as the TUI."""
+    if not VENV_PY.exists():
+        fail(f".venv not at {VENV_PY} — run ./install.sh first")
+        return 1
+    if not SANDBOX_INSTANCE.exists():
+        fail(f"sandbox instance not found at {SANDBOX_INSTANCE}")
+        say("run ./run.sh setup jros-dev to create it", prefix="launch")
+        return 1
+    say("launching the windowed app — menu-bar tray + chat window "
+        "(the model loads on boot)…", prefix="launch")
+    sys.stdout.flush()
+    os.execvpe(
+        str(VENV_PY),
+        [str(VENV_PY), "-m", "jaeger_os.core.windowed"],
+        env,
+    )
+    fail("could not exec the windowed app")
+    return 1
+
+
 # ─── main ─────────────────────────────────────────────────────────────
 
 def main() -> int:
@@ -725,6 +752,10 @@ def main() -> int:
                         help="print what's running and exit")
     parser.add_argument("--no-voice", action="store_true",
                         help="tell the TUI to skip voice startup")
+    parser.add_argument("--tui", action="store_true",
+                        help="boot the CLI/TUI in-process agent (Pattern 0). "
+                             "A bare ./launch boots the windowed app "
+                             "(Pattern 1: PySide6 tray + chat window).")
     # Housekeeping
     parser.add_argument("--reset-audio", action="store_true",
                         help="sudo killall coreaudiod — unwedge CoreAudio")
@@ -807,9 +838,19 @@ def main() -> int:
     # the brain still calls Kokoro/Whisper in-process; Track B
     # is what wires the audio_io node onto the Bus.
     env["JAEGER_NODE_MODE"] = args.mode  # "monolithic" for now
-    if args.restart:
-        cmd_stop(env)
-    return cmd_boot(env, no_voice=args.no_voice)
+    # ── Surface routing (CLI/TUI vs windowed app) ──────────────────
+    # ``--tui`` boots the CLI/TUI in-process agent (Pattern 0);
+    # ``--restart`` and ``--no-voice`` are TUI modifiers so they imply it
+    # too. A bare ``./launch`` boots the windowed app (Pattern 1: PySide6
+    # menu-bar tray + chat window), which runs through the chassis
+    # JaegerApp with a Tier-1 [core] (jaeger.windowed.toml).
+    if args.tui or args.restart or args.no_voice:
+        if args.restart:
+            cmd_stop(env)
+        return cmd_boot(env, no_voice=args.no_voice)
+    # Bare ./launch → the windowed app (PySide6 menu-bar tray + chat
+    # window). The agent boots inside that process.
+    return cmd_boot_windowed(env)
 
 
 if __name__ == "__main__":

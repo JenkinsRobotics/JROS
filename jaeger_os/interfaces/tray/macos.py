@@ -14,8 +14,9 @@ Run via::
 
     python -m jaeger_os.interfaces.tray.macos [--instance NAME] [--poll-s 2.0]
 
-The tray polls ``Lifecycle.status()`` on its own (no daemon round-trip)
-so it works even when the daemon is down — that's the whole point.
+The daemon-status implementation was removed with the daemon
+architecture (2026-06-14); the tray is parked pending its windowed-app
+(in-process) rework, so the indicator renders a static state.
 """
 
 from __future__ import annotations
@@ -28,7 +29,6 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from jaeger_os.daemon.lifecycle import Lifecycle, LifecyclePaths
 from jaeger_os.interfaces.tray.base import (
     MenuItem,
     SEPARATOR,
@@ -198,7 +198,7 @@ class MacosTray:
     """``rumps``-backed tray. Constructed lazily so the module imports
     cleanly off macOS / in CI — ``rumps`` only loads inside ``run()``."""
 
-    def __init__(self, *, lifecycle: Lifecycle, actions: TrayActions,
+    def __init__(self, *, lifecycle: Any, actions: TrayActions,
                  poll_s: float = 2.0) -> None:
         self.lifecycle = lifecycle
         self.actions = actions
@@ -420,7 +420,7 @@ def _kill_stray_trays() -> int:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="jaeger-tray",
-        description="Menu-bar indicator + lifecycle controls for the Jaeger daemon.",
+        description="Menu-bar indicator (parked — daemon-status tray removed 2026-06-14).",
     )
     parser.add_argument("--instance", default=None,
                         help="Instance name (default: $JAEGER_INSTANCE_NAME or 'default').")
@@ -437,8 +437,6 @@ def main(argv: list[str] | None = None) -> int:
         print(f"killed {killed} stray jaeger-tray process(es)")
         return 0
 
-    # Lifecycle is independent of the agent — same `run/` resolution as
-    # the daemon CLI, so the tray and `jaeger status` see the same files.
     from jaeger_os.core.instance.instance import (
         default_instance_name, resolve_instance_dir,
     )
@@ -446,8 +444,18 @@ def main(argv: list[str] | None = None) -> int:
     name = args.instance or default_instance_name()
     root = Path(resolve_instance_dir(name))
     run_dir = root / "run"
-    paths = LifecyclePaths(run_dir=run_dir)
-    lifecycle = Lifecycle(paths=paths)
+
+    # The tray's live indicator used to poll the daemon's
+    # ``Lifecycle.status()``. The daemon architecture was removed on
+    # 2026-06-14 (JROS is fused-mode); there is no daemon to poll, so the
+    # indicator renders a static "no daemon" state. This placeholder keeps
+    # the rumps scaffolding intact for the future windowed-app in-process tray.
+    class _ParkedStatus:
+        @staticmethod
+        def status() -> dict[str, Any]:
+            return {"running": False, "reason": "fused mode (no daemon)"}
+
+    lifecycle: Any = _ParkedStatus()
 
     # Tray singleton — ATOMIC claim. The previous check-then-acquire
     # had a TOCTOU race: when several ``jaeger start`` / ``restart``

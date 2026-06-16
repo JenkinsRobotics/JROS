@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from jaeger_os.daemon import skill_verbs
+from jaeger_os.cli.verbs import skill_verbs
 
 
 def _seed_bundled(skills_root: Path, name: str, version: int = 1) -> Path:

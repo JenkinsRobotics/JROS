@@ -12,7 +12,7 @@ import pathlib
 
 import pytest
 
-from jaeger_os.daemon import bench_history_verb as bhv
+from jaeger_os.cli.verbs import bench_history_verb as bhv
 
 
 # ── fixtures ──────────────────────────────────────────────────
@@ -720,13 +720,13 @@ def test_unknown_bucket_excluded_by_default(fake_repo, capsys):
 
 
 def test_cli_bench_dispatcher_routes_history(monkeypatch):
-    from jaeger_os.daemon import cli
+    from jaeger_os.cli.verbs import dispatch as cli
     captured: list[list[str]] = []
     def _spy(argv):
         captured.append(argv)
         return 0
     monkeypatch.setattr(
-        "jaeger_os.daemon.bench_history_verb._cmd_bench_history_argv", _spy,
+        "jaeger_os.cli.verbs.bench_history_verb._cmd_bench_history_argv", _spy,
     )
     rc = cli._cmd_bench(["history", "--top", "5"])
     assert rc == 0

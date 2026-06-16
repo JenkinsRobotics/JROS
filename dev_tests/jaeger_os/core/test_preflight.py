@@ -12,7 +12,6 @@ import types
 
 from jaeger_os.core.runtime.preflight import (
     Check,
-    _check_daemon,
     _check_memory_integrity,
     _check_skills_health,
     _check_tool_registry,
@@ -147,16 +146,6 @@ def _instance_layout(tmp_path):
     )
 
 
-def test_daemon_check_reports_not_running_as_pass(tmp_path):
-    """A daemon-down state is FINE for TUI-only workflows — the
-    doctor must not flag it as a failure or the user with no daemon
-    aspirations always sees a red X."""
-    out = _check_daemon(_instance_layout(tmp_path))
-    assert out, "daemon check should produce at least one row"
-    assert all(c.ok for c in out), \
-        f"daemon-down was flagged as failure: {[c.detail for c in out]}"
-
-
 def test_memory_integrity_passes_for_fresh_instance(tmp_path):
     """Fresh instance — no memory files yet. Doctor reports absent
     files as PASS (they get created on first write) rather than
@@ -281,7 +270,7 @@ def test_report_as_json_emits_stable_shape(tmp_path):
 
 def test_check_instance_includes_every_new_category(tmp_path):
     """The unified ``check_instance`` must return rows from every new
-    category (daemon / memory / runtime / skills) on top of the
+    category (memory / runtime / skills) on top of the
     classic env + instance-config rows. A regression that drops one
     of these would silently shrink the doctor."""
     # Seed a minimal config so the instance path is exercised.
@@ -294,7 +283,7 @@ def test_check_instance_includes_every_new_category(tmp_path):
     )
     out = check_instance(_instance_layout(tmp_path))
     cats = {c.category for c in out}
-    for required in ("instance", "daemon", "memory", "runtime", "skills"):
+    for required in ("instance", "memory", "runtime", "skills"):
         assert required in cats, \
             f"check_instance dropped category {required!r}: have {sorted(cats)}"
 

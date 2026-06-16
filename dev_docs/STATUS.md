@@ -28,6 +28,45 @@ has actually been exercised and works.
 
 ---
 
+## 2026-06-15 — windowed app (Pattern 1) boots through the chassis [core]
+
+JROS's chassis copy (`jaeger_os/app/`) gained the format's Tier-1 **`core`**
+role (resynced from `jaeger_app_framework`), and the windowed app now boots
+through it instead of a bespoke host:
+
+- **`jaeger_os/app/`** — ported `core.py` (`Core` ABC + `CoreMainThreadError`,
+  main-thread-init assertion), `[core]` manifest parsing (`CoreSpec`), the
+  `init_core` boot phase (core built on the main thread, after the bus,
+  before nodes/surfaces; `core.stop()` before the bus closes), and exports.
+  JROS's intentional divergences (no-fcntl lock / `process_slot.py`, simpler
+  supervisor, `asyncio`/`tui` event loops) are untouched. **29 conformance
+  tests green** (4 new core tests; boot order proven via a bus subscription,
+  not a module global — JROS's pytest import layout makes cross-import
+  globals two objects).
+- **`jaeger_os/agent/loop/agent_core.py`** — `AgentCore(Core)`: folds the old
+  `jaeger_os/core/host.py` (deleted) — model boot on the main thread +
+  `AgentBridge` + drain-then-cleanup teardown — into the `[core]` role. There
+  is now ONE app/host (the chassis); the second `JaegerApp` class is gone.
+- **`jaeger.windowed.toml`** — the Pattern-1 manifest (`[core]` + chat window
+  + tray, `event_loop = "qt"`, `shell_quits_core = false`). A bare `./launch`
+  boots `JaegerApp("jaeger.windowed.toml").run()` via
+  `jaeger_os/core/windowed.py`. `./launch --tui` (Pattern 0) is unchanged.
+- **chassis fix (upstreamed)** — `JaegerApp.__init__` now honors a manifest
+  *file* path (e.g. `jaeger.windowed.toml`), not just a directory's default
+  `jaeger.toml`. Fixed in the framework canonical + synced to all copies +
+  ported to JROS.
+
+**Runtime status: ◑ partial — headless-verified, GUI walk pending.**
+Verified headless (model boot + `run_for_voice` + the Qt loop stubbed):
+`JaegerApp("jaeger.windowed.toml").boot()` builds the `AgentCore` on the main
+thread, starts the bridge, round-trips `ChatMessage → ChatReply` over the
+chassis bus, and drains + cleans up the model on shutdown
+(`test_windowed_app.py::test_windowed_manifest_boots_agent_core_over_chassis`).
+1559 tests green across app/agent/core/interfaces. **NOT yet runtime-walked**:
+a real `./launch` — actual model load, the Qt window + menu-bar tray
+appearing, a live chat turn, and tray-persist-on-window-close — needs the
+operator's machine (model weights + a display).
+
 ## Findings & fixes — 2026-06-12 hardware framework + JP01 sim package (0.5.0)
 
 Implements docs/JROS_HARDWARE_FRAMEWORK_PLAN.md §4.2 steps 1+2.
@@ -532,7 +571,7 @@ operator-verified until a real session exercises them.
 
 - Main-loop R4–R8 rebuild — internals **A1** (context compression) + **A10** (memory pipeline) + tool/skill **#5** (result formatter) + **#11** (result budget).
 - tool/skill **#7** (MCP OAuth), **#10** (tool registry).
-- **Daemon split — Phase 2** (move agent into daemon). Phase 1 scaffold (protocol, server, client, lifecycle, tray) shipped in 0.1.0. See `docs/daemon_split_plan.md`.
+- **Daemon split — DROPPED 2026-06-14.** JROS converged on fused mode (one process, TUI in foreground). The daemon scaffold (server/client/protocol/lifecycle/attach/event_bus/chat_ops) was removed; its in-process CLI verbs moved to `jaeger_os/cli/verbs/`. Forward direction is the windowed app + tray (see `jaeger.toml`); the `rich_tui` window surface is parked in tree for that rework. Archived brief: `docs/archive/JROS_DAEMON_ARCH_BRIEF.md`.
 - **Tool guardrail controller** (review finding #4 — deferred). Loop-backstop still catches the worst case.
 - **Parallel tool execution** (review finding #5 — deferred). Read-only / path-disjoint batches.
 - **L2 / L3 / L4 bench coverage** with the corrected umbrella-aware scorer. L1 is baselined; deeper levels need a re-run after the scorer's `_UMBRELLA_EQUIVALENTS` map is applied to L2/L3/L4 modules.
@@ -544,7 +583,7 @@ operator-verified until a real session exercises them.
 **Tests:** 997 passing. (Was ~533 at the prior STATUS snapshot.)
 
 **Major adds:**
-- **Daemon scaffold + macOS tray** (`src/jaeger_os/daemon/`, `src/jaeger_os/interfaces/tray/`). Lifecycle CLI: `jaeger start | stop | status | restart`. Phase 1.6 tray icon talks to the daemon via the same socket. **Agent still lives in the TUI process** — Phase 2 of the daemon split moves it.
+- **Daemon scaffold + macOS tray** (`jaeger_os/daemon/`, `jaeger_os/interfaces/tray/`). Lifecycle CLI: `jaeger start | stop | status | restart`. Phase 1.6 tray icon talks to the daemon via the same socket. **Agent still lives in the TUI process.** — **Removed 2026-06-14:** the daemon arch was dropped; `jaeger_os/daemon/` is gone, its in-process verbs moved to `jaeger_os/cli/verbs/`, and the tray is parked for the windowed-app rework.
 - **Pre-flight context guardrail** (`src/jaeger_os/agent/util/context_guard.py`). Prevents the "Requested tokens exceed context window" hard fail by trimming history before the call; raises typed `ContextOverflow` when even max trim won't fit. Per-tool-result truncator caps oversized payloads. Group-aware trim preserves tool-call/result pairs.
 - **Lean tool surface** (`describe_tool`, catalog injection in system prompt) — **opt-in via `JAEGER_TOOLSET_SCOPING=1`**, default OFF per the 0.1.0 bench data. Infrastructure ready, default revert documented in `docs/lean_surface.md`.
 - **Kanban grid view** for `/board` — Rich `Columns` + `Panel`, 5-column layout. Replaces the prior vertical list.

@@ -188,7 +188,7 @@ def main() -> int:
     # model_path (rare; usually a misconfigured boot).
     #
     # 0.3.0: was ``benchmark/flat/<model>/<ts>/`` until
-    # ``jaeger_os.daemon.bench_history_verb`` (the aggregator that
+    # ``jaeger_os.cli.verbs.bench_history_verb`` (the aggregator that
     # builds ``dev_benchmark/HISTORY.md``) was found to read from
     # ``dev_benchmark/flat/`` while writers landed under
     # ``benchmark/flat/``.  Writers now match the reader so every
@@ -258,7 +258,7 @@ def main() -> int:
     # ``run_model_sweep.py`` sets ``JAEGER_SUPPRESS_HISTORY=1``.
     if not os.environ.get("JAEGER_SUPPRESS_HISTORY"):
         try:
-            from jaeger_os.daemon.bench_history_verb import write_history_md
+            from jaeger_os.cli.verbs.bench_history_verb import write_history_md
             written = write_history_md()
             if written:
                 print(f"Updated {written}", flush=True)

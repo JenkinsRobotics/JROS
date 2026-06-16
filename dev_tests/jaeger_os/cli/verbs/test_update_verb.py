@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from jaeger_os.daemon import update_verb as U
+from jaeger_os.cli.verbs import update_verb as U
 
 
 # ── helpers ────────────────────────────────────────────────────────

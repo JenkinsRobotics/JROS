@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from jaeger_os.daemon import backup_restore as B
+from jaeger_os.cli.verbs import backup_restore as B
 
 
 # ── fixtures ───────────────────────────────────────────────────────

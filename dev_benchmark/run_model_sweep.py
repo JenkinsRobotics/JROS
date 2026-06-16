@@ -584,7 +584,7 @@ def main() -> int:
     # (JAEGER_SUPPRESS_HISTORY=1) so it fires exactly once per sweep.
     try:
         sys.path.insert(0, str(SRC))
-        from jaeger_os.daemon.bench_history_verb import write_history_md
+        from jaeger_os.cli.verbs.bench_history_verb import write_history_md
         written = write_history_md(REPO)
         if written:
             print(f"Updated {written}", flush=True)

@@ -21,7 +21,7 @@ from pathlib import Path
 
 import pytest
 
-from jaeger_os.daemon import health_verb
+from jaeger_os.cli.verbs import health_verb
 
 
 @pytest.fixture
@@ -141,7 +141,7 @@ def test_health_no_instance_returns_one(tmp_path, monkeypatch, capsys):
 def test_cli_dispatcher_registers_health():
     """``jaeger health`` must be picked up by the daemon CLI
     dispatcher and route to the verb implementation."""
-    from jaeger_os.daemon import cli
+    from jaeger_os.cli.verbs import dispatch as cli
     assert "health" in cli.SUBCOMMANDS
     assert cli.is_daemon_subcommand(["health"]) is True
     assert cli.is_daemon_subcommand(["health", "--deep"]) is True
@@ -150,13 +150,13 @@ def test_cli_dispatcher_registers_health():
 def test_dispatcher_calls_health_argv(monkeypatch):
     """End-to-end: ``cli.dispatch(['health', '--json'])`` should
     route to ``_cmd_health_argv(['--json'])``."""
-    from jaeger_os.daemon import cli
+    from jaeger_os.cli.verbs import dispatch as cli
     captured: list[list[str]] = []
     def fake_argv(argv):
         captured.append(argv)
         return 0
     monkeypatch.setattr(
-        "jaeger_os.daemon.health_verb._cmd_health_argv", fake_argv,
+        "jaeger_os.cli.verbs.health_verb._cmd_health_argv", fake_argv,
     )
     cli.dispatch(["health", "--json"])
     assert captured == [["--json"]]

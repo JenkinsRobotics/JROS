@@ -26,7 +26,9 @@ def isolate_runtime():
 
 def test_avatar_config_defaults() -> None:
     cfg = AvatarConfig()
-    assert cfg.enabled is True
+    # OFF by default (2026-06-14): the avatar/animation node (Lilith face)
+    # is a beta, dev-mode feature, so the daily-driver doesn't warm it.
+    assert cfg.enabled is False
     assert cfg.bridge_host == "127.0.0.1"
     assert cfg.bridge_port == 8765
     assert cfg.default_emotion == "neutral"
@@ -51,7 +53,8 @@ def test_top_level_config_includes_avatar() -> None:
         instance_name="t",
         model=ModelConfig(model_path=Path("/tmp/x.gguf")),
     )
-    assert cfg.avatar.enabled is True
+    # Avatar/animation node is OFF by default (beta, dev-mode feature).
+    assert cfg.avatar.enabled is False
     assert cfg.avatar.bridge_port == 8765
 
 

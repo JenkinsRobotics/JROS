@@ -16,7 +16,7 @@ from pathlib import Path
 
 import pytest
 
-from jaeger_os.daemon import kill_verb
+from jaeger_os.cli.verbs import kill_verb
 
 
 # ── _find_lock_files ─────────────────────────────────────────────
@@ -136,7 +136,7 @@ def test_find_jaeger_pids_matches_jaeger_entrypoints_only(monkeypatch):
         "101 python /unrelated/script.py\n"                # OUT: not jaeger
         "102 python /repo/jaeger_os/__main__.py\n"         # IN
         "103 /opt/python3.11 -m jaeger_os start\n"         # IN
-        "104 /opt/python3.11 -m jaeger_os.daemon.cli kill\n"  # IN
+        "104 /opt/python3.11 -m jaeger_os.cli.verbs.dispatch kill\n"  # IN
         "105 /repo/.venv/bin/jaeger start\n"               # IN
         "106 /bin/zsh -c source /x/snap.zsh && /py/python -m jaeger_os\n"  # OUT: zsh
         "107 /usr/bin/vim /Users/x/jaeger_os/main.py\n"    # OUT: editor
@@ -160,7 +160,7 @@ def test_is_real_jaeger_command_rejects_shells_with_jaeger_in_argv():
         ("/bin/bash -c 'source venv && jaeger_os'", False),
         ("/usr/bin/zsh", False),
         ("/usr/bin/python -m jaeger_os start", True),
-        ("/usr/bin/python -m jaeger_os.daemon.cli kill", True),
+        ("/usr/bin/python -m jaeger_os.cli.verbs.dispatch kill", True),
         ("/repo/.venv/bin/jaeger", True),
         ("/repo/.venv/bin/jaeger start --instance default", True),
         ("/path/to/python /repo/src/jaeger_os/__main__.py", True),
@@ -309,7 +309,7 @@ def test_kill_handles_processes_already_gone(tmp_path, monkeypatch):
 
 
 def test_cli_dispatcher_registers_kill():
-    from jaeger_os.daemon import cli
+    from jaeger_os.cli.verbs import dispatch as cli
     assert "kill" in cli.SUBCOMMANDS
     assert cli.is_daemon_subcommand(["kill"]) is True
     assert cli.is_daemon_subcommand(["kill", "--dry-run"]) is True

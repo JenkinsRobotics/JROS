@@ -14,7 +14,7 @@ import sys
 
 import pytest
 
-from jaeger_os.daemon import bench_compare_verb as bcv
+from jaeger_os.cli.verbs import bench_compare_verb as bcv
 
 
 # ── _discover_models ─────────────────────────────────────────────
@@ -272,7 +272,7 @@ def test_compare_forwards_tags_and_limit_via_env(tmp_path, monkeypatch, capsys):
     # _repo_root must point at something with benchmark/run_model_sweep.py
     # — patch it to use the real repo so the "missing script" branch
     # doesn't fire.
-    real_repo = pathlib.Path(__file__).resolve().parents[3]
+    real_repo = pathlib.Path(__file__).resolve().parents[4]
     monkeypatch.setattr(bcv, "_repo_root", lambda: real_repo)
     rc = bcv._cmd_bench_compare_argv([
         "--models", str(m),
@@ -290,13 +290,13 @@ def test_compare_forwards_tags_and_limit_via_env(tmp_path, monkeypatch, capsys):
 def test_cli_bench_dispatcher_routes_compare(monkeypatch):
     """``jaeger bench compare`` must route to the verb implementation
     inside the existing bench dispatcher."""
-    from jaeger_os.daemon import cli
+    from jaeger_os.cli.verbs import dispatch as cli
     captured: list[list[str]] = []
     def _spy(argv):
         captured.append(argv)
         return 0
     monkeypatch.setattr(
-        "jaeger_os.daemon.bench_compare_verb._cmd_bench_compare_argv", _spy,
+        "jaeger_os.cli.verbs.bench_compare_verb._cmd_bench_compare_argv", _spy,
     )
     rc = cli._cmd_bench(["compare", "--dry-run"])
     assert rc == 0
@@ -479,7 +479,7 @@ def test_sweep_env_sets_macos_fork_safety(tmp_path, monkeypatch):
         lambda paths, **_kw: ([{"path": p, "size_gb": 1.0, "kind": "dense",
                                 "reason": "ok"} for p in paths], []),
     )
-    real_repo = pathlib.Path(__file__).resolve().parents[3]
+    real_repo = pathlib.Path(__file__).resolve().parents[4]
     monkeypatch.setattr(bcv, "_repo_root", lambda: real_repo)
     rc = bcv._cmd_bench_compare_argv(["--models", str(m)])
     assert rc == 0

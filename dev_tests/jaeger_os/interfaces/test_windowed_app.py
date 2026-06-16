@@ -26,6 +26,7 @@ from PySide6.QtWidgets import QApplication  # noqa: E402
 from jaeger_os.agent.loop.bridge import AgentBridge  # noqa: E402
 from jaeger_os.app.bus.inproc import InProcBus  # noqa: E402
 from jaeger_os.core.messages import AgentState, ChatReply  # noqa: E402
+from jaeger_os.interfaces.pill.qt import Pill  # noqa: E402
 from jaeger_os.interfaces.rich_tui.window import ChatWindow  # noqa: E402
 from jaeger_os.interfaces.tray.qt import QtTray  # noqa: E402
 
@@ -52,7 +53,7 @@ def test_window_renders_chat_reply(qapp):
     try:
         bus.publish(ChatReply(text="hello from agent"))
         assert _pump(
-            qapp, lambda: "hello from agent" in win.transcript.toPlainText())
+            qapp, lambda: "hello from agent" in win.rendered_text())
     finally:
         win.teardown()
         bus.close()
@@ -67,7 +68,7 @@ def test_window_publishes_chat_message_on_send(qapp):
         win.input.setText("ping")
         win._send()
         assert sent.get(timeout=2.0) == "ping"
-        assert "ping" in win.transcript.toPlainText()   # echoed locally
+        assert "ping" in win.rendered_text()   # echoed locally
     finally:
         win.teardown()
         bus.close()
@@ -107,7 +108,7 @@ def test_window_plus_agent_bridge_full_round_trip(qapp):
         win._send()
         assert _pump(
             qapp,
-            lambda: "you said: hi there" in win.transcript.toPlainText())
+            lambda: "you said: hi there" in win.rendered_text())
     finally:
         bridge.stop()
         bridge.join(timeout=2.0)
@@ -151,3 +152,36 @@ def test_windowed_manifest_boots_agent_core_over_chassis(qapp, monkeypatch):
     finally:
         app.shutdown()
     assert cleaned == [True]   # the core drained + cleaned up the model
+
+
+def test_pill_submit_invokes_callback(qapp):
+    """The Pill is pure UI: submitting clears + hides + hands the text to
+    its callback (the tray wires that to the chat window)."""
+    got: list[str] = []
+    pill = Pill(on_submit=got.append, agent_name="T")
+    try:
+        pill.input.setText("hi from pill")
+        pill._send()
+        assert got == ["hi from pill"]
+        assert pill.input.text() == ""
+        assert not pill.isVisible()
+    finally:
+        pill.close()
+
+
+def test_tray_pill_routes_to_chat_window(qapp):
+    """Pill submit → tray opens the chat window and renders the user bubble
+    there (consistent with a typed message) + publishes ChatMessage once."""
+    bus = InProcBus()
+    sent: "queue.Queue[str]" = queue.Queue()
+    bus.subscribe("/act/chat", lambda m: sent.put(m.text))
+    win = ChatWindow(SimpleNamespace(bus=bus, agent_name="T", window=None))
+    tray = QtTray(SimpleNamespace(bus=bus, agent_name="T", window=win))
+    try:
+        tray._submit_from_pill("from the pill")
+        assert sent.get(timeout=2.0) == "from the pill"
+        assert "from the pill" in win.rendered_text()
+    finally:
+        tray.close()
+        win.teardown()
+        bus.close()

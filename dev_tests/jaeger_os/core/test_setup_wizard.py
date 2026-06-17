@@ -197,17 +197,19 @@ def test_wizard_writes_ctx_32k_for_new_instances(monkeypatch, tmp_path):
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
     monkeypatch.setenv("JAEGER_HOME", str(tmp_path / "home"))
     monkeypatch.setenv("JAEGER_INSTANCE_DIR", str(tmp_path / "inst"))
+    # Skip the heavy verify boot (loads the model) — that path is exercised
+    # by the real install, not the unit walk.
+    monkeypatch.setenv("JAEGER_SKIP_PREPARE", "1")
 
-    # Canned answers walk: name, role, personality, voice idx, model
-    # idx, perm idx, interaction idx, warm_tts y, warm_stt y,
-    # warm_vision n, confirm y.
+    # Canned answers walk: name, role, personality, voice idx, model idx,
+    # perm idx, interaction idx, confirm y. Warm-up no longer prompts —
+    # every system warms unconditionally now.
     answers = iter([
         "Jarvis", "general-purpose", "Helpful and concise.",
         "1",    # voice = michael
         "1",    # model registry index 1 (any registered key)
         "1",    # permissions = confirm
         "1",    # interaction = tui
-        "y", "y", "n",  # warmup tts/stt/vision
         "y",    # confirm create
     ])
 

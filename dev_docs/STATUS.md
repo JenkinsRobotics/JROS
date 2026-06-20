@@ -22,7 +22,7 @@ has actually been exercised and works.
 | **Agentic loop** | ✅ internals A1/#5/#6 | ✅ 2026-05-22 | `_run_via_iter` ran 11 turns through the shakedown — tool calls, skip-final, free-text all worked. Mid-tool interrupt (#6) shipped. The R4–R8 rebuild (A1 + A10 + #5 + #11) is still pending. |
 | **Security** | ✅ internals A3/A5/A9, #2/#12 | ✅ 2026-05-22 | Tier gating, the hash-chained audit log, and the credential-read guard all verified live by the shakedown (`file_read_denied` on `credentials/`). Redaction / hardline / file-safety unit-tested. |
 | **Skills** | ✅ tool/skill #8/#9, A2 | ✅ 2026-05-22 | `computer_use` registered; `reload_skills` ran; the agent authored `note_v1/SKILL.md`, it was written, audited, and git-committed (`agent: write skills/note_v1/SKILL.md`). |
-| **Models** | ✅ this session (llama.cpp) | ✅ 2026-05-22 | In-process llama-cpp (Gemma-4 26B-A4B) loads in ~5s and runs turns. ⚠️ see finding F1 (exit teardown). |
+| **Models** | ✅ this session (llama.cpp + MLX) | ✅ 2026-06-19 | In-process llama-cpp (Gemma-4 26B-A4B) loads in ~2s and runs turns. **Engines are now a swappable layer** (`engine_registry` + `config.runtime`, surfaced via `jaeger runtime` / `/runtime`): `llama-cpp-python` (GGUF), `mlx-lm` (MLX text), `mlx-vlm` (MLX multimodal — 12B-unified validated 2/2 end-to-end). **GGUF is the default, data-backed**: a clean same-machine A/B (26B-A4B, both routing 6/6) measured GGUF 0.53 s/turn vs MLX 2.57 s/turn (~5×; MLX prefill-bound). ⚠️ see finding F1 (exit teardown). |
 | **TUI / interfaces / commands** | ✅ prior session (hermes parity) | ◑ partial | Slash commands unit-tested; the permission prompt fixed + tested. The live REPL needs a real terminal — not auto-verifiable; the user runs it. |
 | **Plugins** | ✅ internals Part C | ◑ partial | MCP client + messaging bridges have import smoke tests; not deeply runtime-exercised. |
 
@@ -159,10 +159,13 @@ changes especially need a live mic walk**.
   mirror (user farewell AND reply acknowledges) before the follow-up
   is suppressed; STT stays on, next real utterance resumes normally.
   New ``core/voice/farewell.py`` (16 patterns).
-- **Ignored turns no longer re-arm the follow-up window** — an
-  ``<ignore>`` outcome previously called ``open_followup()``, keeping
-  the robot soliciting ambient noise; each artifact paid a full LLM
-  turn just to be ignored again (VoiceLLM ingress hardening).
+- **(REMOVED 2026-06-16) Ignored turns no longer re-arm the follow-up
+  window** — this and the entire LLM ``<reply>``/``<ignore>`` voice
+  gate were removed.  The gate lived in the agent's system prompt, so
+  one model did both gatekeeping and tool-calling, and the gate framing
+  suppressed tool routing (gemma-4-26B-A4B: 0/3 tool prompts gated on,
+  3/3 off).  The agent is now transport-agnostic; ambient filtering is
+  VAD + wake word in the voice input layer.  See CHANGELOG `0.5.0`.
 - **♪/*-wrapped hallucination ingress filter** — "♪ music ♪" /
   "*coughs*" forms now drop at the non-speech filter (the
   bracket/paren filter didn't cover them).

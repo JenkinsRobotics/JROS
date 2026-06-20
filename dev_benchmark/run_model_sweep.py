@@ -125,8 +125,17 @@ def _read_config_text(path: pathlib.Path) -> str:
     return path.read_text(encoding="utf-8")
 
 
+def _backend_for_path(model_path: str) -> str:
+    """Derive the backend from the model path: a ``.gguf`` *file* loads via
+    ``llama_cpp_python``; an MLX model *directory* (config.json + safetensors)
+    loads via ``mlx_lm``. Lets one models-file mix GGUF and MLX entries."""
+    if os.path.isdir(model_path) or not model_path.endswith(".gguf"):
+        return "mlx_lm"
+    return "llama_cpp_python"
+
+
 def _write_model_path(text: str, new_model_path: str) -> str:
-    """Replace ``model.model_path`` value, preserving everything else.
+    """Replace ``model.model_path`` (and ``model.backend``), preserving rest.
 
     Earlier versions used a regex-replace on ``model_path:`` — that
     broke when the bench subprocess re-wrote config.yaml during boot
@@ -138,7 +147,11 @@ def _write_model_path(text: str, new_model_path: str) -> str:
     fall back to stdlib ``yaml`` (loses comments) and finally to the
     regex path as a last resort. Comments only matter for human
     readability of intermediate states; functionally the bench just
-    needs ``model.model_path`` to be the path we asked for."""
+    needs ``model.model_path`` to be the path we asked for.
+
+    The ``backend`` is derived from the path (GGUF file vs MLX directory) so
+    a single sweep can cover both engines."""
+    backend = _backend_for_path(new_model_path)
     try:
         from ruamel.yaml import YAML
         import io
@@ -147,6 +160,7 @@ def _write_model_path(text: str, new_model_path: str) -> str:
         data = yaml.load(text)
         if "model" in data and isinstance(data["model"], dict):
             data["model"]["model_path"] = new_model_path
+            data["model"]["backend"] = backend
             buf = io.StringIO()
             yaml.dump(data, buf)
             return buf.getvalue()
@@ -160,6 +174,7 @@ def _write_model_path(text: str, new_model_path: str) -> str:
         data = _yaml.safe_load(text)
         if isinstance(data, dict) and isinstance(data.get("model"), dict):
             data["model"]["model_path"] = new_model_path
+            data["model"]["backend"] = backend
             return _yaml.safe_dump(data, sort_keys=False, default_flow_style=False)
     except Exception:  # noqa: BLE001
         pass
@@ -210,7 +225,13 @@ def _human_name(path: str) -> str:
 
 def _file_size_gb(path: str) -> float:
     try:
-        return pathlib.Path(path).stat().st_size / 1e9
+        p = pathlib.Path(path)
+        if p.is_dir():
+            # MLX model: sum the weight shards / config in the directory.
+            return sum(
+                f.stat().st_size for f in p.rglob("*") if f.is_file()
+            ) / 1e9
+        return p.stat().st_size / 1e9
     except OSError:
         return 0.0
 

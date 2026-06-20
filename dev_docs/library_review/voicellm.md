@@ -117,6 +117,18 @@ addressed to you" rule.  Sits cleanly alongside JROS's existing
 `is_non_speech_marker()` STT filter (step 6); the LLM-gate is the
 second line of defence after the STT-level filter.
 
+> **⚠️ ADDED in 0.4, REMOVED in 0.5.0 (2026-06-16).** This
+> recommendation was wrong *for JROS specifically*.  It "sits cleanly"
+> in VoiceLLM because VoiceLLM has **no tools** — its LLM only ever
+> produces a spoken reply, so a `<reply>`/`<ignore>` prefix is the
+> whole job.  JROS's brain is an agentic tool-caller; putting the gate
+> in its system prompt made one model do two conflicting jobs, and the
+> "default to ignore / just reply" framing suppressed tool routing
+> (gemma-4-26B-A4B: 0/3 tool prompts gated on, 3/3 off).  Ambient
+> filtering belongs in the voice INPUT layer (VAD + wake word), never
+> the brain.  The gate pattern is right for a tool-less voice assistant
+> and wrong for an agent.
+
 ### 3. The orchestrator FSM (`IDLE → THINKING → RESPONDING → IDLE`)
 
 `core/runners/orchestrator.py` runs a deterministic state machine

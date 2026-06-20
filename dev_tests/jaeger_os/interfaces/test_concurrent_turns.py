@@ -8,6 +8,7 @@ what a typed message does mid-turn (interrupt / queue / steer).
 
 from __future__ import annotations
 
+import importlib
 import threading
 import time
 from types import SimpleNamespace
@@ -18,6 +19,7 @@ from jaeger_os.interfaces.tui.app import (
     _WORKER_SHUTDOWN,
     _format_coalesced_voice,
     _split_coalesced_voice,
+    _wants_spoken_output,
     JaegerTUI,
 )
 
@@ -198,9 +200,57 @@ def test_busy_voice_coalescing_preserves_typed_queue() -> None:
 
 def test_coalesced_voice_format_round_trips() -> None:
     formatted = _format_coalesced_voice(["one", "two"])
-    assert "Decide with the voice gate" in formatted
-    assert "reply <ignore>" in formatted
+    assert "Several things were said while I was busy:" in formatted
     assert _split_coalesced_voice(formatted) == ["one", "two"]
+
+
+def test_spoken_output_detector_matches_explicit_tts_requests() -> None:
+    assert _wants_spoken_output("speak me a joke")
+    assert _wants_spoken_output("tell me the time out loud")
+    assert _wants_spoken_output("read me the answer")
+    assert not _wants_spoken_output("tell me a joke")
+
+
+def test_text_turn_speaks_answer_when_model_misses_tts_tool(monkeypatch):
+    """If the model ignores an explicit typed speak request, the TUI
+    speaks the rendered answer as a deterministic fallback."""
+    tui = _tui()
+    tui._render_turn_header = lambda *_a, **_k: None
+    tui._refresh_context_estimate = lambda: None
+    rendered: list[str] = []
+    spoken: list[str] = []
+    tui._render_answer = lambda text, **_k: rendered.append(text)
+
+    import jaeger_os.main as main
+    speak_mod = importlib.import_module("jaeger_os.agent.tools.speak")
+
+    monkeypatch.setattr(
+        main,
+        "run_for_voice",
+        lambda *_a, **_k: {
+            "text": (
+                "Why don't scientists trust atoms? "
+                "Because they make up everything."
+            ),
+            "error": None,
+            "spoke_via_tool": False,
+        },
+    )
+    monkeypatch.setattr(
+        speak_mod,
+        "speak",
+        lambda text="", path="": spoken.append(text) or {
+            "spoken": True,
+            "reason": "",
+        },
+    )
+
+    tui._run_text_turn(object(), "speak me a joke")
+
+    assert rendered == [
+        "Why don't scientists trust atoms? Because they make up everything.",
+    ]
+    assert spoken == rendered
 
 
 class _GateChat:
@@ -218,23 +268,19 @@ class _GateClient:
         return _GateChat(self.text)
 
 
-# 2026-06-07 architectural change (operator-locked): the LLM gate
-# now lives INSIDE the AudioSession node.  Only confirmed phrases
-# become a /sense/transcript and reach _run_voice_turn.  The brain
-# no longer knows about <ignore>/<reply> — it just answers like the
-# input was typed.  See dev_docs/0.4.0_voice_gate_unification_prompt.md.
+# The brain is transport-agnostic: anything that reaches
+# _run_voice_turn is already confirmed user input, and a voice turn
+# is answered exactly as if the text had been typed.
 
 def test_tui_voice_turn_treats_input_as_confirmed_user_message(
     monkeypatch,
 ) -> None:
     """A voice turn passes its text straight to ``run_for_voice``
-    and renders the agent's response verbatim.  Gating is the audio
-    session's job — anything that reaches the TUI is already
-    confirmed user input."""
+    and renders the agent's response verbatim — anything that reaches
+    the TUI is already confirmed user input."""
     tui = _tui()
     tui._voice = SimpleNamespace(
         running=True,
-        llm_gate=True,
         speak=lambda _text: False,
         chime=lambda _kind: None,
         open_followup=lambda: None,
@@ -273,7 +319,6 @@ def test_tui_voice_turn_suppresses_non_speech_marker_in_reply(
     tui = _tui()
     tui._voice = SimpleNamespace(
         running=True,
-        llm_gate=True,
         speak=lambda _text: False,
         chime=lambda _kind: None,
         open_followup=lambda: None,

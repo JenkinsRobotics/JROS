@@ -16,7 +16,9 @@ from jaeger_os.agent.prompts.prompts import _load_soul, build_system_prompt
 
 def test_operating_discipline_in_system_prompt(tmp_path) -> None:
     sp = build_system_prompt(InstanceLayout(root=tmp_path))
-    assert "Operating discipline" in sp
+    # Operating-discipline rules now live in the consolidated
+    # framework_agent.md; pin their substance, not the old heading.
+    assert "ANSWER THE CURRENT MESSAGE" in sp
     assert "EXECUTE, don't promise" in sp
 
 
@@ -52,7 +54,9 @@ def test_soul_md_folds_into_the_system_prompt(tmp_path) -> None:
 def test_no_soul_md_still_builds_a_prompt(tmp_path) -> None:
     """soul.md is optional — absent, the prompt is still well-formed."""
     sp = build_system_prompt(InstanceLayout(root=tmp_path))
-    assert "Mandatory tool rules" in sp
+    # The mandatory memory-persist rule is the canary that the
+    # framework rule block made it into the prompt.
+    assert 'memory(action="remember"' in sp
 
 
 def test_prompt_defaults_to_unscoped_tool_surface(tmp_path, monkeypatch) -> None:
@@ -111,7 +115,7 @@ def test_prompt_unscoped_when_toolset_scoping_env_disabled(tmp_path, monkeypatch
 # marks, not five minutes after the request); skipped ``get_time``
 # before computing the schedule; muddled one-shot vs recurring. The
 # system prompt now teaches the right pattern. Pin the directives
-# so a future cleanup of TOOL_USAGE_RULES doesn't silently drop them.
+# so a future cleanup of framework_agent.md doesn't silently drop them.
 
 
 def test_schedule_rule_requires_get_time_first(tmp_path) -> None:
@@ -125,7 +129,7 @@ def test_schedule_rule_requires_get_time_first(tmp_path) -> None:
     # Must explicitly call out that the call comes FIRST.
     schedule_block = sp[sp.index("schedule_prompt"):]
     assert "FIRST" in schedule_block[:600], (
-        "TOOL_USAGE_RULES should tell the model to call get_time FIRST "
+        "the tool-usage rules should tell the model to call get_time FIRST "
         "when scheduling a relative/absolute time"
     )
 
@@ -162,7 +166,7 @@ def test_system_health_is_NOT_in_agent_surface() -> None:
 
     Pin all three surfaces here so a future "let's just put it back"
     refactor gets caught by this test."""
-    from jaeger_os.agent.skill_registry.toolsets import CORE, TOOLSETS
+    from jaeger_os.agent.skill_registry.toolset_scoping import CORE, TOOLSETS
     assert "system_health" not in CORE, (
         "system_health must NOT be in CORE — re-adding it brings back "
         "the prefill stall. Use ``jaeger health`` CLI verb instead."

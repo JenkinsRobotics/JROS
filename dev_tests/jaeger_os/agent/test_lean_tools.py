@@ -25,7 +25,7 @@ from jaeger_os.agent.loop.jaeger_agent import JaegerAgent
 from jaeger_os.agent.schemas.tool_registry import (
     get_tool, get_tools, register_tool_from_function, unregister_tool,
 )
-from jaeger_os.agent.skill_registry import toolsets as ts
+from jaeger_os.agent.skill_registry import toolset_scoping as ts
 
 
 @pytest.fixture

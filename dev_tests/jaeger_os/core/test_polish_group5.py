@@ -45,7 +45,7 @@ def test_visible_tool_groups_filters_to_CORE_when_scoping_on(monkeypatch):
     monkeypatch.delenv("JAEGER_FULL_TOOLS", raising=False)
 
     from jaeger_os.interfaces.tui.status import _visible_tool_groups
-    from jaeger_os.agent.skill_registry.toolsets import CORE
+    from jaeger_os.agent.skill_registry.toolset_scoping import CORE
     groups, visible, total = _visible_tool_groups()
 
     # Every displayed tool is in CORE (the model-visible set).
@@ -208,7 +208,7 @@ def test_skill_view_auto_loads_required_toolsets(monkeypatch, tmp_path):
         loaded.append(name)
         return True
 
-    from jaeger_os.agent.skill_registry import toolsets as _ts
+    from jaeger_os.agent.skill_registry import toolset_scoping as _ts
     monkeypatch.setattr(_ts, "enable_toolset", fake_enable, raising=True)
     monkeypatch.setattr(_ts, "active_toolset_names",
                         lambda: {"files", "code"}, raising=True)
@@ -257,16 +257,19 @@ def test_agent_contract_check_detects_staleness(tmp_path, monkeypatch):
 
 
 def test_agent_contract_includes_every_rule_section():
-    """The generated doc must mention every rule constant the
-    assemble pipeline references — otherwise a new constant
-    landing in rules.py would silently miss the doc."""
+    """The generated doc must mention every rule constant the assemble
+    pipeline references — otherwise a new constant landing in rules.py
+    would silently miss the doc.
+
+    Post-consolidation, the behavioural rule text (identity, mandatory
+    tool rules, operating discipline, tool-usage mechanics, runtime
+    tail) moved OUT of rules.py constants and into the externalized
+    ``framework_agent.md`` / ``three_laws.md`` documents. The only rule
+    constants left in rules.py are the two mutually-exclusive
+    toolset-surface notes, so those are the only names the doc must
+    still carry."""
     doc = (REPO / "jaeger_os" / "docs" / "agent_contract.md").read_text(encoding="utf-8")
     for name in (
-        "JAEGER_OS_CONTEXT",
-        "MANDATORY_TOOL_RULES",
-        "OPERATING_DISCIPLINE",
-        "TOOL_USAGE_RULES",
-        "RUNTIME_TAIL_BASE",
         "RUNTIME_TOOLSET_SCOPED",
         "RUNTIME_TOOLSET_UNSCOPED",
     ):

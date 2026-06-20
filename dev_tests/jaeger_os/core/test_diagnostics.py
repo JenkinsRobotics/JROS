@@ -241,7 +241,7 @@ def test_check_tool_registry_reads_jaeger_agent_dispatch_map():
     legacy ``_function_toolset``). A stub agent with the right shape
     must be detected; missing CORE names surface as a failure."""
     from jaeger_os.core.diagnostics.probe import _check_tool_registry
-    from jaeger_os.agent.skill_registry.toolsets import CORE
+    from jaeger_os.agent.skill_registry.toolset_scoping import CORE
     from jaeger_os import main as jmain
 
     # Stub: a CORE-complete dispatch map should pass.

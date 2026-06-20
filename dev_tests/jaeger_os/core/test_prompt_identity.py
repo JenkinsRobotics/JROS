@@ -14,12 +14,8 @@ import pytest
 
 from jaeger_os.core.instance.instance import InstanceLayout
 from jaeger_os.core.memory.memory import load_identity_string
-from jaeger_os.agent.prompts.prompts import (
-    JAEGER_OS_CONTEXT,
-    OPERATING_DISCIPLINE,
-    RUNTIME_TAIL_BASE,
-    build_system_prompt,
-)
+from jaeger_os.agent.prompts.context_blocks import load_framework_prompt
+from jaeger_os.agent.prompts.prompts import build_system_prompt
 
 _IDENTITY_YAML = """\
 name: Erin Jaeger
@@ -55,23 +51,30 @@ def test_identity_string_is_model_agnostic(instance):
     assert "base model" in out.lower()
 
 
-# ── prompt constants ─────────────────────────────────────────────────
+# ── framework prompt substance ───────────────────────────────────────
+# The identity / discipline / output rules used to live in four rules.py
+# constants (JAEGER_OS_CONTEXT, OPERATING_DISCIPLINE, RUNTIME_TAIL_BASE,
+# …). They were consolidated into the externalized framework document
+# ``framework_agent.md`` (loaded by ``load_framework_prompt``). These
+# tests pin the same SUBSTANCE against that document.
 
 
-def test_jaeger_os_context_describes_the_system():
-    assert "Jaeger OS" in JAEGER_OS_CONTEXT
-    assert "base model" in JAEGER_OS_CONTEXT.lower()
+def test_framework_prompt_describes_the_system():
+    fw = load_framework_prompt()
+    assert "Jaeger OS" in fw
+    assert "base model" in fw.lower()
 
 
-def test_operating_discipline_pins_to_the_current_message():
-    text = OPERATING_DISCIPLINE.lower()
+def test_framework_prompt_pins_to_the_current_message():
+    text = load_framework_prompt().lower()
     assert "current message" in text
     assert "resumed" in text
 
 
-def test_runtime_tail_forbids_markdown_bold():
-    assert "**" in RUNTIME_TAIL_BASE  # the rule names the offending markup
-    assert "plain terminal" in RUNTIME_TAIL_BASE.lower()
+def test_framework_prompt_forbids_markdown_bold():
+    fw = load_framework_prompt()
+    assert "**" in fw  # the rule names the offending markup
+    assert "plain terminal" in fw.lower()
 
 
 # ── build_system_prompt — end to end ─────────────────────────────────

@@ -32,13 +32,16 @@ from jaeger_os.agent.prompts import (
     cron_prompt,
     deep_think_directive,
 )
-from jaeger_os.agent.prompts.rules import (
-    JAEGER_OS_CONTEXT,
-    MANDATORY_TOOL_RULES,
-    OPERATING_DISCIPLINE,
-    TOOL_USAGE_RULES,
-    VOICE_LLM_GATE_RULE,
-)
+
+# The four static rule constants (JAEGER_OS_CONTEXT, MANDATORY_TOOL_RULES,
+# OPERATING_DISCIPLINE, TOOL_USAGE_RULES) were consolidated into the
+# externalized ``framework_agent.md`` document. Their behavioural SUBSTANCE
+# still appears in every assembled prompt; these are stable substrings of
+# that content used to pin block presence per mode.
+_JAEGER_OS_SUBSTANCE = "never the base model"            # identity frame
+_MANDATORY_TOOL_SUBSTANCE = 'memory(action="remember"'   # persist-facts rule
+_OPERATING_SUBSTANCE = "ANSWER THE CURRENT MESSAGE"      # current-message pin
+_TOOL_USAGE_SUBSTANCE = "READ BEFORE YOU WRITE OR JUDGE"  # read-before-edit
 
 
 def _layout(tmp_path: Path) -> object:
@@ -58,40 +61,14 @@ def _layout(tmp_path: Path) -> object:
 
 
 def test_agent_mode_contains_every_static_rule_block(tmp_path):
-    """The live-agent system prompt must carry all four static rule
-    blocks. A refactor that drops one of these is the most likely way
-    behaviour silently regresses."""
+    """The live-agent system prompt must carry the substance of all four
+    consolidated rule blocks. A refactor that drops one of these is the
+    most likely way behaviour silently regresses."""
     out = assemble_prompt(_layout(tmp_path), mode="agent")
-    assert JAEGER_OS_CONTEXT.strip() in out
-    assert MANDATORY_TOOL_RULES.strip() in out
-    assert OPERATING_DISCIPLINE.strip() in out
-    assert TOOL_USAGE_RULES.strip() in out
-
-
-def test_voice_gate_rule_matches_voicellm_noise_examples():
-    """The always-on voice gate must explicitly teach the model to ignore
-    background media/ad fragments while still answering direct requests.
-
-    G3 (operator-locked 2026-06-07): rule strengthened with VoiceLLM-
-    style default-to-ignore framing + more concrete noise examples,
-    including ones drawn from the operator's actual TV/movie test
-    runs."""
-    # Default-ignore framing (the conservative default that catches
-    # borderline ambient media).
-    assert "Default to ``<ignore>`` when uncertain" in VOICE_LLM_GATE_RULE
-    # The "much of what you hear is NOT directed at you" framing —
-    # VoiceLLM's anti-junk priming.  Substring search across the wrap.
-    assert "MUCH" in VOICE_LLM_GATE_RULE
-    assert "NOT directed at you" in VOICE_LLM_GATE_RULE
-    # Concrete examples — both legacy ones and ones added in G3.
-    assert "on X off-road makes it easy" in VOICE_LLM_GATE_RULE
-    assert "kind of stuff that players have been asking for forever" \
-        in VOICE_LLM_GATE_RULE
-    # G3 — example from operator's actual TV/movie noise test:
-    assert "Princess." in VOICE_LLM_GATE_RULE
-    # Direct requests stay <reply>.
-    assert "``what time is it``" in VOICE_LLM_GATE_RULE
-    assert "<reply>" in VOICE_LLM_GATE_RULE
+    assert _JAEGER_OS_SUBSTANCE in out
+    assert _MANDATORY_TOOL_SUBSTANCE in out
+    assert _OPERATING_SUBSTANCE in out
+    assert _TOOL_USAGE_SUBSTANCE in out
 
 
 def test_every_mode_gets_the_three_laws_wrap(tmp_path):
@@ -116,7 +93,7 @@ def test_every_mode_keeps_identity_and_jaeger_os_context(tmp_path):
     layout = _layout(tmp_path)
     for mode in ("agent", "subagent", "deep_think", "idle_board", "cron"):
         out = assemble_prompt(layout, mode=mode)
-        assert JAEGER_OS_CONTEXT.strip() in out, f"mode={mode!r}"
+        assert _JAEGER_OS_SUBSTANCE in out, f"mode={mode!r}"
 
 
 # ── per-mode shape ─────────────────────────────────────────────────
@@ -127,8 +104,8 @@ def test_agent_mode_is_the_full_surface(tmp_path):
     against. It carries identity, OS context, rules, runtime tail —
     the maximal scaffold."""
     out = assemble_prompt(_layout(tmp_path), mode="agent")
-    assert "File access" in out  # from RUNTIME_TAIL_BASE
-    assert OPERATING_DISCIPLINE.strip() in out
+    assert "READING is unrestricted" in out  # the file-access rule
+    assert _OPERATING_SUBSTANCE in out
 
 
 def test_subagent_mode_carries_the_brief_at_the_top(tmp_path):
@@ -143,11 +120,11 @@ def test_subagent_mode_carries_the_brief_at_the_top(tmp_path):
     assert "sub-agent" in out.lower()
     assert "port the macOS skill to linux" in out
     assert "started by the parent on 2026-05-25" in out
-    # The brief must come BEFORE the OPERATING_DISCIPLINE block so the
-    # model reads the task first, then the rules that frame how to
-    # work it.
+    # The brief must come BEFORE the operating-discipline rules (now in
+    # framework_agent.md) so the model reads the task first, then the
+    # rules that frame how to work it.
     assert out.index("port the macOS skill to linux") < \
-        out.index(OPERATING_DISCIPLINE.strip()[:40])
+        out.index(_OPERATING_SUBSTANCE)
 
 
 def test_subagent_mode_skips_the_board_digest(tmp_path):
@@ -189,8 +166,8 @@ def test_deep_think_mode_includes_full_rules_scaffold(tmp_path):
     rules surface. The task brief itself is the USER-role message
     (``deep_think_directive``), not part of the system prompt."""
     out = assemble_prompt(_layout(tmp_path), mode="deep_think")
-    assert OPERATING_DISCIPLINE.strip() in out
-    assert MANDATORY_TOOL_RULES.strip() in out
+    assert _OPERATING_SUBSTANCE in out
+    assert _MANDATORY_TOOL_SUBSTANCE in out
 
 
 # ── back-compat shim ───────────────────────────────────────────────

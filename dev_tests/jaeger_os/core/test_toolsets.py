@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import pytest
 
-from jaeger_os.agent.skill_registry import toolsets as ts
+from jaeger_os.agent.skill_registry import toolset_scoping as ts
 
 
 @pytest.fixture(autouse=True)

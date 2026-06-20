@@ -211,7 +211,9 @@ def test_flat_summaries_walks_new_nested_layout(fake_repo):
     )
     entries = list(bhv._from_flat_summaries(fake_repo))
     models = sorted(e["model"] for e in entries)
-    assert models == ["gemma-4-26b-a4b-it-q4_k_m", "gemma-4-e4b-it-q4-k-m"]
+    # Both slugs dash-normalised — consistent canonical form (no
+    # underscore/dash split that would double-count a model).
+    assert models == ["gemma-4-26b-a4b-it-q4-k-m", "gemma-4-e4b-it-q4-k-m"]
     e4b = next(e for e in entries if e["model"] == "gemma-4-e4b-it-q4-k-m")
     # ``run_dir`` should reflect the new layout.
     assert "gemma-4-E4B-it-Q4_K_M" in e4b["run_dir"]

@@ -35,25 +35,22 @@ def test_voice_config_defaults_match_voicellm_proven_pattern() -> None:
 
     0.4.x: when enabled IS flipped, the defaults match the proven
     VoiceLLM continuous-listening pattern (validated 2026-06-06):
-      - wake_word OFF   — LLM gate handles addressed-to-me, not
-                          Whisper transcription matching
-      - llm_gate ON     — every reply <ignore>/<reply>-prefixed
+      - wake_word ON    — the wake phrase is the addressed-to-me gate
+                          (the in-brain LLM <reply>/<ignore> gate was
+                          removed 2026-06-16; wake word replaces it)
       - barge_in  OFF   — mic-pause during TTS (VoiceLLM's reference
                           self-speech rejection strategy)
       - follow_up ON, follow_up_seconds=10.0 (reference value)
       - self_speech_filter ON, threshold=0.75
-      - stale queued turns dropped after 3.0s
     """
     vc = VoiceConfig()
     assert vc.enabled is False
-    assert vc.wake_word is False
+    assert vc.wake_word is True
     assert vc.barge_in is False
-    assert vc.llm_gate is True
     assert vc.follow_up is True
     assert vc.follow_up_seconds == 10.0
     assert vc.self_speech_filter is True
     assert vc.self_speech_threshold == 0.75
-    assert vc.pending_turn_max_age_s == 3.0
 
 
 def test_voice_config_enabled_can_be_turned_on_explicitly() -> None:
@@ -195,7 +192,6 @@ class _FakeSTT:
 
 def test_voice_controller_speaks_through_tts_node_bus() -> None:
     c = VoiceController(Console(file=open("/dev/null", "w")))
-    c.llm_gate = False
     c._bus = _FakeSpeechBus()
     c._audio_session = _FakeSTT()
 
@@ -215,7 +211,6 @@ def test_voice_controller_speaks_through_tts_node_bus() -> None:
 
 def test_voice_controller_does_not_speak_non_speech_marker_reply() -> None:
     c = VoiceController(Console(file=open("/dev/null", "w")))
-    c.llm_gate = False
     c._bus = _FakeSpeechBus()
     c._audio_session = _FakeSTT()
 
@@ -251,7 +246,6 @@ def test_voice_controller_poll_drops_stale_transcripts() -> None:
 def test_voice_controller_barge_in_publishes_correlated_speech_stop() -> None:
     c = VoiceController(Console(file=open("/dev/null", "w")),
                         barge_in=True)
-    c.llm_gate = False
     stt = _FakeSTT()
     bus = _FakeSpeechBus(
         ack_ok=False,

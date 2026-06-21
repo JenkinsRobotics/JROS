@@ -9,7 +9,7 @@ faster on the transport hot path AND native MessagePack support
 for the binary topics (audio frames, vision frames).  Pydantic
 stays in JROS for config validation + tool schemas where its
 richer ecosystem earns the overhead; transport schemas live where
-microseconds matter.  See ``dev_docs/ROADMAP_0.4.md`` open question
+microseconds matter.  See ``dev/docs/ROADMAP_0.4.md`` open question
 #2 (resolved): JSON for text topics, MessagePack for binary topics.
 
 Namespace
@@ -377,7 +377,7 @@ class AnimationCommand(TopicMessage):
     (image: hold; gif: one loop pass; video: full duration).
 
     Mochi parity: ImageHandler, GifHandler, etc.  See
-    dev_docs/library_review/mochi_demo.md for the vendoring map."""
+    dev/docs/library_review/mochi_demo.md for the vendoring map."""
     topic: Literal["/act/animation"] = ACT_ANIMATION
     adapter: str = "image"
     asset_path: str = ""
@@ -401,7 +401,7 @@ class TimelineCommand(TopicMessage):
     speech tracks, etc.) extract their relevant track and schedule
     its events.
 
-    See dev_docs/0.5.0_timeline_schema.md for the schema."""
+    See dev/docs/0.5.0_timeline_schema.md for the schema."""
     topic: Literal["/act/timeline"] = ACT_TIMELINE
     name: str = ""                # named timeline from instance dir; "" → inline
     timeline_json: str = ""       # serialised when inline
@@ -435,7 +435,7 @@ class XpAwarded(TopicMessage):
     Subscribers: the skill_tree registry (which persists state), and
     eventual visualisation surfaces.
 
-    See dev_docs/SKILL_TREE.md for the XP-progression contract."""
+    See dev/docs/SKILL_TREE.md for the XP-progression contract."""
     topic: Literal["/sense/xp_awarded"] = SENSE_XP_AWARDED
     skill_id: str = ""
     amount: int = 0

@@ -10,13 +10,13 @@ do?" (a doc).
 This script is the single source of truth: re-run it after any change
 to ``rules.py`` and ``jaeger_os/docs/agent_contract.md`` regenerates.
 CI can re-run it and diff to catch drift (see
-``dev_tests/jaeger_os/core/test_polish_group5.py``).
+``dev/tests/jaeger_os/core/test_polish_group5.py``).
 
 Usage:
     dev_scripts/generate_agent_contract.py            # write the doc
     dev_scripts/generate_agent_contract.py --check    # exit 1 if stale
 
-POLISH-5 in dev_docs/ROADMAP_0.2.0.md.
+POLISH-5 in dev/docs/ROADMAP_0.2.0.md.
 """
 
 from __future__ import annotations

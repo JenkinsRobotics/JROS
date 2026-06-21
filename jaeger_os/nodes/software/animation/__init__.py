@@ -6,7 +6,7 @@ bus and renders pixel buffers it ships to the Swift renderer (or
 any other consumer) via WebSocket.
 
 Each adapter implementation is a SKILL TREE NODE (see
-``dev_docs/SKILL_TREE.md``).  When a clip plays, the corresponding
+``dev/docs/SKILL_TREE.md``).  When a clip plays, the corresponding
 skill earns XP — operators see their agent's animation capability
 grow with use.
 
@@ -19,7 +19,7 @@ Adapter levels (operator-locked 2026-06-08):
   L5  rigged       (deferred — Live2D / Spine)
   L6  generative   (deferred — Wan2.1 / SVD / NeRF)
 
-See ``dev_docs/library_review/mochi_demo.md`` for the vendoring
+See ``dev/docs/library_review/mochi_demo.md`` for the vendoring
 audit + per-adapter origin.
 """
 

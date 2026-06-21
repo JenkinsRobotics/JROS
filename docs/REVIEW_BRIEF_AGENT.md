@@ -245,7 +245,7 @@ not just the docstrings):**
 84798d6  0.5.0: move core/background/ → agent/background/
 317c67e  0.5.0: Mochi-style Lilith face + reorg fallout cleanup
 ee54bec  0.5.0: jaeger avatar — see Lilith in action + fix manifest reader
-0958a98  dev_docs: 0.5.0 walk-the-flow checklist
+0958a98  dev/docs: 0.5.0 walk-the-flow checklist
 4544ce0  0.5.0: auto-state driver + --stream mode + --no-avatar opt-out
 99bea1c  0.5.0: /sense/tts_chunk topic + TTSNode emits + lip sync wired
 1e9a68a  0.5.0: Lilith persona + face script — 0.5.0 becomes visibly real

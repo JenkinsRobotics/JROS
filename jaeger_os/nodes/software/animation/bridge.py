@@ -3,7 +3,7 @@ AnimationNode to the Swift renderer (apps/JROS-Avatar/) or any
 other WebSocket-speaking client.
 
 Wire format documented in
-``dev_docs/0.5.0_swift_renderer_plan.md``:
+``dev/docs/0.5.0_swift_renderer_plan.md``:
 
     [ 4-byte BE length L ]
     [ L bytes UTF-8 JSON header ]

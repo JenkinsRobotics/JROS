@@ -1,7 +1,7 @@
 """Animation adapters — one per animation level + sub-type.
 
 Each adapter is a SkillNode in the operator's skill tree.  See
-``dev_docs/SKILL_TREE.md`` + ``dev_docs/library_review/mochi_demo.md``
+``dev/docs/SKILL_TREE.md`` + ``dev/docs/library_review/mochi_demo.md``
 for the levels + vendoring map.
 
 Levels in this package:

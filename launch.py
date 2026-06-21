@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""launch.py — sandbox launcher for JROS.
+"""launch.py — dev TUI launcher for JROS (also reached via `jaeger --dev`).
 
 Surfaces (CLI/TUI → windowed-app migration, 2026-06-14):
 
@@ -32,9 +32,9 @@ The in-process TUI loads the plugin stack directly:
 The terminal becomes the TUI.  Ctrl-C / ``/quit`` ends the session;
 Gemma + Kokoro + Whisper unload cleanly with the process.
 
-Every run uses the SANDBOX instance at
-``sandbox/.jaeger_os/instances/jros-dev/`` — your real ``~/.jaeger``
-instances are never touched.
+Every run uses the dev instance at
+``.jaeger_os/instances/jros-dev/`` — gitignored, so it never ships to
+end users.  `jaeger --dev` boots the same instance through this launcher.
 """
 
 from __future__ import annotations
@@ -65,14 +65,18 @@ import sys
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent
-SANDBOX_INSTANCE = REPO / "sandbox" / ".jaeger_os" / "instances" / "jros-dev"
+# The single dev instance, shared with `jaeger --dev`. Lives under the
+# repo's gitignored operator-state root (`.jaeger_os/`), so it never
+# ships to end users. (Pre-2026-06-19 this was an isolated `sandbox/`
+# copy — removed; the two drifted, which only caused confusion.)
+DEV_INSTANCE = REPO / ".jaeger_os" / "instances" / "jros-dev"
 VENV_PY = REPO / ".venv" / "bin" / "python"
 INSTANCE_NAME = "jros-dev"
 # Legacy daemon pid-file (0.3.0 pre-pivot architecture).  Stays in tree
 # but the launcher no longer spawns it — if a previous --daemon run
 # left one lingering, cmd_boot stops it during the boot scroll so the
 # TUI can acquire the instance lock.
-LEGACY_DAEMON_PID = SANDBOX_INSTANCE / "run" / "jaeger.pid"
+LEGACY_DAEMON_PID = DEV_INSTANCE / "run" / "jaeger.pid"
 
 
 # ─── pretty output ────────────────────────────────────────────────────
@@ -319,7 +323,7 @@ def _check_instance_manifest() -> tuple[bool, str]:
             sys.path.insert(0, str(REPO))
         from jaeger_os.core.instance.instance import InstanceLayout
         from jaeger_os.core.instance.schemas import Manifest, load_yaml
-        layout = InstanceLayout(root=SANDBOX_INSTANCE)
+        layout = InstanceLayout(root=DEV_INSTANCE)
         if not layout.manifest_path.exists():
             return False, f"manifest missing at {layout.manifest_path}"
         manifest = load_yaml(layout.manifest_path, Manifest)
@@ -343,7 +347,7 @@ def _check_tui_importable() -> tuple[bool, str]:
 
 def _model_file_on_disk(env: dict[str, str]) -> tuple[bool, str]:
     """Resolve the configured LLM model and return (exists, label)."""
-    config_yaml = SANDBOX_INSTANCE / "config.yaml"
+    config_yaml = DEV_INSTANCE / "config.yaml"
     if not config_yaml.exists():
         return False, "no config.yaml"
     try:
@@ -375,19 +379,18 @@ def _model_file_on_disk(env: dict[str, str]) -> tuple[bool, str]:
     return False, f"{raw!r} unresolvable"
 
 
-# ─── sandbox env ──────────────────────────────────────────────────────
+# ─── dev env ──────────────────────────────────────────────────────────
 
-def sandbox_env() -> dict[str, str]:
+def dev_env() -> dict[str, str]:
     """Build the env the TUI subprocess inherits.
 
-    Points JAEGER_HOME / JAEGER_INSTANCE_* at the sandbox so the TUI's
-    instance resolver picks up ``sandbox/.jaeger_os/instances/jros-dev/``
-    instead of the operator's real ``~/.jaeger``.  PYTHONPATH puts the
-    top-level ``jaeger_os/`` first so the TUI imports the code you're
-    editing, not a stale install."""
+    Points JAEGER_HOME / JAEGER_INSTANCE_* at the dev instance so the
+    TUI's instance resolver picks up ``.jaeger_os/instances/jros-dev/``.
+    PYTHONPATH puts the top-level ``jaeger_os/`` first so the TUI imports
+    the code you're editing, not a stale install."""
     env = dict(os.environ)
-    env["JAEGER_HOME"] = str(SANDBOX_INSTANCE.parent.parent)
-    env["JAEGER_INSTANCE_DIR"] = str(SANDBOX_INSTANCE)
+    env["JAEGER_HOME"] = str(DEV_INSTANCE.parent.parent)
+    env["JAEGER_INSTANCE_DIR"] = str(DEV_INSTANCE)
     env["JAEGER_INSTANCE_NAME"] = INSTANCE_NAME
     pp = env.get("PYTHONPATH", "")
     env["PYTHONPATH"] = f"{REPO}:{pp}" if pp else str(REPO)
@@ -473,7 +476,7 @@ def reset_audio() -> int:
 
 def clean_logs() -> int:
     """Truncate the instance log to 0 bytes in place."""
-    log = SANDBOX_INSTANCE / "run" / "jaeger.log"
+    log = DEV_INSTANCE / "run" / "jaeger.log"
     if not log.exists():
         warn(f"no log at {log}")
         return 0
@@ -489,63 +492,22 @@ def clean_logs() -> int:
 
 
 def health(env: dict[str, str]) -> int:
-    """Preflight checks — print PASS/FAIL on each."""
-    print()
-    print("== JROS sandbox health check ==")
-    fails = 0
-
-    def record(name: str, passed: bool, label: str) -> None:
-        nonlocal fails
-        if passed:
-            ok(f"{name:<17} {label}")
-        else:
-            fail(f"{name:<17} {label}")
-            fails += 1
-
-    if not VENV_PY.exists():
-        record(".venv", False, f"not at {VENV_PY}")
-    else:
-        record(".venv", True, str(VENV_PY))
-        record(
-            "library",
-            verify_library_path(env, quiet=True),
-            str(REPO / "jaeger_os"),
-        )
-
-    record("instance", SANDBOX_INSTANCE.exists(), str(SANDBOX_INSTANCE))
-    legacy_pid = _legacy_daemon_pid()
-    record(
-        "legacy daemon",
-        legacy_pid is None,
-        "not running (archived path)" if legacy_pid is None else f"pid={legacy_pid}",
-    )
-
-    check_rows = [
-        ("manifest", _check_instance_manifest),
-        ("LLM model", lambda: _model_file_on_disk(env)),
-        ("AVAudio bridge", _check_avaudio_bridge),
-        ("Whisper assets", _check_whisper_assets),
-        ("Kokoro TTS", _check_kokoro_package),
-        ("skill matrix", lambda: _check_skill_matrix(env)),
-        ("TUI module", _check_tui_importable),
-    ]
-    for name, check in check_rows:
-        passed, label = check()
-        record(name, passed, label)
-
-    print()
-    if fails:
-        fail(f"{fails} check(s) failed")
-        return 1
-    ok("all checks passed")
-    return 0
+    """``launch --health`` — delegates to the ONE doctor (``jaeger
+    doctor``). Launch keeps NO health checks of its own: the doctor
+    (deps/config + runtime substrate, ``core.diagnostics.run_doctor``)
+    is the single source for both the user-facing CLI and this launcher.
+    Runs against the dev instance via the dev env."""
+    return subprocess.run(
+        [str(VENV_PY), "-m", "jaeger_os.run", "--doctor", "--doctor-check"],
+        env=env,
+    ).returncode
 
 
 # ─── high-level actions ───────────────────────────────────────────────
 
 def cmd_status(env: dict[str, str]) -> int:
     print()
-    print(f"sandbox instance : {SANDBOX_INSTANCE}")
+    print(f"dev instance : {DEV_INSTANCE}")
     verify_library_path(env)
     pid = tui_running()
     if pid is not None:
@@ -581,13 +543,13 @@ def cmd_boot(env: dict[str, str], *, no_voice: bool) -> int:
     print(BOOT_HEADER)
 
     # ── COCKPIT VALIDATION ──────────────────────────────────────────
-    scroll("COCKPIT VALIDATION", "INIT", suffix="sandbox bundle + launch profile")
-    if not SANDBOX_INSTANCE.exists():
+    scroll("COCKPIT VALIDATION", "INIT", suffix="dev instance + launch profile")
+    if not DEV_INSTANCE.exists():
         scroll("COCKPIT VALIDATION", "FAIL",
-               suffix=f"sandbox missing: {SANDBOX_INSTANCE}")
+               suffix=f"dev instance missing: {DEV_INSTANCE}")
         say("run ./run.sh setup jros-dev to create it")
         return 1
-    scroll("COCKPIT VALIDATION", "READY", suffix=str(SANDBOX_INSTANCE))
+    scroll("COCKPIT VALIDATION", "READY", suffix=str(DEV_INSTANCE))
 
     # ── CORE FRAMEWORK LINK ─────────────────────────────────────────
     scroll("CORE FRAMEWORK LINK", "INIT",
@@ -721,8 +683,8 @@ def cmd_boot_windowed(env: dict[str, str]) -> int:
     if not VENV_PY.exists():
         fail(f".venv not at {VENV_PY} — run ./install.sh first")
         return 1
-    if not SANDBOX_INSTANCE.exists():
-        fail(f"sandbox instance not found at {SANDBOX_INSTANCE}")
+    if not DEV_INSTANCE.exists():
+        fail(f"dev instance not found at {DEV_INSTANCE}")
         say("run ./run.sh setup jros-dev to create it", prefix="launch")
         return 1
     say("launching the windowed app — menu-bar tray + chat window "
@@ -786,12 +748,12 @@ def main() -> int:
                              "Track A.7 broker + Track B node split)")
     args = parser.parse_args()
 
-    if not SANDBOX_INSTANCE.exists():
-        fail(f"sandbox instance not found at {SANDBOX_INSTANCE}")
+    if not DEV_INSTANCE.exists():
+        fail(f"dev instance not found at {DEV_INSTANCE}")
         say("run ./run.sh setup jros-dev to create it", prefix="launch")
         return 1
 
-    env = sandbox_env()
+    env = dev_env()
 
     if args.reset_audio:
         return reset_audio()

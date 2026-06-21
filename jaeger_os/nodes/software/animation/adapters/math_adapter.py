@@ -17,7 +17,7 @@ discovery; same delegation pattern.  Two changes for JROS:
   2. Scripts draw RGB (3 channels); the adapter converts to RGBA8
      before emitting the FrameBuffer.
 
-Apache 2.0; see ``dev_docs/library_review/mochi_demo.md``.
+Apache 2.0; see ``dev/docs/library_review/mochi_demo.md``.
 
 Skill tree
 ──────────

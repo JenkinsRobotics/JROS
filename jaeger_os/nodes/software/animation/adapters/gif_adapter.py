@@ -11,7 +11,7 @@ Distilled from Mochi's ``GifHandler`` + ``decoders/gif_decoder.py``
 + ``media_base.py`` chain.  Simplified to the JROS Protocol:
 open / close / next_frame.  Loop semantics handled by walking
 elapsed time mod total_duration.  Apache 2.0; see
-``dev_docs/library_review/mochi_demo.md`` for the audit.
+``dev/docs/library_review/mochi_demo.md`` for the audit.
 
 Skill tree
 ──────────

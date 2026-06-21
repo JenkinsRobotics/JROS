@@ -215,8 +215,8 @@ apps/                              (recent — operator-launchable)
 └── (more in flight)
 
 dev_scripts/                       (operator utilities)
-dev_tests/
-dev_docs/
+dev/tests/
+dev/docs/
 docs/                              (this brief lives here)
 launch                             (shell wrapper)
 launch.py                          (Python entry)

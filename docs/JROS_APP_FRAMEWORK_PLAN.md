@@ -227,7 +227,7 @@ at runtime, ever. What exists instead (per §1.1 items 6+8):
    spec version it implements.
 3. **Upstreaming keeps the reference alive.** Fixes and improvements
    are usually discovered inside an app (JROS will find most, having
-   the test discipline — 2,182 passing, `dev_docs/STATUS.md`); they are
+   the test discipline — 2,182 passing, `dev/docs/STATUS.md`); they are
    upstreamed to the format repo, the changelog entry is written, and
    other apps re-copy when they choose. The format repo's own tests run
    standalone (the chassis is dependency-light by rule), so the
@@ -815,7 +815,7 @@ jaeger_os/nodes/                 today            →  target
 same mechanical commit (rule 2 above — operator naming, 2026-06-12:
 it is the layer that connects nodes to devices, never the device
 controller; the `nodes/hardware/*` workers are the controllers). Its
-contents don't change; imports + the `dev_tests/jaeger_os/hardware/`
+contents don't change; imports + the `dev/tests/jaeger_os/hardware/`
 path move with it; STATUS.md notes the rename. `nodes/runtime.py`'s
 singletons keep working through the move and die later, in Phase 3,
 when the manifest takes over node declaration.

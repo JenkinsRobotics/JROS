@@ -15,7 +15,7 @@ adapter's foreground colour; OFF pixels get the background.
 Architecture vendored from Mochi
 ─────────────────────────────────
 Distilled from Mochi's BitmapHandler (Apache 2.0; see
-``dev_docs/library_review/mochi_demo.md``).  Reshaped to the JROS
+``dev/docs/library_review/mochi_demo.md``).  Reshaped to the JROS
 Protocol + RGBA8 output; the numpy unpacking is preserved
 verbatim because it's already cleanly vectorised.
 

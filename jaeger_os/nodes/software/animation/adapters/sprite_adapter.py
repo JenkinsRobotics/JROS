@@ -8,7 +8,7 @@ one SpriteCommand with its own source rect.
 Architecture vendored from Mochi
 ─────────────────────────────────
 Mirrors Mochi's SpriteHandler (Apache 2.0; see
-``dev_docs/library_review/mochi_demo.md``).  Same NumPy-based blit;
+``dev/docs/library_review/mochi_demo.md``).  Same NumPy-based blit;
 swapped RGB output for RGBA8 + JROS Protocol surface.
 
 Skill tree

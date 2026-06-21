@@ -172,7 +172,7 @@ def menu_items_for(state: TrayState) -> list[MenuItem]:
         # barge-in when speexdsp is available.
         MenuItem(label="Open Voice",        action="open_voice"),
         # Floating chat window (PyQt6). Disabled placeholder until the
-        # GUI lands — see the 0.3.0 / GUI work in dev_docs/.
+        # GUI lands — see the 0.3.0 / GUI work in dev/docs/.
         MenuItem(label="Open Chat (GUI)",   action="open_gui",
                  enabled=False),
         # Web dashboard — separate future surface (browser-based

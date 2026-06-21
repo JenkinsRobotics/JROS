@@ -118,7 +118,7 @@ Hard rules:
    - ~/GITHUB/JROS/docs/JROS_DAEMON_ARCH_BRIEF.md (Tier 1-4 vocabulary)
    - ~/GITHUB/JROS/docs/JROS_HARDWARE_FRAMEWORK_PLAN.md (Tier 3 contract — fixed)
    - ~/GITHUB/JROS/docs/JROS_HARDWARE_INTEGRATION_BRIEF.md §6.5 (animation node = Tier 3 reference; same shape generalizes)
-   - ~/GITHUB/JROS/dev_docs/STATUS.md (what just shipped)
+   - ~/GITHUB/JROS/dev/docs/STATUS.md (what just shipped)
 3. Survey the three apps' current boot paths:
    - ~/GITHUB/JROS/jaeger_os/main.py + config.yaml
    - ~/GITHUB/Mochi/main.py + config.yaml + the broker subprocess code

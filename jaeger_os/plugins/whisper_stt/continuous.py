@@ -70,7 +70,7 @@ class WhisperSTTContinuous:
         wake_phrases: tuple[str, ...] = DEFAULT_WAKE_PHRASES,
         wake_match_threshold: float = 0.78,
         # 0.4.0 alignment with the proven
-        # ``dev_tools/audio_smoke/voice_assistant_persistent.py``
+        # ``dev/tools/audio_smoke/voice_assistant_persistent.py``
         # reference (operator-validated 2026-06-06).  Prior values
         # (15s follow-up, 12s max phrase, avaudio mic) had drifted
         # heavier and degraded wake-word transcription accuracy.

@@ -1,5 +1,5 @@
 """WebSocket bridge — ship :class:`FrameBuffer` frames from the
-AnimationNode to the Swift renderer (apps/JROS-Avatar/) or any
+AnimationNode to the Swift renderer (jaeger_os/interfaces/avatar/) or any
 other WebSocket-speaking client.
 
 Wire format documented in

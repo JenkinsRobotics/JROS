@@ -72,7 +72,7 @@ class TTSNode(Node):
 
     The synthesizer is dependency-injected so tests can substitute a
     mock without touching audio or model loading.  Production
-    instantiation lives in ``dev_scripts/tts_node_test.py`` (the
+    instantiation lives in ``dev/scripts/tts_node_test.py`` (the
     integration smoke) and at Track B.2 will move to the brain's
     boot path so the ``text_to_speech`` tool can route through the
     bus instead of calling KokoroTTS in-process.

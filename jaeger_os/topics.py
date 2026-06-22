@@ -289,7 +289,7 @@ SENSE_NODE_HEALTH = "/sense/node_health"
 
 class EStop(TopicMessage):
     """System e-stop — L2 of the hardware safety contract (see
-    docs/JROS_HARDWARE_FRAMEWORK_PLAN.md §2.8). Publishing with
+    dev/docs/JROS_HARDWARE_FRAMEWORK_PLAN.md §2.8). Publishing with
     ``engaged=True`` LATCHES the stop: every hardware node in the
     package's ``safety.estop_scope`` executes its node-local stop on
     receipt, and motion capabilities refuse while latched. Release

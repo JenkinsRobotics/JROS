@@ -449,7 +449,7 @@ recorded there came out of the 2026-05-25 design session.
         `jaeger_os/instance/`).
       - Update every test that hardcodes
         `instance/default/` paths.
-      - Update `scripts/dev_env.sh` if it references the bundled
+      - Update `dev/scripts/dev_env.sh` if it references the bundled
         location (it shouldn't — already points at
         `sandbox/jros-dev/`).
       - The 0.1.0 → 1.1.0 move happens in INST-8 (which
@@ -635,7 +635,7 @@ What needs to happen:
       the rest; only `run/` was missing.
 - [x] **HYGIENE-3** — `sandbox/` directory + dev shim. **Done
       2026-05-25** — `sandbox/` added to the root `.gitignore`;
-      `scripts/dev_env.sh` exports `JAEGER_INSTANCE_DIR=$REPO/sandbox/jros-dev`
+      `dev/scripts/dev_env.sh` exports `JAEGER_INSTANCE_DIR=$REPO/sandbox/jros-dev`
       (sourced) or runs a subcommand with the var set. The dev
       instance now lives at `sandbox/jros-dev/` (including its
       `.git/` skills-audit history).

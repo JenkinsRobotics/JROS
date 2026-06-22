@@ -98,7 +98,7 @@ on-disk path. Priority, top to bottom:
 
 1. **`--instance NAME`** CLI flag (always wins).
 2. **`JAEGER_INSTANCE_DIR`** env var (explicit path — use for
-   dev work that targets `sandbox/jros-dev/` via `scripts/dev_env.sh`,
+   dev work that targets `sandbox/jros-dev/` via `dev/scripts/dev_env.sh`,
    or for tests that want a throwaway location).
 3. **`JAEGER_INSTANCE_NAME`** env var → `~/.jaeger/instances/<name>/`.
 4. **`~/.jaeger/active_instance` file** → `~/.jaeger/instances/<name>/`
@@ -154,7 +154,7 @@ In-repo work uses `sandbox/jros-dev/` so writes don't land in the
 user's real `~/.jaeger/`:
 
 ```sh
-source scripts/dev_env.sh     # exports JAEGER_INSTANCE_DIR=$REPO/sandbox/jros-dev
+source dev/scripts/dev_env.sh     # exports JAEGER_INSTANCE_DIR=$REPO/sandbox/jros-dev
 jaeger start
 ```
 

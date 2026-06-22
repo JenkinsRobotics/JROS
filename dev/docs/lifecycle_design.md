@@ -303,7 +303,7 @@ site-packages/jaeger_os/             ← the library
    first real exercise of the migration runner.
 5. **Dev workflow unchanged.** Dev checkouts still use
    `sandbox/jros-dev/` via `JAEGER_INSTANCE_DIR` and
-   `scripts/dev_env.sh` (HYGIENE-3). The sandbox path is explicit;
+   `dev/scripts/dev_env.sh` (HYGIENE-3). The sandbox path is explicit;
    the `instances/` nesting is for user-mode only.
 
 ### Resolver order (0.2.0)

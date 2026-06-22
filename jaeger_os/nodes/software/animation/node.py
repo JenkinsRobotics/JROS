@@ -1,6 +1,6 @@
 """AnimationNode — owns the active animation adapter; subscribes to
 the bus; ships rendered frames to the renderer (Swift app at
-``apps/JROS-Avatar/`` is the 0.5 default).
+``jaeger_os/interfaces/avatar/`` is the 0.5 default).
 
 Architecture mirrors :class:`jaeger_os.nodes.software.tts.node.TTSNode`:
 a subscriber on the bus + a worker thread that drains a queue of

@@ -166,7 +166,7 @@ class _MicStream:
             #   • Otherwise → voice_processing ON.  Apple's pre-canned
             #     pipeline (AEC + NS + AGC) is what FaceTime uses, runs
             #     for free on macOS, and was validated in
-            #     dev_tools/audio_smoke/voice_assistant_avaudio.py
+            #     dev/tools/audio_smoke/voice_assistant_avaudio.py
             #     as the fix for agent-
             #     hears-itself when the mic stays open during TTS.
             #     Mic-pause mode also benefits (NS + AGC improve

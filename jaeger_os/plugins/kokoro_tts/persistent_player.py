@@ -1,7 +1,7 @@
 """Persistent output player for the Kokoro TTS plugin.
 
 Direct port of the working pattern from
-``dev_tools/audio_smoke/voice_assistant_persistent.py::PersistentPlayer``
+``dev/tools/audio_smoke/voice_assistant_persistent.py::PersistentPlayer``
 (and ``voice_assistant_avaudio.py::SessionPlayer``), adapted to live
 inside the plugin with backend selection.
 

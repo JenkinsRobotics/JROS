@@ -23,8 +23,8 @@ JROS/
 ├── dev/docs/                 — design + audits + roadmaps
 ├── dev/tests/                — pytest suite (~2000 tests)
 ├── dev/benchmark/            — agent corpus + bench harness
-├── dev_scripts/              — developer utilities
-├── dev_tools/                — voice/audio reference clients
+├── dev/scripts/              — developer utilities
+├── dev/tools/                — voice/audio reference clients
 ├── docs/                     — operator-facing docs
 ├── sandbox/                  — in-repo instance for dev (gitignored)
 ├── scripts/                  — install / setup

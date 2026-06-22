@@ -128,9 +128,9 @@ class KokoroTTS:
         # whole TTS lifetime.  Backend chosen at runtime from
         # ``config.voice.audio_backend`` (default "sounddevice"):
         #   - "sounddevice" : PortAudio path proven by
-        #     dev_tools/audio_smoke/voice_assistant_persistent.py
+        #     dev/tools/audio_smoke/voice_assistant_persistent.py
         #   - "avaudio"     : AVAudioEngine path proven by
-        #     dev_tools/audio_smoke/voice_assistant_avaudio.py
+        #     dev/tools/audio_smoke/voice_assistant_avaudio.py
         # Lazy-opened by ``_ensure_player`` from ``warm()``; closed by
         # ``shutdown()`` at TUI exit.
         from .persistent_player import PersistentKokoroPlayer

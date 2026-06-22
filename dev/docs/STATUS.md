@@ -69,7 +69,7 @@ operator's machine (model weights + a display).
 
 ## Findings & fixes — 2026-06-12 hardware framework + JP01 sim package (0.5.0)
 
-Implements docs/JROS_HARDWARE_FRAMEWORK_PLAN.md §4.2 steps 1+2.
+Implements dev/docs/JROS_HARDWARE_FRAMEWORK_PLAN.md §4.2 steps 1+2.
 Everything below is unit-tested (56 new tests, all headless against
 MockTransport); **nothing has touched real hardware** — every JP01
 controller ships `simulated: true` and the capability tools are

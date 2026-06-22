@@ -116,7 +116,7 @@ What we write ourselves:
 * Persona-to-avatar mapping (HEXACO + expression sliders →
   default expressions for the model).
 
-Same pattern as `dev_tools/audio_smoke/voice_assistant_persistent.py`
+Same pattern as `dev/tools/audio_smoke/voice_assistant_persistent.py`
 — we vendored the operator's earlier voice loop as a working
 reference, modified it freely, kept attribution in the file.
 

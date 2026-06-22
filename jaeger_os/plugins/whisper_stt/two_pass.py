@@ -229,7 +229,7 @@ class WhisperSTTTwoPass:
         wake_phrases: tuple[str, ...] = DEFAULT_WAKE_PHRASES,
         wake_match_threshold: float = 0.78,
         # 0.4.0 alignment: defaults match the proven reference
-        # ``dev_tools/audio_smoke/voice_assistant_persistent.py``
+        # ``dev/tools/audio_smoke/voice_assistant_persistent.py``
         # the operator validated 2026-06-06.  Prior JROS values
         # (1000ms hangover, 12s max phrase, 15s follow-up, avaudio
         # mic) had drifted longer/heavier and degraded wake-word

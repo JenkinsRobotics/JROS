@@ -53,7 +53,7 @@ conversations/windows; a client renders only its own.
 ## Using the SDK
 
 ```python
-from jaeger_os.client import JrosClient
+from jaeger_os.interfaces.client import JrosClient
 
 with JrosClient(env={"JAEGER_INSTANCE_NAME": "jros-dev"}) as agent:
     out = agent.turn("hello",

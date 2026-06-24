@@ -138,27 +138,27 @@ class JaegerStudioWindow(QWidget):
         return stage
 
     def _center(self) -> QWidget:
+        from jaeger_os.interfaces.studio import pages
+        ctx = self._ctx
         self._center_stack = QStackedWidget()
-        self._center_stack.addWidget(self._empty_page())       # 0  Dashboard (empty)
-        self._center_stack.addWidget(self._media_page())       # 1  Media (built)
-        self._center_stack.addWidget(self._characters_page())  # 2  Characters (built)
-        self._center_stack.addWidget(self._chat_page())        # 3  Chat (avatar + TUI)
-        self._pages = {"Dashboard": 0, "Media": 1, "Characters": 2, "Chat": 3}
-        # Planned tabs — clickable wireframe stubs until each is built out.
-        _STUBS = [
-            ("Animation", "Trigger expressions (happy / sad / blink…), a live avatar preview, "
-                          "and the mscript editor — drives the animation node."),
-            ("Editors", "Author animations: mscript / bitmap / sprite editors."),
-            ("Assets", "Browse + preview the asset library — gifs, bitmaps, sprites, mscripts, "
-                       "math, video, skins."),
-            ("Packs", "Bundle + manage asset packs (export / import / share)."),
-            ("Diagnostics", "Node + agent health, perf counters, and logs."),
-            ("Learn", "Tutorials — the migrated docs/learn guides (animations, sprites, mscripts…)."),
-            ("Settings", "Config — voice, model, instance paths, theme."),
-        ]
-        for name, blurb in _STUBS:
+        self._pages: dict[str, int] = {}
+
+        def add(name: str, widget: QWidget) -> None:
             self._pages[name] = self._center_stack.count()
-            self._center_stack.addWidget(self._stub_page(name, blurb))
+            self._center_stack.addWidget(widget)
+
+        # Built surfaces + the once-stub tabs, now each with a real function.
+        add("Dashboard", pages.dashboard_page(ctx, self._agent_name))
+        add("Characters", self._characters_page())
+        add("Animation", pages.animation_page(ctx))
+        add("Editors", pages.editors_page(ctx))
+        add("Media", self._media_page())
+        add("Assets", pages.assets_page(ctx))
+        add("Packs", pages.packs_page(ctx))
+        add("Chat", self._chat_page())
+        add("Diagnostics", pages.diagnostics_page(ctx))
+        add("Learn", pages.learn_page(ctx))
+        add("Settings", pages.settings_page(ctx, self._agent_name))
         return self._center_stack
 
     def _stub_page(self, name: str, blurb: str) -> QWidget:

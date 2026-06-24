@@ -42,7 +42,7 @@ from typing import Any
 
 import numpy as np
 
-from ._base import (
+from .._base import (
     DEFAULT_WAKE_PHRASES,
     _MicStream,
     _find_wake_in_text,

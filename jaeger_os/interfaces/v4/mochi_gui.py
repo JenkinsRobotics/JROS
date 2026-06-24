@@ -60,7 +60,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from transport import make_node_topics
 
-from jaeger_os.nodes.animation.plugin_core.logging_utils import setup_logger
+from jaeger_os.nodes.animation_dev.plugin_core.logging_utils import setup_logger
 
 DEFAULT_CTRL_ADDR = "tcp://127.0.0.1:5556"
 DEFAULT_HEALTH_ADDR = "tcp://127.0.0.1:5555"

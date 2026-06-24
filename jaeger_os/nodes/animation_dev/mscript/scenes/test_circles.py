@@ -1,15 +1,15 @@
-# animations/test_filled_circles.py
-# A Python/NumPy recreation of the testFilledCircles pattern from Adafruit GFX.
+# assets/math/test_circles.py
+# A Python/NumPy recreation of the testCircles pattern from Adafruit GFX.
 
 import numpy as np
-from plugin_core.mochi_animations import Animation
+from mscript.mochi_animations import Animation
 
-class TestFilledCircles(Animation):
-    name = "test_filled_circles"
+class TestCircles(Animation):
+    name = "test_circles"
 
     def __init__(self, w: int, h: int):
         super().__init__(w, h)
-        self.color = (255, 0, 255)  # Default to Magenta
+        self.color = (255, 255, 255)  # Default to White
         self.radius = 10
 
         # Pre-calculate coordinate grids for vectorized drawing
@@ -41,13 +41,12 @@ class TestFilledCircles(Animation):
         if self.radius <= 0: return
 
         r2 = self.radius * 2
-        r_squared = self.radius * self.radius
+        outer_radius_sq = self.radius * self.radius
+        inner_radius_sq = (self.radius - 1) * (self.radius - 1)
 
         # Loop over the positions for the circle centers
-        for y in range(self.radius, self.h, r2):
-            for x in range(self.radius, self.w, r2):
-                # Create a boolean mask for all pixels inside the current circle.
-                circle_mask = (self._x_coords - x)**2 + (self._y_coords - y)**2 <= r_squared
-                
-                # Apply the mask to the frame to color the circle.
-                frame[circle_mask] = self.color
+        for y in range(0, self.h + self.radius, r2):
+            for x in range(0, self.w + self.radius, r2):
+                dist_sq = (self._x_coords - x)**2 + (self._y_coords - y)**2
+                outline_mask = (dist_sq >= inner_radius_sq) & (dist_sq < outer_radius_sq)
+                frame[outline_mask] = self.color

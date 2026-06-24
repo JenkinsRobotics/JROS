@@ -2,7 +2,7 @@
 # A Python/NumPy animation inspired by Daft Punk LED helmets.
 
 import numpy as np
-from plugin_core.mochi_animations import Animation
+from mscript.mochi_animations import Animation
 
 class DaftPunkInspired(Animation):
     """

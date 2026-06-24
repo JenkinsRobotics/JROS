@@ -2,7 +2,7 @@
 # A Python/NumPy implementation of Conway's Game of Life.
 
 import numpy as np
-from plugin_core.mochi_animations import Animation
+from mscript.mochi_animations import Animation
 
 class GameOfLife(Animation):
     """

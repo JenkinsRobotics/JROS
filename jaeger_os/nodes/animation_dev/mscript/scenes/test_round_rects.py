@@ -1,25 +1,24 @@
-# animations/test_filled_round_rects.py
-# A Python/NumPy recreation of the testFilledRoundRects pattern from Adafruit GFX.
+# animations/test_round_rects.py
+# A Python/NumPy recreation of the testRoundRects pattern from Adafruit GFX.
 
 import numpy as np
-from plugin_core.mochi_animations import Animation, clamp8
-from plugin_core.gfx import fill_round_rect
+from mscript.mochi_animations import Animation, clamp8
+from mscript.gfx import draw_round_rect, parse_color
 
-class TestFilledRoundRects(Animation):
-    name = "test_filled_round_rects"
+class TestRoundRects(Animation):
+    name = "test_round_rects"
 
     def __init__(self, w: int, h: int):
         super().__init__(w, h)
-        self.color = (0, 255, 0) # Default base color is Green
+        self.color = (255, 0, 0) # Default base color is Red
         self.is_dynamic_color = True # By default, color changes with size
 
     def on_enter(self, **kwargs):
         super().on_enter(**kwargs) # Handles the 'clear' flag
         
-        # Use standard uppercase argument key
-        if "CLR" in kwargs and isinstance(kwargs["CLR"], list):
+        if "color" in kwargs:
             # If a color is passed, use it as a fixed color
-            self.color = tuple(kwargs["CLR"])
+            self.color = parse_color(kwargs["color"], self.color)
             self.is_dynamic_color = False
 
     def render_into(self, t: float, pixel_buf: bytearray):
@@ -32,10 +31,10 @@ class TestFilledRoundRects(Animation):
         cy = self.h // 2 - 1
         n = min(self.w, self.h)
 
-        loop_duration = 5.0
+        loop_duration = 4.0
         phase = (t % loop_duration) / loop_duration
-        i = int(n * (1.0 - phase))
-        if i <= 20:
+        i = int(n * phase)
+        if i < 2:
             return
 
         i2 = i // 2
@@ -45,7 +44,7 @@ class TestFilledRoundRects(Animation):
         # Determine the final color to use
         final_color = self.color
         if self.is_dynamic_color:
-            # If no override, calculate color based on size
+            # If no override, calculate color based on size, like the original demo
             final_color = (clamp8(self.color[0] * i // n),
                            clamp8(self.color[1] * i // n),
                            clamp8(self.color[2] * i // n))
@@ -53,4 +52,4 @@ class TestFilledRoundRects(Animation):
         if x < 0 or y < 0 or x + i >= self.w or y + i >= self.h:
             return
 
-        fill_round_rect(frame, x, y, i, i, i // 8, final_color)
+        draw_round_rect(frame, x, y, i, i, i // 8, final_color)

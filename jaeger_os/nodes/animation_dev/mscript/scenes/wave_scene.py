@@ -2,7 +2,7 @@
 # A Python/NumPy port of the C++ WaveScene animation.
 
 import numpy as np
-from plugin_core.mochi_animations import Animation
+from mscript.mochi_animations import Animation
 
 class WaveScene(Animation):
     """

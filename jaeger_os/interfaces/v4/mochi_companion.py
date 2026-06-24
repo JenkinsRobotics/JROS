@@ -97,7 +97,7 @@ CATALOG_PATH = PROJECT_ROOT / "assets" / "CATALOG.json"
 # Add the animation node's package root to sys.path so the
 # in-process LivePreview can import the same handlers the renderer
 # subprocess uses.  Done at import time so the handlers' internal
-# ``from animations import …`` + ``from plugin_core import …`` calls
+# ``from animations import …`` + ``from mscript import …`` calls
 # resolve correctly.  Mirrors how nodes/animation/node.py sets up
 # its own sys.path.
 _ANIM_PACKAGE_ROOT = PROJECT_ROOT / "nodes" / "animation"
@@ -655,7 +655,7 @@ class LivePreview(QObject):
         cls._factory_load_attempted = True
         try:
             from animations import create_animation as _create
-            from plugin_core.mochi_animations import Animation as _Anim
+            from mscript.mochi_animations import Animation as _Anim
             cls._factory_create = _create
             cls._factory_animation_base = _Anim
             return True

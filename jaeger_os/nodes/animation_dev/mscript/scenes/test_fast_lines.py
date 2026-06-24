@@ -2,7 +2,7 @@
 # A Python/NumPy recreation of the testFastLines pattern from Adafruit GFX.
 
 import numpy as np
-from plugin_core.mochi_animations import Animation
+from mscript.mochi_animations import Animation
 
 class TestFastLines(Animation):
     name = "test_fast_lines"

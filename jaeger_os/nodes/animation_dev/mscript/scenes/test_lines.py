@@ -2,8 +2,8 @@
 # A Python/NumPy recreation of the testLines pattern from Adafruit GFX.
 
 import numpy as np
-from plugin_core.mochi_animations import Animation
-from plugin_core.gfx import draw_line, parse_color
+from mscript.mochi_animations import Animation
+from mscript.gfx import draw_line, parse_color
 
 class TestLines(Animation):
     name = "test_lines"

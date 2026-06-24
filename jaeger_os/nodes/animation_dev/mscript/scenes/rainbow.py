@@ -3,7 +3,7 @@
 
 import math
 import numpy as np
-from plugin_core.mochi_animations import Animation
+from mscript.mochi_animations import Animation
 
 
 class Rainbow(Animation):

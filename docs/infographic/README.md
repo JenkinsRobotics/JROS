@@ -54,7 +54,7 @@ flowchart TB
     agent -->|/act/motion| motor
     agent -->|/act/light| light
     tts --> spk
-    tts -->|/sense/tts_chunk · amplitude → lip-sync ✅| anim
+    tts -->|/sense/tts_chunk · amplitude → lip-sync 🟡| anim
     anim -->|/sense/avatar_frame| bridge
     bridge --> avatar2d
     bridge -.-> avatar3d
@@ -78,17 +78,19 @@ multi-machine). Topics: `/sense/*` (inputs), `/act/*` (commands).
 
 ## Pipelines (each gets its own detail diagram)
 
-| Pipeline | Status | Detail diagram |
+| Pipeline | Status | Diagram |
 |---|---|---|
-| Voice in · ASR (mic → VAD → STT → transcript) | ✅ built | `voice_in_asr.md` ◇ |
-| STT → LLM → TTS (the conversation loop) | ✅ built | `stt_llm_tts.md` ◇ |
-| 2D avatar (animation node → frames → renderer) | ✅ built | `avatar_2d.md` ◇ |
-| Lip-sync (`/sense/tts_chunk` amplitude → mouth) | ✅ built | `lip_sync.md` ◇ |
-| 3D avatar | ◇ planned | `avatar_3d.md` ◇ |
-| Media (media node → frames → player) | 🟡 in progress | `media.md` ◇ |
-| Hardware integration (motor / light / sensors) | 🟡 partial | `hardware.md` ◇ |
-| User input (voice / keyboard / Studio / touch) | ✅ built | `user_input.md` ◇ |
-| Observability (trace → baseline) | ✅ built | `observability.md` ◇ |
+| Voice in · ASR | ✅ built (dual-Whisper, VAD, AEC) | [voice_in_asr.md](voice_in_asr.md) |
+| STT → LLM → TTS | ✅ built (Kokoro; local/external LLM) | [stt_llm_tts.md](stt_llm_tts.md) |
+| 2D avatar | ✅ built (node + 5 adapters + WS bridge) | [avatar_2d.md](avatar_2d.md) |
+| Lip-sync | 🟡 sin-wave proxy (real RMS deferred) | [lip_sync.md](lip_sync.md) |
+| 3D avatar | ◇ planned — no implementation exists | [avatar_3d.md](avatar_3d.md) |
+| Media | 🟡 decoders + UI built; node topics **undefined** | [media.md](media.md) |
+| Hardware | 🟡 vision built; motor/light skeleton | [hardware.md](hardware.md) |
+| User input | ✅ built (Studio chat stub) | [user_input.md](user_input.md) |
+| Observability | ✅ built (this session) | [observability.md](observability.md) |
 
-◇ = diagram not written yet. The statuses above are a first-pass read; each
-detail diagram verifies the exact wiring against the code before it's marked.
+All nine are written and **code-verified** (a read-only pass over the actual node
+wiring + topics). Corrections from the first-pass read: lip-sync is a sin-wave
+proxy, not real audio; the media node references **undefined** bus topics so it
+won't run yet; hardware is vision-built but motor/light are skeletons.

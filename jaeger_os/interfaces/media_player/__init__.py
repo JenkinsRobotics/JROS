@@ -1,4 +1,4 @@
-"""Mochi media player — play an image / gif / video in a floating window.
+"""Jaeger media player — play an image / gif / video in a floating window.
 
 The mochi-v4 "play a specific file in a floating window" function, on
 Qt-native rendering (QPixmap / QMovie / QMediaPlayer). :class:`MediaView` is

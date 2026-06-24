@@ -129,7 +129,7 @@ class FloatingMediaPlayer(QWidget):
 
     def __init__(self) -> None:
         super().__init__()
-        self.setWindowTitle("Mochi Media")
+        self.setWindowTitle("Jaeger Media")
         self.setWindowFlag(Qt.WindowType.FramelessWindowHint, True)
         self.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)

@@ -1,14 +1,14 @@
 # Voice in · ASR — mic → transcript
 
-**Status: ✅ built** — dual-Whisper two-pass, WebRTC VAD, optional AEC for barge-in. No stubs.
+**Status: ✅ built** — `pywhispercpp` (whisper.cpp) two-pass STT, WebRTC VAD, optional AEC for barge-in. No stubs.
 
 ```mermaid
 flowchart LR
     mic["🎤 mic<br/>_MicStream<br/>sounddevice / avaudio"]
     aec["AEC<br/>speexdsp / Apple native<br/>far-end = TTS ReferenceBuffer"]
     vad["WebRTC VAD<br/>_VadWorker thread"]
-    fast["fast Whisper<br/>base.en"]
-    acc["accurate Whisper<br/>medium.en"]
+    fast["fast pass<br/>pywhispercpp · base.en"]
+    acc["accurate pass<br/>pywhispercpp · medium.en"]
     filt["filters<br/>non-speech · self-speech"]
     agent(["agent brain"])
 
@@ -24,6 +24,6 @@ flowchart LR
 
 **Flow.** Mic frames (16 kHz / 30 ms) → optional **AEC** (lets the agent be interrupted while it's speaking) → **WebRTC VAD** detects speech and emits `/sense/user_speech_start` after ~200 ms → on a 700 ms silence hangover a **fast** model (`base.en`) gives a quick transcription, then an **accurate** model (`medium.en`) produces the final text → deterministic filters drop `[BLANK_AUDIO]` and self-speech → `/sense/transcript` to the brain. Every accept/ignore decision is mirrored on `/sense/gate_decision`.
 
-**Modes:** `two_pass` (default) or `continuous` (single model, energy segmentation). **Config:** `AudioSessionConfig` — `stt_mode`, `fast/accurate_model_name`, `require_wake_word`, `barge_in`, `self_speech_threshold`.
+**STT engine:** `pywhispercpp` (whisper.cpp). **Modes:** `two_pass` (default — `base.en` fast → `medium.en` accurate, two models) or `continuous` (single `base.en`, energy segmentation). **Config:** `AudioSessionConfig` — `stt_mode`, `fast/accurate_model_name`, `require_wake_word`, `barge_in`, `self_speech_threshold`.
 
 **Key files:** `nodes/audio_session/node.py` (`AudioSessionNode`) · `core/audio/session.py` (`AudioSession`) · `plugins/whisper_stt/{two_pass,continuous}.py` · `core/audio/aec.py`. The semantic LLM gate moved into the brain prompt (2026-06-07); deterministic filters remain node-side.

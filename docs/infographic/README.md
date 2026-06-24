@@ -17,7 +17,7 @@ flowchart TB
     user(["User — voice · keyboard · touch"])
 
     subgraph SENSE["SENSE · input"]
-      mic["mic"] --> audio["audio_session node<br/>VAD + dual-Whisper STT ✅"]
+      mic["mic"] --> audio["audio_session node<br/>VAD + pywhispercpp STT · 2-pass ✅"]
       cam["camera"] --> vision["vision node 🟡"]
       touch["touch / keys"] --> ui["TUI / Studio input ✅"]
     end
@@ -80,7 +80,7 @@ multi-machine). Topics: `/sense/*` (inputs), `/act/*` (commands).
 
 | Pipeline | Status | Diagram |
 |---|---|---|
-| Voice in · ASR | ✅ built (dual-Whisper, VAD, AEC) | [voice_in_asr.md](voice_in_asr.md) |
+| Voice in · ASR | ✅ built (pywhispercpp 2-pass, VAD, AEC) | [voice_in_asr.md](voice_in_asr.md) |
 | STT → LLM → TTS | ✅ built (Kokoro; local/external LLM) | [stt_llm_tts.md](stt_llm_tts.md) |
 | 2D avatar | ✅ built (node + 5 adapters + WS bridge) | [avatar_2d.md](avatar_2d.md) |
 | Lip-sync | 🟡 sin-wave proxy (real RMS deferred) | [lip_sync.md](lip_sync.md) |

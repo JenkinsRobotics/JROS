@@ -45,6 +45,46 @@ a polished first impression.
 - [ ] **Post-install summary** — verify the "next steps" output is accurate to
   the `jaeger` command set.
 
+## Native Mac app — bundle, launch-at-login, file access
+
+The "feels like a real app" track. Three tiers, cheapest → richest. Do Tiers
+1–2 in 0.6 (they work *with today's curl install*); name Tier 3 (the DMG) as
+the target.
+
+**Tier 1 — launch at login (easy, no bundling)**
+- [ ] `jaeger autostart enable|disable` — writes/removes a
+  `~/Library/LaunchAgents/` plist that runs `~/jaeger/jaeger`, then
+  `launchctl` (un)loads it. **Opt-in** — a local LLM at every login is heavy.
+
+**Tier 2 — clickable launcher app (moderate, no bundling)**
+- [ ] Installer drops `/Applications/Jaeger.app` — a thin launcher
+  (`Contents/MacOS/` stub → `~/jaeger/jaeger`) + icon. Gives a Dock / Launchpad
+  presence and double-click launch. No Python repackaging, no signing for
+  personal use.
+- [ ] **File access stays full.** The launcher is *not* sandboxed (no App
+  Sandbox entitlement) → the spawned Python has the same Unix file access as
+  Terminal; workspace + project edits are unaffected. The only gate is **TCC**
+  for protected folders (Desktop / Documents / Downloads / external drives):
+  `jaeger doctor` detects missing **Full Disk Access** and points to the
+  System Settings toggle. Grant once → zero prompts, including headless
+  autostart (Tier 1) where there's no GUI to answer a prompt.
+
+**Tier 3 — drag-to-Applications install (the endgame, bigger lift)**
+- [ ] Self-contained `.app` — bundle the Python runtime + native deps
+  (`llama-cpp-python`, `pywhispercpp`) via py2app / PyInstaller, **or** finish
+  the partially-scaffolded Swift shell in `jaeger_os/interfaces/swift/` (it
+  already spawns the brain over an NDJSON stdio bridge).
+- [ ] Ship in a **signed + notarized DMG** so Gatekeeper allows it and "drag to
+  Applications" works with no Terminal at all.
+- [ ] GGUF model stays a **first-run download** (too big for the DMG) — reuse
+  the installer's model-fetch + progress.
+- [ ] Converge the `.app`'s self-update with `jaeger update` (the update theme)
+  so a bundled install and a curl install update the same way.
+
+> Only Tier 3 delivers true "drag folder → Applications → done." Tiers 1–2 are
+> the icon + startup polish on top of the curl install; Tier 3 eventually
+> *replaces* the curl install for non-technical users.
+
 ## Update experience — the headline
 
 - [ ] **`jaeger update`** — one command, in place, **no git required** (works for

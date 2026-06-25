@@ -318,5 +318,49 @@ def settings_page(ctx: Any = None, agent_name: str = "Jaeger") -> QWidget:
     v.addWidget(_row("Model", model))
     v.addWidget(_label("Edit via the trait editor (Characters tab) or "
                        "per-instance config.yaml.", color=INK_DIM, size=11))
+
+    # Messaging plugins — status + one-click in-process Activate. Reads the
+    # token saved via set_credential; same path as the agent's activate_plugin
+    # tool, the /plugins slash command, and boot auto-start.
+    v.addWidget(_label("Messaging plugins", size=13, bold=True))
+    plug_box = QVBoxLayout(); plug_box.setSpacing(2)
+    plug_holder = QWidget(); plug_holder.setLayout(plug_box)
+
+    def _refresh_plugins():
+        while plug_box.count():
+            it = plug_box.takeAt(0)
+            if it.widget():
+                it.widget().deleteLater()
+        try:
+            from jaeger_os.agent.tools.plugins import list_plugins
+            from jaeger_os.plugins import list_bridges
+            live = set(list_bridges())
+            for p in (list_plugins().get("plugins") or []):
+                nm = p.get("name", "")
+                running = nm in live
+                rw = QWidget(); h = QHBoxLayout(rw); h.setContentsMargins(0, 2, 0, 2)
+                h.addWidget(_label(nm, color=INK, size=12, bold=True))
+                h.addWidget(_label("live" if running else (p.get("status") or ""),
+                                   color=GOOD if running else INK_DIM, size=11))
+                h.addStretch(1)
+                if not running:
+                    h.addWidget(_btn("Activate", lambda n=nm: _activate(n)))
+                plug_box.addWidget(rw)
+        except Exception as exc:  # noqa: BLE001
+            plug_box.addWidget(_label(f"plugins unavailable: {exc}", color=INK_DIM, size=11))
+
+    def _activate(name: str):
+        try:
+            from jaeger_os.main import activate_plugin_inprocess
+            activate_plugin_inprocess(name)
+        except Exception:  # noqa: BLE001
+            pass
+        _refresh_plugins()
+
+    v.addWidget(plug_holder)
+    v.addWidget(_label("Activate reads the saved credential (set_credential). "
+                       "Auto-start at boot via config.plugins.autostart.",
+                       color=INK_DIM, size=10))
+    _refresh_plugins()
     v.addStretch(1)
     return page

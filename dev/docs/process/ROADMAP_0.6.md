@@ -45,22 +45,26 @@ a polished first impression.
 - [ ] **Post-install summary** — verify the "next steps" output is accurate to
   the `jaeger` command set.
 
-## Native Mac app — bundle, launch-at-login, file access
+## Native Mac app — launcher + launch-at-login
 
-The "feels like a real app" track. Three tiers, cheapest → richest. Do Tiers
-1–2 in 0.6 (they work *with today's curl install*); name Tier 3 (the DMG) as
-the target.
+The "feels like a real app" track. Two tiers, both layered on **today's curl
+install** (the download is unchanged). Tier 2 — the thin launcher in
+`/Applications` — is the ceiling; a full self-contained bundle / DMG is **out
+of scope** (note below).
 
 **Tier 1 — launch at login (easy, no bundling)**
 - [ ] `jaeger autostart enable|disable` — writes/removes a
   `~/Library/LaunchAgents/` plist that runs `~/jaeger/jaeger`, then
   `launchctl` (un)loads it. **Opt-in** — a local LLM at every login is heavy.
 
-**Tier 2 — clickable launcher app (moderate, no bundling)**
-- [ ] Installer drops `/Applications/Jaeger.app` — a thin launcher
-  (`Contents/MacOS/` stub → `~/jaeger/jaeger`) + icon. Gives a Dock / Launchpad
-  presence and double-click launch. No Python repackaging, no signing for
-  personal use.
+**Tier 2 — clickable launcher app (the target, no bundling)**
+- [ ] After the curl install, an **opt-in step** offers to create the launcher;
+  on accept it drops `/Applications/Jaeger.app` — a thin launcher
+  (`Contents/MacOS/` stub → `~/jaeger/jaeger`) + icon. Same download as today,
+  one extra consented step → Dock / Launchpad presence + double-click launch.
+- [ ] **No Gatekeeper friction, no signing.** The launcher is *created locally*
+  by the installer (not downloaded), so it carries no quarantine flag — it opens
+  without the "unidentified developer" block. No py2app, no notarization.
 - [ ] **File access stays full.** The launcher is *not* sandboxed (no App
   Sandbox entitlement) → the spawned Python has the same Unix file access as
   Terminal; workspace + project edits are unaffected. The only gate is **TCC**
@@ -69,21 +73,11 @@ the target.
   System Settings toggle. Grant once → zero prompts, including headless
   autostart (Tier 1) where there's no GUI to answer a prompt.
 
-**Tier 3 — drag-to-Applications install (the endgame, bigger lift)**
-- [ ] Self-contained `.app` — bundle the Python runtime + native deps
-  (`llama-cpp-python`, `pywhispercpp`) via py2app / PyInstaller, **or** finish
-  the partially-scaffolded Swift shell in `jaeger_os/interfaces/swift/` (it
-  already spawns the brain over an NDJSON stdio bridge).
-- [ ] Ship in a **signed + notarized DMG** so Gatekeeper allows it and "drag to
-  Applications" works with no Terminal at all.
-- [ ] GGUF model stays a **first-run download** (too big for the DMG) — reuse
-  the installer's model-fetch + progress.
-- [ ] Converge the `.app`'s self-update with `jaeger update` (the update theme)
-  so a bundled install and a curl install update the same way.
-
-> Only Tier 3 delivers true "drag folder → Applications → done." Tiers 1–2 are
-> the icon + startup polish on top of the curl install; Tier 3 eventually
-> *replaces* the curl install for non-technical users.
+**Out of scope — full bundle / DMG** (decided 2026-06-25). No self-contained
+py2app / PyInstaller `.app`, no signed / notarized DMG, no drag-to-Applications
+install. The curl install + thin launcher is the chosen experience; bundling
+the runtime + native deps + code-signing / notarization isn't worth it for the
+current audience. Revisit only if shipping to people who won't run a one-liner.
 
 ## Update experience — the headline
 

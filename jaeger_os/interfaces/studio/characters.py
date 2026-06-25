@@ -142,11 +142,12 @@ class CharacterCard(QFrame):
 
     CARD_W, CARD_H = 276, 356
 
-    def __init__(self, character: Character, *, active: bool,
+    def __init__(self, character: Character, *, active: bool, bound: bool = False,
                  on_select: Any, on_edit: Any, parent: Any = None) -> None:
         super().__init__(parent)
         self._char = character
         self._active = active
+        self._bound = bound
         self.setFixedSize(self.CARD_W, self.CARD_H)
         card = character.card_path()
         self._pix = QPixmap(str(card)) if card is not None else None
@@ -158,6 +159,8 @@ class CharacterCard(QFrame):
         rev = QLabel(f"rev {self._char.revision:.1f}")
         rev.setStyleSheet(_REV_QSS)
         top.addWidget(rev)
+        if bound:
+            top.addWidget(_label("★ BOUND", color=GOOD, size=9, bold=True))
         top.addStretch(1)
         badge = QLabel(self._level_text())
         badge.setStyleSheet(_BADGE_QSS)
@@ -242,6 +245,7 @@ class CharactersPage(QWidget):
         super().__init__()
         self._chars: list[Character] = list_characters()
         self._active_id = self._read_active()
+        self._bound_id = self._read_bound()
         self._build()
 
     def _build(self) -> None:
@@ -281,6 +285,7 @@ class CharactersPage(QWidget):
             return
         for c in self._chars:
             card = CharacterCard(c, active=(c.id == self._active_id),
+                                 bound=(c.id == self._bound_id),
                                  on_select=self._use, on_edit=self._edit_traits)
             self._grid.addWidget(card)
 
@@ -293,12 +298,56 @@ class CharactersPage(QWidget):
         except Exception:  # noqa: BLE001
             return ""
 
-    def _use(self, c: Character) -> None:
+    def _read_bound(self) -> str:
         try:
             from jaeger_os.core.instance.instance import resolve_instance_dir
-            from jaeger_os.personality.character import set_active_character
-            set_active_character(resolve_instance_dir(), c.id)
-            self._active_id = c.id
+            from jaeger_os.personality.character import bound_character_id
+            return bound_character_id(resolve_instance_dir())
+        except Exception:  # noqa: BLE001
+            return ""
+
+    def _use(self, c: Character) -> None:
+        """Switch the active character — the extra-verification gate. Switching
+        away from the BOUND character is temporary (a session override); the
+        binding only moves on an explicit Rebind. An unbound instance binds on
+        first pick."""
+        if c.id == self._active_id:
+            return
+        from PySide6.QtWidgets import QMessageBox
+        from jaeger_os.core.instance.instance import resolve_instance_dir
+        from jaeger_os.personality.character import bind_character, set_active_character
+        root = resolve_instance_dir()
+        box = QMessageBox(self)
+        box.setWindowTitle("Switch character")
+        rebind_btn = None
+        if self._bound_id and c.id != self._bound_id:
+            bound_name = next((x.name for x in self._chars if x.id == self._bound_id),
+                              self._bound_id)
+            box.setText(f"This instance is bound to “{bound_name}”.")
+            box.setInformativeText(
+                f"Play “{c.name}” now? A switch lasts this session — the binding "
+                f"stays “{bound_name}”. Rebind makes “{c.name}” this instance’s "
+                f"permanent character.")
+            act_btn = box.addButton("Switch (session)", QMessageBox.ButtonRole.AcceptRole)
+            rebind_btn = box.addButton("Rebind permanently", QMessageBox.ButtonRole.DestructiveRole)
+        else:
+            verb = "Bind this instance to" if not self._bound_id else "Play"
+            box.setText(f"{verb} “{c.name}”?")
+            act_btn = box.addButton("OK", QMessageBox.ButtonRole.AcceptRole)
+        box.addButton("Cancel", QMessageBox.ButtonRole.RejectRole)
+        box.exec()
+        clicked = box.clickedButton()
+        try:
+            if rebind_btn is not None and clicked is rebind_btn:
+                bind_character(root, c.id)
+                self._bound_id = self._active_id = c.id
+            elif clicked is act_btn:
+                if not self._bound_id:       # unbound instance binds on first pick
+                    bind_character(root, c.id)
+                    self._bound_id = c.id
+                else:
+                    set_active_character(root, c.id)
+                self._active_id = c.id
         except Exception:  # noqa: BLE001
             pass
         self._populate()

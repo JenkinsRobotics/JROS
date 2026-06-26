@@ -44,39 +44,49 @@ import time
 from dataclasses import dataclass, field, asdict
 
 
-REPO = pathlib.Path(__file__).resolve().parents[1]
-SRC = REPO / "src"
+def _repo_root() -> pathlib.Path:
+    """Repo root = the dir holding pyproject.toml. This script lives at
+    dev/benchmark/run_model_sweep.py; 0.2.6 moved it under dev/, so the old
+    fixed ``parents[1]`` silently became off-by-one — it pointed at
+    ``<repo>/dev``, which DOUBLED every ``REPO / "dev/benchmark"`` path
+    (``dev/dev/benchmark/HISTORY.md``) and ran a nonexistent run_flat_bench.py
+    → 0 cases. Find the marker instead so it survives future moves."""
+    here = pathlib.Path(__file__).resolve()
+    for p in here.parents:
+        if (p / "pyproject.toml").is_file():
+            return p
+    return here.parents[2]
+
+
+REPO = _repo_root()
+# 0.2.6 dropped the src/ layer — the jaeger_os package is at the repo root, so
+# the import path the bench subprocess needs IS the repo root. (The editable
+# install also makes jaeger_os importable without this, but keep it as a belt.)
+SRC = REPO
 
 
 def _resolve_active_config_path() -> pathlib.Path:
-    """Locate the config.yaml the bench subprocess will actually load.
+    """Locate the config.yaml the bench subprocess will actually load —
+    the ACTIVE instance's config.
 
-    INST-10 (0.2.0) moved per-instance state out of the bundled
-    ``src/jaeger_os/instance/default/`` directory and into
-    ``~/.jaeger/instances/<name>/``. The old hard-coded path in this
-    script (``DEFAULT_INSTANCE_CFG``) edited the WRONG file after the
-    move — the sweep's config-swap silently no-op'd and every model
-    ran against whatever the live instance's config already pointed
-    at (so e.g. a 3-model compare actually benched the same model 3×
-    and showed only statistical noise as the "difference").
+    Delegates to the package's own resolver
+    (``jaeger_os.core.instance.instance.resolve_instance_dir``) so it never
+    drifts from where state really lives. It drifted twice before: 0.2.0 moved
+    state out of the bundled ``src/jaeger_os/instance/default/`` skeleton, and
+    0.2.6 moved it again from ``~/.jaeger/`` to
+    ``<install_root>/.jaeger_os/instances/<name>/`` AND dropped the ``src/``
+    layer — both of which this script's old hard-coded paths missed, so the
+    config-swap silently no-op'd and every model benched the live config
+    instead of the one under test.
 
-    Resolution order (matches ``core/instance/instance.py:resolve_instance_dir``):
-
-      1. ``JAEGER_INSTANCE_DIR`` env var — explicit path. Used for
-         the dev sandbox (``sandbox/jros-dev/``) and for one-off
-         runs against a non-default instance.
-      2. ``~/.jaeger/instances/<JAEGER_INSTANCE_NAME or 'default'>/``.
-      3. Fall back to the legacy bundled-skeleton path so the script
-         still works on a pre-INST-10 checkout if anyone digs one up.
+    ``JAEGER_INSTANCE_DIR`` still wins (explicit override for one-off runs);
+    otherwise the package resolver picks the active instance.
     """
     env_dir = os.environ.get("JAEGER_INSTANCE_DIR")
     if env_dir:
         return pathlib.Path(env_dir).expanduser() / "config.yaml"
-    name = os.environ.get("JAEGER_INSTANCE_NAME") or "default"
-    home_cfg = pathlib.Path.home() / ".jaeger" / "instances" / name / "config.yaml"
-    if home_cfg.exists():
-        return home_cfg
-    return REPO / "src" / "jaeger_os" / "instance" / "default" / "config.yaml"
+    from jaeger_os.core.instance.instance import resolve_instance_dir
+    return resolve_instance_dir() / "config.yaml"
 
 
 # Resolved once at module load — the subprocess inherits this script's

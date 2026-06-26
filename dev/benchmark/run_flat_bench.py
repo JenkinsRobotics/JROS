@@ -28,10 +28,21 @@ import sys
 import time
 
 
-_REPO = pathlib.Path(__file__).resolve().parent.parent
-for _candidate in (_REPO, _REPO / "src"):
-    if str(_candidate) not in sys.path:
-        sys.path.insert(0, str(_candidate))
+def _repo_root() -> pathlib.Path:
+    """Repo root = the dir holding pyproject.toml. 0.2.6 moved this script
+    under dev/, which made the old fixed ``parent.parent`` off-by-one (it
+    pointed at ``<repo>/dev`` → doubled output paths + broken imports). Find
+    the marker so it survives future moves."""
+    here = pathlib.Path(__file__).resolve()
+    for p in here.parents:
+        if (p / "pyproject.toml").is_file():
+            return p
+    return here.parents[2]
+
+
+_REPO = _repo_root()
+if str(_REPO) not in sys.path:   # src/ dropped in 0.2.6; jaeger_os is at the root
+    sys.path.insert(0, str(_REPO))
 os.chdir(_REPO)
 
 
@@ -73,8 +84,12 @@ def main() -> int:
     print("=== Booting jaeger pipeline ===", flush=True)
     boot_started = time.perf_counter()
     from jaeger_os.main import boot_for_tui
+    # Boot the ACTIVE instance (instance_name=None → resolve_instance_dir(None)),
+    # i.e. the SAME instance run_model_sweep.py swaps the model into. Hardcoding
+    # "default" benched the wrong instance once the active was renamed off
+    # "default" (e.g. to "jros-dev") — the sweep's model-swap silently no-op'd.
     boot = boot_for_tui(
-        instance_name="default", with_memory=True, warmup=not args.no_warmup,
+        instance_name=None, with_memory=True, warmup=not args.no_warmup,
     )
     load_s = time.perf_counter() - boot_started
     print(f"[boot] loaded in {load_s:.2f}s", flush=True)

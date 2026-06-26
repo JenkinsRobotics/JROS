@@ -28,6 +28,37 @@ has actually been exercised and works.
 
 ---
 
+## 2026-06-25 — JROS is an editable package again [packaging]
+
+JROS installs as an **EDITABLE package** (PEP 660), restoring proper packaging
+that 0.2.3 dropped (when it cut from `pip install jaeger-os` to clone +
+PYTHONPATH) — WITHOUT moving code. `jaeger_os/` stays at the repo root; operator
+state stays in `.jaeger_os/` beside it. This is the **Hermes model**
+(editable-into-clone), chosen over *flatten* (worse imports, bare `import core`)
+and *src-layout* (reverses 0.2.6 + breaks the state-beside-package resolution) —
+a self-modifying, stateful agent can't live in read-only site-packages.
+
+- **`pyproject.toml`** — real `[build-system]` (`setuptools.build_meta`) +
+  `[project]` (`jaeger-os`, `requires-python = ">=3.11,<3.13"`). Version
+  single-sourced from `jaeger_os/__init__.py` (`dynamic` attr); deps
+  single-sourced from `requirements.txt` (`dynamic` file). Verified live:
+  `pip install -e .` builds the editable wheel; metadata reports 0.5.2 + 37 deps.
+- **`install.sh`** — bootstraps `uv` into the `.venv`, then `uv pip install -e .`
+  (deps flow from requirements.txt via the dynamic table); falls back to pip
+  editable. Curl one-liner + URL unchanged.
+- **`jaeger update`** (editable / dev-checkout — the default) now actually
+  updates: `git pull --ff-only` + editable reinstall (prefers the venv `uv`).
+  Refuses to pull over a dirty tree (prints the manual hint instead).
+- **`jaeger --version`** → `jaeger-os 0.5.2`, via the `./jaeger` wrapper.
+
+**Staged — NOT in this commit (planned):** a first-class `jaeger` console-script
+entry point. The operator command is still the `./jaeger` bash wrapper, which
+dispatches across `jaeger_os.cli` / `.cli.run` / `.interfaces` / `launch.py`; a
+single entry point must unify those (`.cli.run` needs an importable `main()`)
+and be walked across the voice / dev-TUI / bridge / mcp / agent-run flows before
+it can replace the wrapper. Deferred deliberately — a partial entry point would
+shadow the working command.
+
 ## 2026-06-25 — autonomy modes (ask / scoped / auto) [agentic]
 
 The agent's execution autonomy is now a switchable mode, like the runtime

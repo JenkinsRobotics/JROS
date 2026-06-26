@@ -117,3 +117,18 @@ current audience. Revisit only if shipping to people who won't run a one-liner.
   the device, riding the `MediaFrame` / `ZmqBus` seam declared in 0.5.0) — see
   [`../hardware/`](../hardware/). HISTORY flagged this for 0.6/0.7; the
   install/update theme takes 0.6, hardware likely lands 0.7.
+
+## Delivered on this branch (agentic — off-theme)
+
+Landed alongside the install/update work; the operator prioritised the agentic
+pipeline. See STATUS.md for the runtime detail.
+
+- [x] **Person index** — profiles of people the agent knows (name/handles/access/
+  likes/facts), grown like skills; folds into the admin trust model.
+- [x] **Admin trust + channel-agnostic polish** — per-channel admin gating,
+  in-channel approvals + `/mode` slash + receipt ack shared across
+  telegram/discord/imessage.
+- [x] **Autonomy modes (`ask` / `scoped` / `auto`)** — execution autonomy as a
+  switchable mode (default `scoped`): agree the plan up front, then run the loop
+  without per-action prompts; reach out (`clarify`) only when missing info or
+  out of agreed scope. `/ask` `/scoped` `/auto` on every channel.

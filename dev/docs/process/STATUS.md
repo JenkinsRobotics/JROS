@@ -28,6 +28,33 @@ has actually been exercised and works.
 
 ---
 
+## 2026-06-25 — autonomy modes (ask / scoped / auto) [agentic]
+
+The agent's execution autonomy is now a switchable mode, like the runtime
+model-modes — the plan is agreed up front, then it runs without per-action
+approval prompts (the philosophy the operator asked for: "ask and plan up front,
+then a self-sufficient loop; reach out only if it needs more info").
+
+- **`jaeger_os/core/runtime/autonomy.py`** (new) — `current_autonomy()` /
+  `set_autonomy()` / `autonomy_info()`; modes `ask | scoped | auto`, **default
+  `scoped`**. Switching is instant (no model swap). Published on `ModeState`
+  (new `autonomy` field) for the tray/header.
+- **One chokepoint** — `BusConfirmationProvider.confirm()` consults the mode
+  after the admin gate: `auto` → approve without prompting; `scoped` → honor
+  standing "always" grants, prompt-once for anything new; `ask` → prompt every
+  time (ignores grants). Tier-5 DEV_BYPASS still needs human override in every
+  mode (it never routes through `confirm`); non-admins still denied upstream.
+- **Tools** `set_autonomy` / `get_autonomy` (in the `models` toolset). The
+  reach-out valve already existed (`clarify` → routes to the active channel);
+  Deep Think already approves-once-runs-to-completion — autonomy only governs
+  the per-action prompt.
+- **Cross-channel** `/ask` `/scoped` `/auto` (+ `/autonomy [name]`) on
+  telegram/discord/imessage via `_messaging.autonomy_command` — admin-gated,
+  same rails as `/mode`.
+- **Tests:** `dev/tests/jaeger_os/core/test_autonomy.py` — module default/set,
+  `confirm()` honoring each mode (auto-approve / scoped-grant / ask-prompts),
+  slash parse, tools registered. 4 passing.
+
 ## 2026-06-15 — windowed app (Pattern 1) boots through the chassis [core]
 
 JROS's chassis copy (`jaeger_os/app/`) gained the format's Tier-1 **`core`**

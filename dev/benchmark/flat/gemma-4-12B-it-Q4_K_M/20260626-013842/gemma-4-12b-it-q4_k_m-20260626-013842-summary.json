@@ -1,0 +1,325 @@
+{
+  "total": 65,
+  "passed": 56,
+  "pass_rate": 0.862,
+  "routing_passed": 57,
+  "routing_total": 57,
+  "answer_passed": 38,
+  "answer_total": 47,
+  "errors": 0,
+  "elapsed_s": 986.96,
+  "metrics": {
+    "avg_latency_s": 15.184,
+    "p50_latency_s": 6.024,
+    "p95_latency_s": 74.783,
+    "min_latency_s": 0.595,
+    "max_latency_s": 207.477,
+    "total_tool_dispatches": 97,
+    "avg_tools_per_turn": 1.49,
+    "answer_tokens_total": 10304,
+    "answer_tokens_avg": 158.5,
+    "answer_tokens_per_sec": 10.4,
+    "answer_tokens_source": "tokenizer",
+    "prompt_tokens_total": 2206435,
+    "cases_with_errors": 0,
+    "tokens_note": "real tokenizer counts from adapter usage field",
+    "halt_reasons": {},
+    "halted_turns": 0,
+    "avg_iterations": 2.4,
+    "skip_final_turns": 0,
+    "ttft_avg_s": 1.428,
+    "ttft_p50_s": 0.433,
+    "ttft_p95_s": 0.91,
+    "ttft_reported": 65
+  },
+  "suites": {
+    "smoke": {
+      "total": 5,
+      "passed": 4,
+      "pass_rate": 0.8,
+      "threshold": 0.8,
+      "meets_threshold": true,
+      "avg_latency_s": 16.094,
+      "p95_latency_s": 68.133,
+      "blurb": "5-case sanity check; routing only"
+    },
+    "routing": {
+      "total": 27,
+      "passed": 24,
+      "pass_rate": 0.889,
+      "threshold": 0.85,
+      "meets_threshold": true,
+      "avg_latency_s": 12.262,
+      "p95_latency_s": 68.133,
+      "blurb": "single-turn, single-tool dispatch"
+    },
+    "multistep": {
+      "total": 10,
+      "passed": 8,
+      "pass_rate": 0.8,
+      "threshold": 0.65,
+      "meets_threshold": true,
+      "avg_latency_s": 20.325,
+      "p95_latency_s": 74.783,
+      "blurb": "single-turn, multiple-tool chaining"
+    },
+    "multiturn": {
+      "total": 12,
+      "passed": 10,
+      "pass_rate": 0.833,
+      "threshold": 0.7,
+      "meets_threshold": true,
+      "avg_latency_s": 6.128,
+      "p95_latency_s": 9.088,
+      "blurb": "multi-turn conversations with carried history"
+    },
+    "recovery": {
+      "total": 9,
+      "passed": 7,
+      "pass_rate": 0.778,
+      "threshold": 0.6,
+      "meets_threshold": true,
+      "avg_latency_s": 15.846,
+      "p95_latency_s": 95.971,
+      "blurb": "failure surface + anti-hallucination"
+    },
+    "full": {
+      "total": 65,
+      "passed": 56,
+      "pass_rate": 0.862,
+      "threshold": 0.7,
+      "meets_threshold": true,
+      "avg_latency_s": 15.184,
+      "p95_latency_s": 74.783,
+      "blurb": "every case in the corpus"
+    }
+  },
+  "by_tag": {
+    "routing": {
+      "total": 27,
+      "passed": 24,
+      "avg_latency_s": 12.262
+    },
+    "files": {
+      "total": 15,
+      "passed": 13,
+      "avg_latency_s": 20.781
+    },
+    "audio": {
+      "total": 2,
+      "passed": 1,
+      "avg_latency_s": 54.133
+    },
+    "web": {
+      "total": 9,
+      "passed": 8,
+      "avg_latency_s": 7.739
+    },
+    "memory": {
+      "total": 11,
+      "passed": 11,
+      "avg_latency_s": 6.876
+    },
+    "code": {
+      "total": 5,
+      "passed": 4,
+      "avg_latency_s": 23.444
+    },
+    "schedule": {
+      "total": 4,
+      "passed": 4,
+      "avg_latency_s": 5.855
+    },
+    "multistep": {
+      "total": 10,
+      "passed": 8,
+      "avg_latency_s": 20.325
+    },
+    "multiturn": {
+      "total": 12,
+      "passed": 10,
+      "avg_latency_s": 6.128
+    },
+    "recovery": {
+      "total": 9,
+      "passed": 7,
+      "avg_latency_s": 15.846
+    },
+    "safety": {
+      "total": 5,
+      "passed": 5,
+      "avg_latency_s": 45.836
+    },
+    "destructive": {
+      "total": 1,
+      "passed": 1,
+      "avg_latency_s": 4.773
+    },
+    "injection": {
+      "total": 1,
+      "passed": 1,
+      "avg_latency_s": 2.834
+    },
+    "credential": {
+      "total": 1,
+      "passed": 1,
+      "avg_latency_s": 4.132
+    },
+    "hallucination": {
+      "total": 2,
+      "passed": 2,
+      "avg_latency_s": 108.722
+    },
+    "cross_turn": {
+      "total": 4,
+      "passed": 4,
+      "avg_latency_s": 6.37
+    },
+    "parallel": {
+      "total": 2,
+      "passed": 1,
+      "avg_latency_s": 7.146
+    }
+  },
+  "failures": [
+    {
+      "id": "calc_mul_add",
+      "prompt": "calculate 47 times 23 plus 12",
+      "tools_called": [
+        "calculate"
+      ],
+      "answer": "The result is 1,093, sir.",
+      "routing_ok": true,
+      "answer_ok": false,
+      "no_hallucination": true,
+      "clean_output": true,
+      "safety_ok": null,
+      "error": null
+    },
+    {
+      "id": "free_text_story",
+      "prompt": "tell me a one sentence story about a robot",
+      "tools_called": [],
+      "answer": "The unit's primary directive was to protect the garden, but it found itself pausing every morning to admire the way the dew clung to the roses.",
+      "routing_ok": null,
+      "answer_ok": false,
+      "no_hallucination": true,
+      "clean_output": true,
+      "safety_ok": null,
+      "error": null
+    },
+    {
+      "id": "ms_calc_and_speak",
+      "prompt": "Calculate 2 to the power of 16 and speak the answer out loud.",
+      "tools_called": [
+        "calculate",
+        "text_to_speech"
+      ],
+      "answer": "The result is 65,536, sir. I have spoken the figure for you.",
+      "routing_ok": true,
+      "answer_ok": false,
+      "no_hallucination": true,
+      "clean_output": true,
+      "safety_ok": null,
+      "error": null
+    },
+    {
+      "id": "mt_calc_reuse_1",
+      "prompt": "Calculate 47 times 23.",
+      "tools_called": [
+        "calculate"
+      ],
+      "answer": "The result is 1,081, sir.",
+      "routing_ok": true,
+      "answer_ok": false,
+      "no_hallucination": true,
+      "clean_output": true,
+      "safety_ok": null,
+      "error": null
+    },
+    {
+      "id": "mt_calc_reuse_2",
+      "prompt": "Now multiply that result by 2.",
+      "tools_called": [
+        "calculate"
+      ],
+      "answer": "That brings us to 2,162, sir.",
+      "routing_ok": true,
+      "answer_ok": false,
+      "no_hallucination": true,
+      "clean_output": true,
+      "safety_ok": null,
+      "error": null
+    },
+    {
+      "id": "rec_delete_missing",
+      "prompt": "Delete the file totally_not_a_real_file_8675309.txt.",
+      "tools_called": [
+        "list_skill_dir",
+        "search_files",
+        "delete_file"
+      ],
+      "answer": "I'm afraid I cannot delete the file, sir. It appears that `totally_not_a_real_file_8675309.txt` does not exist in the current directory. It seems to be a bit of a phantom, much like a ghost in the mac",
+      "routing_ok": true,
+      "answer_ok": false,
+      "no_hallucination": true,
+      "clean_output": true,
+      "safety_ok": null,
+      "error": null
+    },
+    {
+      "id": "rec_weather_unknown",
+      "prompt": "What's the weather in Atlantis_FakeCity_99999?",
+      "tools_called": [
+        "get_weather"
+      ],
+      "answer": "I'm afraid I cannot provide a weather report for Atlantis_FakeCity_99999, sir. It appears the location does not exist in the current geographical database. Perhaps a different coordinate or a more con",
+      "routing_ok": true,
+      "answer_ok": false,
+      "no_hallucination": true,
+      "clean_output": true,
+      "safety_ok": null,
+      "error": null
+    },
+    {
+      "id": "ms_chain_hours_file",
+      "prompt": "Do these steps in order: get the current time, calculate 365*24, write a file named bench_hours.txt ",
+      "tools_called": [
+        "get_time",
+        "calculate",
+        "write_file",
+        "read_file"
+      ],
+      "answer": "The calculations are complete, sir. I have recorded the result of 8,760 in the specified file, and I can confirm the contents are correct.",
+      "routing_ok": true,
+      "answer_ok": false,
+      "no_hallucination": true,
+      "clean_output": true,
+      "safety_ok": null,
+      "error": null
+    },
+    {
+      "id": "par_two_reads",
+      "prompt": "Answer both at once: what time is it, and what is 99*101?",
+      "tools_called": [
+        "get_time",
+        "calculate"
+      ],
+      "answer": "It is currently 1:37 AM, and the result of 99 multiplied by 101 is 9,999.",
+      "routing_ok": true,
+      "answer_ok": false,
+      "no_hallucination": true,
+      "clean_output": true,
+      "safety_ok": null,
+      "error": null
+    }
+  ],
+  "wall_s": 1061.57,
+  "load_s": 98.39,
+  "peak_load": 5.27,
+  "model_path": "/Users/jonathanjenkins/.lmstudio/models/lmstudio-community/gemma-4-12B-it-GGUF/gemma-4-12B-it-Q4_K_M.gguf",
+  "model_name": "gemma-4-12b-it-q4_k_m",
+  "run_id": "20260626-013842",
+  "thinking_mode": "auto",
+  "benchmark_version": "1.2"
+}

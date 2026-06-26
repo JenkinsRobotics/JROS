@@ -144,6 +144,23 @@ def _backend_for_path(model_path: str) -> str:
     return "llama_cpp_python"
 
 
+def _force_allow_perms(data: dict) -> None:
+    """Force ``permissions.mode = allow`` in the bench config so tier-gated
+    tools (files / schedule / tts) auto-approve instead of being DENIED by an
+    instance's interactive ``confirm`` posture in a non-interactive bench run.
+
+    A benchmark measures the model's CAPABILITY (does it pick + chain the right
+    tools), not the operator's permission policy — a confirm-mode instance run
+    headless silently fails every multistep/schedule/file case (the model
+    routes correctly, the tool is then denied). The sweep saves + restores the
+    original config around the run, so this only applies during the bench."""
+    perms = data.get("permissions")
+    if not isinstance(perms, dict):
+        perms = {}
+        data["permissions"] = perms
+    perms["mode"] = "allow"
+
+
 def _write_model_path(text: str, new_model_path: str) -> str:
     """Replace ``model.model_path`` (and ``model.backend``), preserving rest.
 
@@ -171,6 +188,7 @@ def _write_model_path(text: str, new_model_path: str) -> str:
         if "model" in data and isinstance(data["model"], dict):
             data["model"]["model_path"] = new_model_path
             data["model"]["backend"] = backend
+            _force_allow_perms(data)
             buf = io.StringIO()
             yaml.dump(data, buf)
             return buf.getvalue()
@@ -185,6 +203,7 @@ def _write_model_path(text: str, new_model_path: str) -> str:
         if isinstance(data, dict) and isinstance(data.get("model"), dict):
             data["model"]["model_path"] = new_model_path
             data["model"]["backend"] = backend
+            _force_allow_perms(data)
             return _yaml.safe_dump(data, sort_keys=False, default_flow_style=False)
     except Exception:  # noqa: BLE001
         pass

@@ -28,6 +28,38 @@ has actually been exercised and works.
 
 ---
 
+## 2026-06-26 — benchmark: gemma-4 12B + QAT; bench tooling un-rotted [models]
+
+Ran the flat-corpus benchmark (65-case v1.2) on the updated **gemma-4-12B-it-Q4_K_M**
+and the new **gemma-4-12B-it-QAT-Q4_0**. **No agent/pipeline regression** —
+routing is **57/57 (100%)** on both (vs 98.1% historically). Both score **86.2%
+(56/65)**; QAT is the win — equal capability, **smaller (7.0 vs 7.4 GB) and
+faster (p50 5.0s vs 6.0s)**.
+
+The Score looks lower than the old leaderboard's 96.6% **only because of a
+persona/answer-format effect, not capability**: my bench-instance fix (below)
+means the bench now measures the active **jros-dev / Jarvis** persona, whose
+formal, comma-formatted numbers (`8,760`, `1,093`) miss the literal
+`answer_contains` substring checks (`8760`, `1093`). The model routes + chains
+correctly every time; several "fails" are it behaving correctly (declining a
+missing file / unknown city). The old 96.6% measured a different (neutral
+`default`-instance) persona. *(Open follow-up: the bench's numeric answer checks
+should normalise thousands-separators; and the two bench entry points normalise
+model names differently — `gemma-4-12b-it-q4-k-m` vs `gemma-4-12B-it-Q4_K_M` —
+so one model shows as two leaderboard rows. Neither touched here.)*
+
+**Bench tooling un-rotted** (`run_model_sweep.py`, `run_flat_bench.py`) — a chain
+of stale-path/setup bugs from the 0.2.x→0.6 migrations, none from agent code,
+all surfaced by trying to run it: the active-instance config path
+(`~/.jaeger`/`src/` → the package resolver); `REPO`/`SRC`/`_REPO` off-by-one
+(the scripts moved under `dev/` → doubled `dev/dev/...` paths + a nonexistent
+`run_flat_bench.py` → 0 cases) → pyproject-marker root; a hardcoded
+`instance_name="default"` that benched the wrong instance once the active was
+renamed off "default" → the active instance; and **the sweep now forces
+`permissions.mode=allow`** during a run so a capability bench auto-approves
+tier-gated tools instead of silently failing every file/schedule/multistep case
+under a `confirm`-mode instance run headless (config saved + restored around it).
+
 ## 2026-06-25 — JROS is an editable package again [packaging]
 
 JROS installs as an **EDITABLE package** (PEP 660), restoring proper packaging

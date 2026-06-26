@@ -1,312 +1,135 @@
-# JROS architecture — system, runtime, user
+# JROS architecture — framework vs. operator state
 
-This is the canonical reference for the three-layer model JROS follows.
-Every persistent file in a JROS deployment belongs to exactly one of
-these layers, and **the boundaries are the contract** — the upgrade
-guarantee, the multi-instance guarantee, and the "where do I put my
-stuff" answer all derive from them.
+This is the canonical reference for where every persistent file in a JROS
+deployment belongs. **The boundary is the contract** — the upgrade guarantee,
+the multi-instance guarantee, and the "where do I put my stuff" answer all
+derive from it.
 
-If you're trying to figure out where something should live, read this
-doc first.
+> **0.6 note.** This doc previously described a *three*-layer model (System /
+> Runtime / User) with a separate user dir at `~/jaeger/agents/<name>/`. **0.2.6
+> removed the User layer** (`UserConfig`, `resolve_user_dir()` deleted) and
+> folded everything an agent owns into one self-contained instance folder. The
+> model below is the current two-bucket reality.
 
 ---
 
 ## TL;DR
 
-| Layer | Where it lives | Who owns it | Touched by upgrades? |
+| Bucket | Where it lives | Git? | Touched by upgrades? |
 |---|---|---|---|
-| **System** | `site-packages/jaeger_os/` (or your `git clone` for dev) | JROS the project | Yes — that's the upgrade |
-| **Runtime** | `~/.jaeger/instances/<name>/` | JROS at runtime | Schema migrated; content preserved |
-| **User** | `~/jaeger/agents/<name>/` (default; configurable) | The end user | **Never** |
+| **Framework** | `<install_root>/jaeger_os/` (the editable-installed package) + the operator surface (`jaeger`, `install.sh`, `pyproject.toml`, `.venv/`) | tracked | **Yes — that's the upgrade** |
+| **Operator state** | `<install_root>/.jaeger_os/` | ignored | Schema migrated; content preserved |
 
-If the boundaries blur in your head, default to: *can the upgrade safely
-delete this?* If yes → System or Runtime. If no → User.
+If the boundary blurs in your head, ask: *can the upgrade safely replace this?*
+Framework → yes. Operator state → never (only schema-migrated, never discarded).
+
+`<install_root>` is `$JAEGER_HOME` (default `~/jaeger`); both buckets sit side by
+side under it, so `ls <install_root>` shows the framework and your data together.
 
 ---
 
 ## The OS analogy
 
-JROS borrows the multi-user OS pattern — same one Windows, macOS, and
-Linux use — translated to agent personalities instead of human users.
+JROS borrows the OS pattern: the **framework** is the installed program, the
+**operator state** is your data, and upgrades replace the former while migrating
+(never deleting) the latter.
 
-| Concern | macOS | Windows | Linux | **JROS** |
-|---|---|---|---|---|
-| System | `/System/`, `/Library/` | `C:\Windows\` | `/usr/`, `/etc/` | JROS package (pip / clone) |
-| Per-user data | `~/Library/Application Support/<App>/` | `%LOCALAPPDATA%\<App>\` | `~/.config/<app>/` | `~/.jaeger/instances/<name>/` |
-| User home | `/Users/<name>/` | `C:\Users\<name>\` | `/home/<name>/` | `~/jaeger/agents/<name>/` |
-| What survives upgrades | Everything in `/Users/` | Everything in `C:\Users\` | Everything in `/home/` | Everything in `~/jaeger/` |
-
-A macOS upgrade rewrites `/System/`, may migrate `~/Library/Application
-Support/`, and leaves `/Users/<name>/` alone. Same shape applies to
-JROS upgrades.
+| Concern | macOS | **JROS** |
+|---|---|---|
+| Program | `/Applications/…`, `/System/` | `<install_root>/jaeger_os/` (the package) |
+| Your data | `~/Library/Application Support/<App>/` | `<install_root>/.jaeger_os/instances/<name>/` |
+| Survives upgrades | your `~/Library` data | everything under `.jaeger_os/` |
 
 ---
 
-## Layer 1 — System
+## Bucket 1 — Framework (git-tracked)
 
-**What it is:** the JROS library — code, built-in skills, built-in
-prompts, the model registry, the catalog of tools, the bench
-infrastructure, the agent loop, the daemon, the persona schema, the
-config schema, all the defaults.
+**What:** the JROS code — the agent loop, the loader, built-in skills and
+prompts, the model registry, the tool catalog, schemas, all the defaults.
 
-**Where it lives:**
-- After `pip install jaeger-os`: `site-packages/jaeger_os/`
-- Editable / dev clone: `<repo>/src/jaeger_os/`
+**Where:** `<install_root>/jaeger_os/`. JROS installs **editable** (PEP 660):
+the clone *is* the live package, so the framework is readable and hackable in
+place. (A wheel install would land it in `site-packages/jaeger_os/`.)
 
-**Who owns it:** the JROS project. Every upgrade replaces it.
+**Who owns it:** the JROS project. `jaeger update` (git pull + editable
+reinstall) replaces it; your `.jaeger_os/` is untouched.
 
-**What's NOT in System:**
-- The user's persona JSON. Those go in User.
-- The user's custom skills. Those go in User.
-- Memory, logs. Those go in Runtime.
-- Model weights downloaded for actual use. The *registry* of models
-  is in System; the *weights* live in `~/.jaeger/models/` (Runtime).
-
-**Sub-structure (inside the package):**
-```
-src/jaeger_os/
-├── agent/             agent loop, tool dispatch, parser dialects
-├── core/              instance schemas, persona/skill loaders, prompts
-├── daemon/            jaeger-daemon process + the bench history verb
-├── interfaces/        TUI, tray, rich_tui
-├── skills/            built-in skills shipped with JROS
-├── models/            model registry + bundled default seeds
-├── plugins/           pluggable transports / TTS / STT
-└── prompts/           system-level prompt templates
-```
+**NOT here:** anything an agent authors or accrues — personas, custom skills,
+memory, logs, credentials. Those are operator state. Downloaded model *weights*
+are operator state too (`<install_root>/.jaeger_os/models/`); only the *registry*
+of models is framework.
 
 ---
 
-## Layer 2 — Runtime
+## Bucket 2 — Operator state (gitignored)
 
-**What it is:** per-instance state JROS creates and manages while an
-agent is running. Memory, logs, config, the SQLite DB, the cron
-schedule, the kanban board, the agent's session history.
+**What:** everything JROS creates and manages per agent — and the shared model
+cache. Lives under `<install_root>/.jaeger_os/`:
 
-**Where it lives:** `~/.jaeger/instances/<instance_name>/`
-
-Hidden by design — it's not meant for direct human editing. JROS
-writes here, migrates schemas here, garbage-collects here.
-
-**Sub-structure (per instance):**
 ```
-~/.jaeger/instances/<name>/
-├── config.yaml           machine-edited; reflects the user's wizard answers
-├── identity.yaml         persona-bound info (mode, voice, agent name)
-├── memory/
-│   └── state.db          SQLite — facts, episodic, schedules, sessions, tool calls
-├── logs/
-│   ├── audit.log         JSONL — every tool call + permission decision
-│   └── runtime/          rotating agent logs
-├── profiles/             ← USUALLY pulled from User layer
-├── skills/               ← USUALLY pulled from User layer
-├── prompts/              ← USUALLY pulled from User layer
-└── workspace/            ← USUALLY pulled from User layer
+<install_root>/.jaeger_os/
+├── instances/<name>/        one self-contained folder PER AGENT:
+│   ├── config.yaml           runtime config (the wizard's answers)
+│   ├── identity.yaml         persona binding (name, role, character)
+│   ├── distribution.yaml     install-method stamp (for `jaeger update`)
+│   ├── manifest.json         core-version pin (drives migration)
+│   ├── permissions.json      the agent's permission grants
+│   ├── memory/               SQLite + facts/episodic/sessions
+│   ├── logs/                 audit log + rotating runtime logs + bench output
+│   ├── skills/               the agent's own authored skill versions
+│   ├── credentials/          API keys / tokens (0600; never read directly)
+│   ├── workspace/            agent ↔ operator file exchange
+│   └── run/                  pidfiles / sockets for the live process
+├── models/                  shared GGUF weight cache (survives instance deletes)
+└── jaeger.env               machine-wide operator env
 ```
 
-The last four are JROS-standard paths. Their *contents* come from the
-User layer (see Layer 3). They're not symlinked at the OS level by
-default — JROS reads from the configured `user_dir` (introduced in
-0.2.1) and presents the contents under these paths to the rest of the
-runtime.
+**Self-contained:** to share or back up an agent, zip its `instances/<name>/`
+folder — there is no separate "user dir" to track since 0.2.6. To hand someone
+your Lilith, hand them the folder.
 
-**Multi-instance:**
-- `~/.jaeger/instances/lilith/` and `~/.jaeger/instances/eren/`
-  coexist with completely separate Runtime state.
-- They share the **System** layer (one JROS install).
-- They each point at their own **User** dir (`~/jaeger/agents/lilith/`
-  and `~/jaeger/agents/eren/`).
+**Multi-instance:** `instances/lilith/` and `instances/eren/` coexist with fully
+separate state and share the one framework install.
 
-**Update contract:**
-- JROS may **rename / add / restructure** any directory or file here
-  between minor releases (0.2 → 0.3).
-- A migration script will preserve user content (memory, etc.) — but
-  the *layout* is JROS's to change.
-- Operator should not hand-edit files here unless documented as
-  user-editable (e.g. `config.yaml`).
+**Update contract:** JROS may **rename / add / restructure** anything under
+`instances/<name>/` between minor releases; a migration preserves your content
+(memory, skills, …) while the *layout* is JROS's to change. `manifest.json` pins
+the version so `jaeger update` knows what to migrate. Don't hand-edit here except
+where documented (e.g. `config.yaml`).
 
 ---
 
-## Layer 3 — User
+## How JROS finds model weights
 
-**What it is:** what the user actually authors and owns. The persona
-that defines this agent's personality, the custom skills the user
-wrote, prompt overlays they tuned, the collaboration workspace where
-the agent and the user exchange files.
+Weights are heavy (1–30 GB) and aren't framework, so they live in the operator
+cache and resolve (see `jaeger_os/core/models/model_resolver.py`) in this order:
 
-**Where it lives:** `~/jaeger/agents/<agent_name>/` by default. Each
-agent is fully isolated from every other agent.
+1. `<install_root>/.jaeger_os/models/<key>/<file>` — the operator cache (production)
+2. `jaeger_os/models/<file>` — package-local dev convenience (symlinks to LM Studio)
+3. `~/.lmstudio/models/…` — existing LM Studio cache (scanned, not copied)
+4. a Hugging Face Hub download on first use
 
-The default location is *visible* (under `~/jaeger/`, not `~/.jaeger/`)
-because users need to interact with it directly. The location is
-**configurable per instance** — point it at a git repo, a Dropbox
-folder, a shared NFS mount, wherever.
-
-**Sub-structure (per agent):**
-```
-~/jaeger/agents/<name>/
-├── persona.json          this agent's persona definition
-├── skills/               agent-specific custom skills
-│   └── <skill_name>/
-├── prompts/              persona prompt overlays
-│   └── *.md
-└── files/                agent ↔ user collab area (drafts, outputs, scratch)
-```
-
-**Why per-agent isolation, not shared:**
-
-Each agent is a separate *personality* — Lilith and Eren aren't two
-copies of the same persona, they're different characters. Their
-skills are shaped by who they are; mixing them is like installing
-Alice's screensaver on Bob's account. Same for prompts. Same for
-collab files.
-
-If a skill is truly generic (web_search, calculate, file_io), it
-belongs in the System layer — JROS ships it, every agent gets it for
-free. The User layer is for agent-specific content.
-
-**Portability:**
-
-Each agent folder is self-contained — zip `~/jaeger/agents/lilith/`,
-hand it to someone, they unzip it into their `~/jaeger/agents/`, and
-they have your Lilith. No additional state to track.
-
-**Update contract:**
-
-JROS **never modifies** the User layer. Period.
-
-If a 0.X.Y release needs to migrate something here (e.g. a persona
-schema change), it does so **only** via an explicit, opt-in command
-the user runs (`jaeger user migrate`). Automatic, silent rewrites of
-files under the user's purview are forbidden.
+The cache survives instance deletion and is shared across instances. The legacy
+`~/.jaeger/models/` location is still honoured as a fallback for old installs.
 
 ---
 
-## Resolution — how JROS finds your stuff
+## For upstream development
 
-When the agent loop needs to load a persona, a skill, or a prompt
-overlay, it follows this resolution chain (introduced in 0.2.1):
+Before choosing a file path, ask which bucket a thing belongs to:
 
-```
-1. The instance's config.yaml:        user_dir: <path>
-2. Default:                            ~/jaeger/agents/<instance_name>/
-```
+- Changes for **every** agent, shipped by JROS? → **Framework** (in the package).
+- Per-agent state JROS creates/manages at runtime? → **Operator state**
+  (`<install_root>/.jaeger_os/instances/<name>/…`).
 
-A new helper, `resolve_user_dir(instance_name)`, returns the
-effective path. Loaders read from there. The runtime instance dir
-(`~/.jaeger/instances/<name>/`) only contains *runtime state* —
-nothing the user authored.
-
-**For Lilith-AI as the reference implementation:**
-
-The Lilith-AI repo's root *is* the user dir. `config.yaml` in
-`~/.jaeger/instances/lilith/` sets:
-
-```yaml
-user_dir: ~/GITHUB/Lilith-AI
-```
-
-…and JROS reads `persona.json`, `skills/`, `prompts/`, `files/`
-directly from the repo. Users can git-commit their persona changes,
-share the repo, etc. Updates to JROS itself never touch the repo.
+If a feature spans both (e.g. a skill the operator customises), ship a **default
+in the framework** and let the agent **write its override** into its instance
+`skills/` — the loader's instance-wins-over-core resolution handles the
+fall-through.
 
 ---
 
-## What about model weights?
-
-Model weights are heavy (1-30 GB each) and shouldn't be in any of the
-three layers as designed:
-
-- **Not System** — would bloat the pip wheel by orders of magnitude.
-- **Not Runtime** (per-instance) — duplicated across every instance.
-- **Not User** — they're not user-authored; they're catalog data.
-
-JROS uses a fourth de-facto layer:
-
-```
-~/.jaeger/models/                ← shared model store
-  └── <model_key>/<file>.gguf
-```
-
-This is system-shared cache state. It survives instance deletions and
-is referenced by the model registry in System. The registry knows
-which keys map to which downloadable URLs; runtime fetch logic
-populates the store on demand.
-
-Existing operator caches (`~/.lmstudio/models/`) are also scanned via
-the `extra_gguf_dirs` config option so users don't redundantly
-download what they already have.
-
----
-
-## Examples — putting it all together
-
-### Solo developer, single agent (the common case)
-
-```
-SYSTEM:    pip install jaeger-os → site-packages/jaeger_os/
-RUNTIME:   ~/.jaeger/instances/lilith/   (created by wizard)
-USER:      ~/jaeger/agents/lilith/        (created by wizard or you)
-```
-
-After upgrade to JROS 0.3.0:
-- `site-packages/jaeger_os/` ← replaced
-- `~/.jaeger/instances/lilith/` ← schema migrated, content preserved
-- `~/jaeger/agents/lilith/` ← **untouched**
-
-### Multi-agent on one machine
-
-```
-~/.jaeger/instances/
-  ├── lilith/                   ← her runtime state
-  └── eren/                     ← his runtime state
-
-~/jaeger/agents/
-  ├── lilith/                   ← her persona + skills + files
-  └── eren/                     ← his persona + skills + files
-                                  (totally separate from Lilith's)
-```
-
-Both share the same System (one JROS install). Both have isolated
-Runtime + User layers.
-
-### Project-repo pattern (Lilith-AI)
-
-```
-~/GITHUB/Lilith-AI/             ← git repo IS the User layer
-  ├── persona.json
-  ├── skills/
-  ├── prompts/
-  └── files/
-
-~/.jaeger/instances/lilith/
-  └── config.yaml has: user_dir: ~/GITHUB/Lilith-AI
-```
-
-Same separation, just the User layer lives in a versioned project
-directory. Pushing the repo lets someone else pull and run your
-Lilith with two commands.
-
----
-
-## What this means for upstream development
-
-When writing a new feature, ask which layer it belongs to **before**
-deciding the file path:
-
-- Does the feature change for every agent? → System (in the package).
-- Does the feature track per-agent runtime state? → Runtime
-  (`<instance_dir>/...`).
-- Does the user need to author or share it? → User (`<user_dir>/...`).
-
-If the feature spans layers (e.g. a new skill the user customises),
-ship a **default in System** and let the user **override in their User
-dir**. The loader's resolution chain handles the fall-through.
-
----
-
-*Last updated: 2026-05-31 (JROS 0.2.1 introduced the `user_dir`
-config option and `resolve_user_dir()`. Prior to 0.2.1, persona /
-skills / prompts were read directly from the runtime instance dir;
-JROS will migrate existing instances to the new layout on first
-0.2.1 launch.)*
+*Last updated: 0.6 — rewritten from the pre-0.2.6 three-layer model to the
+current two-bucket (framework + operator state) reality; see CHANGELOG 0.2.6 for
+the User-layer removal and the 2026-06-25 packaging note in
+`dev/docs/process/STATUS.md` for the editable-install model.*

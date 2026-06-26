@@ -21,7 +21,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-OUTCOMES = ("smooth", "slow", "issues", "failed")
+# smooth/slow/issues/failed are agent-written (how a use went). "reviewing" is
+# a lifecycle marker the review loop writes when it queues a Deep Think pass —
+# it resets the "needs review?" counter so a finished review isn't re-proposed.
+OUTCOMES = ("smooth", "slow", "issues", "failed", "reviewing")
 
 
 @dataclass

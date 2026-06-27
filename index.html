@@ -786,6 +786,7 @@
       <a href="#architecture">Architecture</a>
       <a href="#positioning">vs ROS/Hermes</a>
       <a href="#install">Install</a>
+      <a href="#lifecycle">Lifecycle</a>
       <a href="#roadmap">Roadmap</a>
       <a class="btn" href="https://github.com/JenkinsRobotics/JROS" target="_blank" rel="noopener">GitHub →</a>
     </div>
@@ -806,7 +807,7 @@
     <div class="dot e"></div>
   </div>
   <div class="wrap">
-    <div class="badge"><span class="dot"></span> Latest release: 0.2.6 · Apache-2.0</div>
+    <div class="badge"><span class="dot"></span> Latest release: 0.5.2 · 0.6 in progress · Apache-2.0</div>
 
     <div class="hero-logo" aria-hidden="true">
       <img class="hero-mark" src="https://jenkinsrobotics.com/wp-content/uploads/2021/04/cropped-cropped-Jenkins-logo-transparent-1.png"
@@ -844,9 +845,9 @@
 <pre><span class="cm"># One line. Clones to ~/jaeger, sets up the venv, scaffolds the operator state.</span>
 <span class="pmt">$</span> curl -fsSL https://raw.githubusercontent.com/JenkinsRobotics/JROS/master/scripts/install.sh | bash
 
-<span class="cm"># Then create your first agent — wizard runs end-to-end.</span>
+<span class="cm"># Then create your first agent — the wizard picks a character.</span>
 <span class="pmt">$</span> cd ~/jaeger
-<span class="pmt">$</span> ./run.sh setup lilith<span class="blink">▎</span></pre>
+<span class="pmt">$</span> ./jaeger agent create lilith<span class="blink">▎</span></pre>
     </div>
   </div>
 </header>
@@ -1006,9 +1007,9 @@
     <div style="margin-top: 36px;">
       <div class="arch-box" style="text-align: center;">
         <h4>Runtime model</h4>
-        <h3>0.3.0 ships the brain. 0.4 wires the spine.</h3>
+        <h3>The brain shipped first. 0.4 wired the spine.</h3>
         <p style="margin-top: 12px;">
-          <code>./launch</code> boots the in-process TUI: one Gemma instance, the persistent voice pipeline, the skill registry, the memory store — all in one Python process for sub-microsecond function-call latency. <strong>0.4 adopts a node architecture</strong>: brain stays one process; audio I/O, STT, TTS, vision, motors, lights each become their own node, talking ZMQ. Same code laptop or fleet — only the transport changes.
+          <code>jaeger</code> boots the agent: one Gemma instance, the persistent voice pipeline, the skill registry, the memory store — all in one Python process for sub-microsecond function-call latency. <strong>0.4 adopted a node architecture</strong>: brain stays one process; audio I/O, STT, TTS, vision, motors, lights each become their own node, talking over the <code>ZmqBus</code>. Same code laptop or fleet — only the transport changes. (0.5 added the character system + Jaeger Studio GUI on top; 0.6 wrapped it in a real install/update/lifecycle shell.)
         </p>
       </div>
     </div>
@@ -1128,25 +1129,64 @@
       <div class="step">
         <span class="n">2</span>
         <h3>Create an agent</h3>
-        <p>Six-step wizard. Detects your RAM tier and recommends a data-validated awake + asleep model pair.</p>
+        <p>The wizard picks a <b>character</b> and a data-validated awake + asleep model pair for your RAM tier.</p>
 <pre><span class="pmt">$</span> cd ~/jaeger
-<span class="pmt">$</span> ./run.sh setup lilith
-<span class="cm"># wizard: identity · model · permissions ·</span>
+<span class="pmt">$</span> ./jaeger agent create lilith
+<span class="cm"># wizard: character · model · permissions ·</span>
 <span class="cm"># interaction · warm-up · review</span></pre>
       </div>
 
       <div class="step">
         <span class="n">3</span>
         <h3>Launch</h3>
-        <p>Drops you into the TUI. <code style="background:var(--bg2);padding:1px 5px;border-radius:4px;border:1px solid var(--border);font-family:var(--mono);font-size:12px;color:var(--accent2)">/help</code> for slash commands.</p>
-<pre><span class="pmt">$</span> ./run.sh --instance lilith
-<span class="cm"># or run as background daemon:</span>
-<span class="pmt">$</span> ./run.sh start --instance lilith</pre>
+        <p>Runs the agent. <code style="background:var(--bg2);padding:1px 5px;border-radius:4px;border:1px solid var(--border);font-family:var(--mono);font-size:12px;color:var(--accent2)">--tui</code> for the terminal; <code style="background:var(--bg2);padding:1px 5px;border-radius:4px;border:1px solid var(--border);font-family:var(--mono);font-size:12px;color:var(--accent2)">/help</code> for slash commands.</p>
+<pre><span class="pmt">$</span> ./jaeger --agent lilith
+<span class="cm"># run unattended at boot/login:</span>
+<span class="pmt">$</span> ./jaeger autostart enable</pre>
       </div>
     </div>
 
     <p class="sub" style="margin-top: 36px;">
       Already have Gemma or Qwen in LM Studio? The wizard scans your machine and auto-symlinks the GGUF — no Hugging Face round-trip needed.
+    </p>
+  </div>
+</section>
+
+<!-- ─────────────────────── LIFECYCLE ─────────────────────── -->
+<section id="lifecycle">
+  <div class="wrap">
+    <div class="eyebrow">// lifecycle</div>
+    <h2 class="h">Behaves like real software — install, run, update, repeat.</h2>
+    <p class="sub">One <code style="background:var(--panel);padding:1px 6px;border-radius:4px;border:1px solid var(--border);font-family:var(--mono);font-size:13px;color:var(--accent2)">jaeger</code> command for the whole life of a unit — no git on the box, no PyPI, no re-pasting the curl line. Your agents and their memory survive every update.</p>
+
+    <div class="term" aria-label="operator commands">
+      <div class="term-bar">
+        <div class="lights"><span></span><span></span><span></span></div>
+        <span class="ttl">operate — bash</span>
+        <span style="width:48px"></span>
+      </div>
+<pre><span class="cm"># manage agents — each plays a character</span>
+<span class="pmt">$</span> jaeger agent create|list|use|delete|clear
+
+<span class="cm"># run it — manually, or unattended after a reboot</span>
+<span class="pmt">$</span> jaeger                  <span class="cm"># --tui for the terminal</span>
+<span class="pmt">$</span> jaeger autostart enable
+<span class="pmt">$</span> jaeger launcher install  <span class="cm"># macOS: a clickable Dock app</span>
+
+<span class="cm"># keep it current — downloads + applies in place</span>
+<span class="pmt">$</span> jaeger doctor            <span class="cm"># "0.6.x available"</span>
+<span class="pmt">$</span> jaeger update            <span class="cm"># --rollback · --ref to pin</span>
+
+<span class="cm"># recover or remove — agents kept unless --purge</span>
+<span class="pmt">$</span> jaeger reinstall
+<span class="pmt">$</span> jaeger uninstall</pre>
+    </div>
+
+    <p class="sub" style="margin-top: 28px;">
+      Updates download the release and swap the product in place — your
+      <code style="background:var(--panel);padding:1px 6px;border-radius:4px;border:1px solid var(--border);font-family:var(--mono);font-size:13px;color:var(--accent2)">.venv</code> and every agent's memory, skills, and credentials are never
+      touched. <code style="background:var(--panel);padding:1px 6px;border-radius:4px;border:1px solid var(--border);font-family:var(--mono);font-size:13px;color:var(--accent2)">--rollback</code> reverts to the previous version, and the
+      tray + Jaeger Studio surface "update available" on their own.
     </p>
   </div>
 </section>
@@ -1159,33 +1199,33 @@
 
     <div class="roadmap">
       <div class="milestone done">
-        <h4>0.1.x — Shipped</h4>
-        <h3>Agent layer</h3>
-        <p>Local-first agent, 54 tools, self-authored skills, kanban, Deep Think, external-model pipeline, computer_use skill.</p>
+        <h4>0.1–0.3 — Shipped</h4>
+        <h3>The agent layer</h3>
+        <p>Local-first agent, ~70 tools, self-authored skills, kanban, Deep Think, the external-model pipeline, computer_use — then the System/Runtime/User layout, voice (wake-word + AEC barge-in), messaging bridges, the tray, and the skill-v3 system.</p>
       </div>
 
       <div class="milestone done">
-        <h4>0.2.x — Shipped</h4>
-        <h3>Refinement + Jaeger-port-enablement</h3>
-        <p>Layout unification (jaeger_os/ + .jaeger_os/). Daemon + attach architecture. Voice with wake-word + AEC barge-in. Messaging bridges. Menu-bar tray. Sandbox isolation. Wizard polish.</p>
+        <h4>0.4.0 — Shipped</h4>
+        <h3>Node architecture</h3>
+        <p>The <code>ZmqBus</code> + body contract. The brain stays one process; audio I/O, STT, TTS, vision, motors, lights become bus-addressable nodes behind clean adapter protocols. The bones embodiment needs.</p>
+      </div>
+
+      <div class="milestone done">
+        <h4>0.5.0 — Shipped</h4>
+        <h3>Identity + the Mochi fold</h3>
+        <p>Transport-agnostic voice, the character system (each agent plays a character), the animation/avatar pipeline, the skill tree, and the Jaeger Studio GUI — one repo for the brain and the body tooling.</p>
       </div>
 
       <div class="milestone next">
-        <h4>0.3.x — Next</h4>
-        <h3>GUI + skill marketplace + integrations</h3>
-        <p>PyQt6 floating chat. Web dashboard surface. Email assistant as a fourth messaging bridge. Skill marketplace — agents publish improvements; other agents subscribe. Vision pipeline validation (Moondream2 + SDXL).</p>
+        <h4>0.6 — In progress</h4>
+        <h3>The product shell</h3>
+        <p>Feels like real software: a clean install, in-place <code>jaeger update</code> with rollback, autostart, a clickable launcher, reinstall / uninstall — plus agentic polish (autonomy modes, a person index, a self-improving skill loop).</p>
       </div>
 
       <div class="milestone">
-        <h4>0.4.x — Spec</h4>
-        <h3>Hardware-node layer</h3>
-        <p>ZMQ + UDP transport. Node/plugin contract. First hardware nodes (motors, LEDs, cameras, MCU serial). The bones JP01 needs.</p>
-      </div>
-
-      <div class="milestone">
-        <h4>0.5.x</h4>
-        <h3>JP01</h3>
-        <p>The first hardware Jaeger. Same brain Lilith runs. New body around it.</p>
+        <h4>0.7 — Next</h4>
+        <h3>Hardware · JP01</h3>
+        <p>The first hardware Jaeger — the same brain Lilith runs, a new body around it. Mic-in / RGB-out / speaker-out streaming on the device over the <code>MediaFrame</code> / <code>ZmqBus</code> seam.</p>
       </div>
     </div>
   </div>

@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from PySide6.QtCore import Qt, QSize
+from PySide6.QtCore import Qt, QSize, QThread, Signal
 from PySide6.QtGui import QIcon, QImage, QPixmap
 from PySide6.QtWidgets import (
     QFrame, QGridLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton,
@@ -28,6 +28,22 @@ from .theme import (
 _TABS = ["Create", "Customize", "Animate"]
 _SWATCHES = ["#7C5CFF", "#4ADE80", "#F472B6", "#FBBF24", "#38BDF8",
              "#FB7185", "#A78BFA", "#34D399", "#F59E0B", "#60A5FA"]
+
+
+class _UpdateCheckThread(QThread):
+    """Off-main-thread "is a newer release out?" probe so the window never
+    blocks on the network. Emits the ``version_check.update_status`` dict (or
+    ``None`` on any error). Started by :func:`make_surface`, not the ctor —
+    so constructing the window is network-free (tests, offscreen)."""
+
+    done = Signal(object)
+
+    def run(self) -> None:  # noqa: D401 — QThread entry
+        try:
+            from jaeger_os.core.version_check import update_status
+            self.done.emit(update_status())
+        except Exception:  # noqa: BLE001 — best-effort; never crash the UI
+            self.done.emit(None)
 
 
 class JaegerStudioWindow(QWidget):
@@ -52,14 +68,46 @@ class JaegerStudioWindow(QWidget):
         # resizeEvent) — a swappable overlay, not baked into the window.
         self._bg = GradientBackground(self)
 
-        root = QHBoxLayout(self)
-        root.setContentsMargins(0, 0, 0, 0)
-        root.setSpacing(0)
+        # Outer column so a full-width "update available" banner can sit above
+        # the sidebar + content row (hidden until a newer release is found).
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+        self._update_banner = self._make_update_banner()
+        outer.addWidget(self._update_banner)
+
+        content = QHBoxLayout()
+        content.setContentsMargins(0, 0, 0, 0)
+        content.setSpacing(0)
         self._sidebar = Sidebar(self._agent_name)
         self._sidebar.navSelected.connect(self._on_nav)
-        root.addWidget(self._sidebar)
-        root.addWidget(self._main_column(), stretch=1)
+        content.addWidget(self._sidebar)
+        content.addWidget(self._main_column(), stretch=1)
+        outer.addLayout(content, stretch=1)
         self._bg.lower()                       # keep it behind the content
+
+    def _make_update_banner(self) -> QFrame:
+        bar = QFrame()
+        bar.setObjectName("UpdateBanner")
+        bar.setStyleSheet(
+            "#UpdateBanner{background:rgba(70,90,160,0.92);}"
+            "#UpdateBanner QLabel{color:#eef2ff;font-weight:600;}")
+        row = QHBoxLayout(bar)
+        row.setContentsMargins(16, 8, 16, 8)
+        self._update_label = QLabel("")
+        row.addWidget(self._update_label)
+        row.addStretch(1)
+        bar.setVisible(False)                  # shown only when an update exists
+        return bar
+
+    def _on_update_status(self, st: Any) -> None:
+        """Slot for the background probe. Shows the banner only on a real
+        newer release; stays hidden when up to date / offline."""
+        if isinstance(st, dict) and st.get("available"):
+            self._update_label.setText(
+                f"Update available — {st['latest']} "
+                f"(you're on {st['current']}).  Run  jaeger update  to upgrade.")
+            self._update_banner.setVisible(True)
 
     def resizeEvent(self, e: Any) -> None:  # noqa: N802 — Qt override
         super().resizeEvent(e)
@@ -361,6 +409,10 @@ def make_surface(ctx: Any, spec: Any = None) -> JaegerStudioWindow:  # noqa: ARG
         getattr(getattr(ctx, "core", None), "agent_name", None)
         or getattr(ctx, "agent_name", None) or "Jaeger")
     win = JaegerStudioWindow(agent_name=name, ctx=ctx)
+    # Best-effort "newer release?" check, off the main thread → banner.
+    win._update_thread = _UpdateCheckThread(win)
+    win._update_thread.done.connect(win._on_update_status)
+    win._update_thread.start()
     bus = getattr(ctx, "bus", None)
     if bus is not None:
         from jaeger_os.app.surfaces import make_bus_bridge

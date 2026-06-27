@@ -28,6 +28,29 @@ has actually been exercised and works.
 
 ---
 
+## 2026-06-27 — Mac launcher + in-app update surface [install/update]
+
+The "feels like a real app" polish + the update surface that pairs with
+`jaeger update`.
+
+- **`jaeger launcher install|remove`** (`cli/verbs/launcher_verb.py`) — a thin
+  `/Applications/Jaeger.app` (`Contents/MacOS/Jaeger` stub execs the install's
+  `jaeger`; `Info.plist`; `lsregister`). Created locally → no quarantine /
+  Gatekeeper prompt, no signing. Falls back to `~/Applications` when
+  `/Applications` isn't writable. install.sh next-steps now offer it (+ an
+  autostart hint, OS-aware).
+- **In-app "update available"** via the shared `version_check.update_status()`:
+  - tray: a "Check for Updates…" item (checks on click, notifies the result —
+    not on every menu open, which would block on the network);
+  - Jaeger Studio: a top banner that auto-checks off the main thread on window
+    open (`_UpdateCheckThread` → `_on_update_status`) and shows the newer tag.
+- Verified: the launcher bundle was built in scratch + `plutil -lint` OK; the
+  Studio banner show/hide tested offscreen; 15 new tests. (The live rumps
+  notification + double-clicking the real `.app` are macOS-GUI paths, not
+  headless-verifiable.)
+
+---
+
 ## 2026-06-27 — operator term: instance → agent (surface only) [ux]
 
 Operators were managing "instances" — vague ("instance of what?"). The

@@ -59,15 +59,16 @@ of scope** (note below).
   unit case the robots need. Runs the install's `jaeger` (extra args forwarded);
   **opt-in**. *(done)*
 
-**Tier 2 — clickable launcher app (the target, no bundling)**
-- [ ] After the curl install, an **opt-in step** offers to create the launcher;
-  on accept it drops `/Applications/Jaeger.app` — a thin launcher
-  (`Contents/MacOS/` stub → `~/jaeger/jaeger`) + icon. Same download as today,
-  one extra consented step → Dock / Launchpad presence + double-click launch.
-- [ ] **No Gatekeeper friction, no signing.** The launcher is *created locally*
-  by the installer (not downloaded), so it carries no quarantine flag — it opens
-  without the "unidentified developer" block. No py2app, no notarization.
-- [ ] **File access stays full.** The launcher is *not* sandboxed (no App
+**Tier 2 — clickable launcher app (the target, no bundling)** ✅ *done*
+- [x] **`jaeger launcher install|remove`** drops `/Applications/Jaeger.app`
+  (falls back to `~/Applications` if `/Applications` isn't writable) — a thin
+  launcher (`Contents/MacOS/Jaeger` stub → the install's `jaeger`) +
+  `Info.plist`, registered with LaunchServices. install.sh's next-steps offer
+  it. *(done; a custom icon is deferred — generic icon for now.)*
+- [x] **No Gatekeeper friction, no signing.** Created *locally* by the verb
+  (not downloaded) → no quarantine flag → opens without the "unidentified
+  developer" block. No py2app, no notarization. *(done)*
+- [~] **File access stays full.** The launcher is *not* sandboxed (no App
   Sandbox entitlement) → the spawned Python has the same Unix file access as
   Terminal; workspace + project edits are unaffected. The only gate is **TCC**
   for protected folders (Desktop / Documents / Downloads / external drives):
@@ -92,8 +93,10 @@ current audience. Revisit only if shipping to people who won't run a one-liner.
   allowlist, swap each item in place (per-item `os.replace`, recoverable via
   the kept prev dir), preserve `.venv/` + `.jaeger_os/`; reinstall deps **only**
   if `requirements.txt` / `pyproject.toml` changed. *(done)*
-- [ ] **Surface availability in-app** — tray menu item + a Jaeger Studio banner:
-  "Update available 0.6.x → Install". *(still open — the in-app surface)*
+- [x] **Surface availability in-app** — tray "Check for Updates…" item (checks
+  on click, notifies the result) + a Jaeger Studio top banner that auto-checks
+  off-thread on open and shows "Update available — X · run jaeger update". Both
+  via the shared `version_check.update_status`. *(done)*
 - [~] **Channels / pinning** — `jaeger update --ref TAG` pins a version; honour
   `JAEGER_REF` in the env. Stable-vs-latest channel naming not yet formalised.
 - [x] **Rollback** — previous product kept in `.update-prev/`;
@@ -150,7 +153,8 @@ alongside it. See STATUS.md for the runtime detail.
   reinstall only when they change. Latest-version lookup (`version_check`) is
   shared with `jaeger doctor`'s current-vs-latest readout. Untracked 93 MB of
   derived Swift `.build/` (it had been dragged into every clone + install).
-  *Remaining for the theme:* in-app update surface, Native Mac app, uninstall.
+  *Remaining for the theme:* README narrative refresh + `doctor` Full-Disk-Access
+  detection (small).
 - [x] **`jaeger autostart`** (this commit) — opt-in boot/login service so a
   deployed unit runs unattended after reboot/power-loss. macOS LaunchAgent +
   Linux `systemd --user` (+ linger). Manual `jaeger` start unchanged.
@@ -165,6 +169,10 @@ alongside it. See STATUS.md for the runtime detail.
   <create|list|use|inspect|delete|clear>` unifies the old setup/instance/
   instances surface; `--agent` flag; `instance`/`setup`/`--instance` kept as
   aliases; internal `instances/` code unchanged.
+- [x] **Mac `.app` launcher + in-app update surface** (this commit) — `jaeger
+  launcher install` drops a clickable, locally-created (unsigned, no Gatekeeper
+  prompt) `Jaeger.app`; the tray ("Check for Updates…") and Jaeger Studio (auto
+  banner) both surface "update available" via `version_check.update_status`.
 
 **Agentic (off-theme, operator-prioritised):**
 

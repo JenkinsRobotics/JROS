@@ -1,7 +1,6 @@
-"""Jaeger Studio "update available" banner — hidden until a newer release is
-found. Runs offscreen (conftest defaults QT_QPA_PLATFORM=offscreen). The
-network probe (_UpdateCheckThread) is plumbing onto _on_update_status, which is
-what we assert here directly — no network in the test."""
+"""Jaeger Studio hosts the reusable UpdateBanner widget. Offscreen (conftest
+defaults QT_QPA_PLATFORM=offscreen). Constructing the window is network-free
+(the banner auto-checks off-thread, but we drive it directly here)."""
 
 from __future__ import annotations
 
@@ -20,21 +19,14 @@ def _app():
     return QApplication.instance() or QApplication([])
 
 
-def test_banner_hidden_until_update_available(_app):
+def test_window_hosts_update_banner_hidden_by_default(_app):
+    from jaeger_os.interfaces.pyside6.widgets.update_banner import UpdateBanner
     from jaeger_os.interfaces.studio.window import JaegerStudioWindow
     w = JaegerStudioWindow()
+    assert isinstance(w._update_banner, UpdateBanner)
     assert w._update_banner.isHidden()                       # nothing yet
 
-    w._on_update_status({"available": False, "latest": None, "current": "0.5.2"})
-    assert w._update_banner.isHidden()                       # up to date → hidden
-
-    w._on_update_status({"available": True, "latest": "9.9.9", "current": "0.5.2"})
-    assert not w._update_banner.isHidden()                   # newer → shown
-    assert "9.9.9" in w._update_label.text()
-
-
-def test_banner_ignores_none_status(_app):
-    from jaeger_os.interfaces.studio.window import JaegerStudioWindow
-    w = JaegerStudioWindow()
-    w._on_update_status(None)                                # offline probe
-    assert w._update_banner.isHidden()
+    # feeding a newer release reveals the shared widget in-place
+    w._update_banner.set_status(
+        {"available": True, "latest": "9.9.9", "current": "0.5.2"})
+    assert not w._update_banner.isHidden()

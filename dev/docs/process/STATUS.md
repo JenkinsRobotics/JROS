@@ -28,6 +28,26 @@ has actually been exercised and works.
 
 ---
 
+## 2026-06-27 — in-app update action: reusable UpdateBanner widget [install/update]
+
+The in-app update went from notice-only to a real **action**, packaged as a
+**reusable Qt widget** any window can drop in.
+
+- **`interfaces/pyside6/widgets/update_banner.py`** — `UpdateBanner(QFrame)`:
+  self-checks off-thread on `start()` (auto), reveals only on a newer release,
+  and its **Update now** button opens `UpdateDialog`, which runs `jaeger update`
+  via `QProcess`, streams the download/apply output, and prompts to restart.
+  Knobs: `auto_start` (check on construct) and `run_default` (built-in action
+  vs. host-driven via the `updateRequested` signal). `set_status(dict)` lets a
+  host/test feed status directly.
+- **Jaeger Studio now hosts the widget** — the bespoke banner (`_UpdateCheckThread`
+  / `_make_update_banner` / `_on_update_status`) was removed in favour of
+  `UpdateBanner(self)`. Any future Qt window adds it the same one-line way.
+- 7 new tests (reveal logic + the click contract, offscreen). The `QProcess`
+  update run is a GUI-spawn path, not headless-verified.
+
+---
+
 ## 2026-06-27 — install-experience polish: prereq detection + doctor FDA [install/update]
 
 Two low-risk 0.6 install-experience items.

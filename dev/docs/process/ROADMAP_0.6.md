@@ -93,10 +93,12 @@ current audience. Revisit only if shipping to people who won't run a one-liner.
   allowlist, swap each item in place (per-item `os.replace`, recoverable via
   the kept prev dir), preserve `.venv/` + `.jaeger_os/`; reinstall deps **only**
   if `requirements.txt` / `pyproject.toml` changed. *(done)*
-- [x] **Surface availability in-app** — tray "Check for Updates…" item (checks
-  on click, notifies the result) + a Jaeger Studio top banner that auto-checks
-  off-thread on open and shows "Update available — X · run jaeger update". Both
-  via the shared `version_check.update_status`. *(done)*
+- [x] **Surface availability in-app + the update *action***. Tray "Check for
+  Updates…" item (checks on click, notifies). For Qt: a **reusable
+  `UpdateBanner` widget** (`interfaces/pyside6/widgets/`) any window can drop in
+  — it self-checks off-thread, reveals on a newer release, and its **Update
+  now** button runs `jaeger update` in an `UpdateDialog` (streamed output via
+  `QProcess`, restart prompt). Jaeger Studio now hosts it. *(done)*
 - [~] **Channels / pinning** — `jaeger update --ref TAG` pins a version; honour
   `JAEGER_REF` in the env. Stable-vs-latest channel naming not yet formalised.
 - [x] **Rollback** — previous product kept in `.update-prev/`;
@@ -154,8 +156,7 @@ alongside it. See STATUS.md for the runtime detail.
   shared with `jaeger doctor`'s current-vs-latest readout. Untracked 93 MB of
   derived Swift `.build/` (it had been dragged into every clone + install).
   *Remaining for the theme:* first-run model-download progress/ETA/resumable
-  (the one sizable item) + an in-app update *action* (the surfaces show
-  "available" but don't yet run the update for you).
+  (the one sizable item left).
 - [x] **`jaeger autostart`** (this commit) — opt-in boot/login service so a
   deployed unit runs unattended after reboot/power-loss. macOS LaunchAgent +
   Linux `systemd --user` (+ linger). Manual `jaeger` start unchanged.

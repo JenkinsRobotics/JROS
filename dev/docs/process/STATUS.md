@@ -28,6 +28,30 @@ has actually been exercised and works.
 
 ---
 
+## 2026-06-26 — `jaeger autostart` + install/update polish [install/update]
+
+Completes "units running unattended" + the cheap theme wins.
+
+- **`jaeger autostart enable|disable|status`** (`cli/verbs/autostart_verb.py`)
+  — opt-in boot/login service. macOS writes/loads a `~/Library/LaunchAgents/`
+  LaunchAgent (`launchctl load -w`); Linux writes a `systemd --user` unit
+  (`enable --now` + best-effort `loginctl enable-linger` so it comes up at boot
+  without an interactive login — the robot/appliance case). Runs the install's
+  `jaeger` (venv console script, else the `./jaeger` wrapper); extra args
+  forwarded. Manual `jaeger` start is unchanged. Pure service-file builders +
+  routing unit-tested (7); launchctl/systemctl IO not OS-tested.
+- **Lighter update download** — `.gitattributes export-ignore dev/` + `.github/`
+  trims the git-archive tarball `jaeger update` fetches (verified via
+  `git archive --worktree-attributes`: `dev/`/`.github/` drop, `jaeger_os/`
+  stays).
+- **README accuracy** — `jaeger` documented as the canonical command (Quick
+  Start + Daily-use; `run.sh` kept as alias), `jaeger update` upgrade path
+  (was the wrong `git pull && ./install.sh`), wizard character-pick, badge
+  0.3.0 → 0.5.2. (The broader `0.3.0`-era Status narrative still needs a
+  content pass — flagged, not silently half-fixed.)
+
+---
+
 ## 2026-06-26 — `jaeger update`: clean-install download/apply [install/update]
 
 The install/update theme's headline lands its core. A clean curl/product

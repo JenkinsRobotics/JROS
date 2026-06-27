@@ -24,16 +24,16 @@ Renders via `jaeger roadmap` (it picks the highest-numbered ROADMAP).
 The README drifted during 0.5.0. Fix first; they're small and load-bearing for
 a polished first impression.
 
-- [ ] **`jaeger` is the canonical command.** README Quick Start uses `./run.sh`;
-  document `jaeger` as the one operator command (`run.sh` still works). The
-  "Daily use (0.3.0)" header is stale — retitle.
-- [ ] **Wizard now picks a character.** README says the wizard asks
-  memory/model/voice; 0.5.0 added the **character pick** (defaults to Jarvis)
-  and binds it to the instance. Document it.
-- [ ] **Upgrade instructions are wrong for curl installs.** `git pull &&
-  ./install.sh` only works for a manual `git clone` (it has `.git`). The curl
-  one-liner copies product-only (no `.git`) → upgrade is re-running the
-  one-liner today, and `jaeger update` once it lands (below).
+- [x] **`jaeger` is the canonical command.** Quick Start + Daily-use now use
+  `./jaeger` (with the PATH note for global `jaeger`); `run.sh` kept as an
+  alias. "Daily use (0.3.0)" header retitled. *(done)*
+- [x] **Wizard now picks a character.** Quick Start documents the character
+  pick. *(done)*
+- [x] **Upgrade instructions fixed.** README now documents `jaeger update`
+  (download/apply, `--rollback`, `--ref`) instead of `git pull && ./install.sh`;
+  storage table + prose updated. Version badge bumped 0.3.0 → 0.5.2. *(done)*
+  *(Still stale: the `0.3.0`-era Status narrative — a broader content pass,
+  not part of this theme.)*
 
 ## Install experience
 
@@ -52,10 +52,12 @@ install** (the download is unchanged). Tier 2 — the thin launcher in
 `/Applications` — is the ceiling; a full self-contained bundle / DMG is **out
 of scope** (note below).
 
-**Tier 1 — launch at login (easy, no bundling)**
-- [ ] `jaeger autostart enable|disable` — writes/removes a
-  `~/Library/LaunchAgents/` plist that runs `~/jaeger/jaeger`, then
-  `launchctl` (un)loads it. **Opt-in** — a local LLM at every login is heavy.
+**Tier 1 — launch at login (easy, no bundling)** ✅ *done*
+- [x] `jaeger autostart enable|disable|status` — macOS writes/loads a
+  `~/Library/LaunchAgents/` LaunchAgent; **Linux** writes a `systemd --user`
+  unit (+ best-effort `loginctl enable-linger` for boot-without-login) — the
+  unit case the robots need. Runs the install's `jaeger` (extra args forwarded);
+  **opt-in**. *(done)*
 
 **Tier 2 — clickable launcher app (the target, no bundling)**
 - [ ] After the curl install, an **opt-in step** offers to create the launcher;
@@ -97,10 +99,10 @@ current audience. Revisit only if shipping to people who won't run a one-liner.
 - [x] **Rollback** — previous product kept in `.update-prev/`;
   `jaeger update --rollback` restores it (one level). *(done)*
 
-> Note: the GitHub *git-archive* tarball is heavy (carries the whole tree).
-> Untracking `jaeger_os/interfaces/avatar/.build/` (93 MB of derived Swift
-> cache) cut the bulk; a future `.gitattributes export-ignore` on `dev/` (or a
-> product-only Release asset) would shrink the download further.
+> Note: trimmed the git-archive tarball `jaeger update` fetches — untracked
+> `avatar/.build/` (93 MB derived Swift cache) **and** `.gitattributes
+> export-ignore` on `dev/` + `.github/`. A product-only Release asset could
+> shrink it further still.
 
 ## Uninstall
 
@@ -143,8 +145,13 @@ alongside it. See STATUS.md for the runtime detail.
   reinstall only when they change. Latest-version lookup (`version_check`) is
   shared with `jaeger doctor`'s current-vs-latest readout. Untracked 93 MB of
   derived Swift `.build/` (it had been dragged into every clone + install).
-  *Remaining for the theme:* in-app update surface, Native Mac app, uninstall,
-  README accuracy.
+  *Remaining for the theme:* in-app update surface, Native Mac app, uninstall.
+- [x] **`jaeger autostart`** (this commit) — opt-in boot/login service so a
+  deployed unit runs unattended after reboot/power-loss. macOS LaunchAgent +
+  Linux `systemd --user` (+ linger). Manual `jaeger` start unchanged.
+- [x] **README accuracy + lighter update download** (this commit) — `jaeger`
+  documented as canonical, `jaeger update` upgrade path, character-pick wizard,
+  badge bump; `.gitattributes export-ignore dev/` trims the release tarball.
 
 **Agentic (off-theme, operator-prioritised):**
 

@@ -28,6 +28,29 @@ has actually been exercised and works.
 
 ---
 
+## 2026-06-26 — skill self-improvement loop (on by default) [agentic]
+
+Recipe-skills now improve over time, measured. Full design:
+`dev/docs/process/SKILL_EVOLUTION_PLAN.md`. **On by default (opt-out via
+`set_skill_review(False)`)** — the operator wants the agent to get better with
+use; it's safe by construction (sandboxed to `<instance>/skills/`, smoke-gated,
+benchmark-validated, revision-logged, append-only rollback).
+
+- **Notes journal** (`core/skill_notes.py`, `skill_note`/`skill_notes`): the
+  agent jots a one-line post-use note (smooth/slow/issues/failed) — cheap signal.
+- **Review loop** (`agent/background/skill_review.py`): a skill that piles up
+  issue/failure notes auto-proposes a Deep Think task (or `request_skill_review`
+  by hand). The task runs the MEASURED loop — baseline `benchmark_skill` → write
+  `_vN` → re-benchmark → keep only if smoke passes AND delta > 0, else revert.
+  Reuses the existing Deep Think runner (no new executor); auto-approves +
+  self-applies when enabled (its own switch, not the live-turn autonomy mode).
+- **Revision log** (`core/skill_revisions.py`, `record_skill_revision`): the
+  `_vN` is the revision id; the log records when/why/delta. `jaeger skills
+  notes` + `jaeger skills revisions` surface it.
+- Better than the Hermes pattern it's modelled on: notes (cheap, cross-use
+  signal) vs raw-turn replay; heavy rewrite runs idle/asleep on the strong
+  model, never mid voice-turn; and it's measured, not trusted.
+
 ## 2026-06-26 — benchmark: gemma-4 12B + QAT; bench tooling un-rotted [models]
 
 Ran the flat-corpus benchmark (65-case v1.2) on the updated **gemma-4-12B-it-Q4_K_M**

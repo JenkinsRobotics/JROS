@@ -101,9 +101,11 @@ current audience. Revisit only if shipping to people who won't run a one-liner.
 
 ## Plumbing
 
-- [ ] **Version source of truth** — `jaeger_os.__version__` (currently `0.5.0`);
-  bump to `0.6.0` when 0.6 ships. Add a tiny "what's the latest published
-  version" lookup the updater + `doctor` share.
+- [x] **Version source of truth** — `jaeger_os.__version__` (now `0.5.2`), and
+  pyproject reads it dynamically (no second source). Bump to `0.6.0` when 0.6
+  ships.
+- [ ] **Latest-version lookup** — a "what's the newest published version" query
+  the updater + `doctor` share. (Not done.)
 - [ ] **`jaeger doctor`** reports current vs. latest + update readiness.
 
 ---
@@ -132,3 +134,17 @@ pipeline. See STATUS.md for the runtime detail.
   switchable mode (default `scoped`): agree the plan up front, then run the loop
   without per-action prompts; reach out (`clarify`) only when missing info or
   out of agreed scope. `/ask` `/scoped` `/auto` on every channel.
+- [x] **Packaging — editable install** (`3f4b693`) — JROS is a proper package
+  again (`uv pip install -e .`), code unmoved. Real `jaeger --version`, deps +
+  version single-sourced. **Partially delivers the Update headline below**:
+  `jaeger update` = `git pull --ff-only` + editable reinstall.
+- [x] **Entry-point unification** (`dc1809f`) — one `jaeger` dispatcher behind
+  the console script + the `./jaeger` wrapper.
+- [x] **Model defaults from a clean 7-model benchmark** (`ea8c309`) — `normal`
+  → e4b (voice), `high`/`deep-sleep` → 26B-A4B QAT, 12B = voice backup; bench
+  tooling un-rotted. New-instance defaults (`DEFAULT_MODEL` + host_recommendation)
+  aligned to match.
+- [x] **Skill self-improvement loop** (`4be104b`, `4a5b345`, + this commit) —
+  per-use notes journal → threshold/agent trigger → measured Deep Think rewrite
+  (smoke + benchmark, keep-if-better) → revision log. **On by default (opt-out)**;
+  `jaeger skills notes` / `revisions` surface it.

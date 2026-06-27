@@ -28,6 +28,24 @@ has actually been exercised and works.
 
 ---
 
+## 2026-06-27 — install-experience polish: prereq detection + doctor FDA [install/update]
+
+Two low-risk 0.6 install-experience items.
+
+- **Installer prereq detection** (`scripts/install.sh`) — beyond git + Python it
+  now checks a **C toolchain** (macOS `xcode-select -p`; Linux `cc/gcc/clang`)
+  and hard-fails early with the exact per-OS fix (no half-built `.venv`);
+  **PortAudio** is a non-fatal Linux warning (`libportaudio2`).
+- **`jaeger doctor` Full Disk Access** (`core/diagnostics/doctor.py`) — a
+  macOS-only Check that probes a TCC-gated path; when FDA isn't granted it
+  points to System Settings → Privacy → Full Disk Access (informational — FDA
+  matters only for protected folders, so never a hard failure).
+- Post-install next-steps already corrected to the `jaeger agent` surface.
+
+3 new tests (FDA on/off/undeterminable + off-macOS skip).
+
+---
+
 ## 2026-06-27 — Mac launcher + in-app update surface [install/update]
 
 The "feels like a real app" polish + the update surface that pairs with

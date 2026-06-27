@@ -37,13 +37,14 @@ a polished first impression.
 
 ## Install experience
 
-- [ ] **Prereq detection + guidance.** Installer checks Python 3.11/3.12, a C
-  toolchain, and PortAudio; on a miss it prints the exact per-OS fix command and
-  stops early (no half-built `.venv`).
+- [x] **Prereq detection + guidance.** scripts/install.sh checks Python
+  3.11/3.12 + a C toolchain (macOS `xcode-select -p`; Linux `cc/gcc/clang`) and
+  hard-fails early with the exact per-OS fix; PortAudio is a non-fatal Linux
+  warning. *(done; the in-repo `install.sh` could mirror the toolchain check.)*
 - [ ] **First-run model download** — progress bar + ETA + resumable; surface the
-  download size before it starts.
-- [ ] **Post-install summary** — verify the "next steps" output is accurate to
-  the `jaeger` command set.
+  download size before it starts. *(still open — the one sizable item left.)*
+- [x] **Post-install summary** — next-steps output corrected to `jaeger agent
+  create` / `jaeger agent list` (+ OS-aware launcher/autostart hints). *(done)*
 
 ## Native Mac app — launcher + launch-at-login
 
@@ -68,13 +69,12 @@ of scope** (note below).
 - [x] **No Gatekeeper friction, no signing.** Created *locally* by the verb
   (not downloaded) → no quarantine flag → opens without the "unidentified
   developer" block. No py2app, no notarization. *(done)*
-- [~] **File access stays full.** The launcher is *not* sandboxed (no App
+- [x] **File access stays full.** The launcher is *not* sandboxed (no App
   Sandbox entitlement) → the spawned Python has the same Unix file access as
   Terminal; workspace + project edits are unaffected. The only gate is **TCC**
   for protected folders (Desktop / Documents / Downloads / external drives):
-  `jaeger doctor` detects missing **Full Disk Access** and points to the
-  System Settings toggle. Grant once → zero prompts, including headless
-  autostart (Tier 1) where there's no GUI to answer a prompt.
+  `jaeger doctor` now **detects missing Full Disk Access** (probes a TCC-gated
+  path) and points to System Settings → Privacy → Full Disk Access. *(done)*
 
 **Out of scope — full bundle / DMG** (decided 2026-06-25). No self-contained
 py2app / PyInstaller `.app`, no signed / notarized DMG, no drag-to-Applications
@@ -153,8 +153,9 @@ alongside it. See STATUS.md for the runtime detail.
   reinstall only when they change. Latest-version lookup (`version_check`) is
   shared with `jaeger doctor`'s current-vs-latest readout. Untracked 93 MB of
   derived Swift `.build/` (it had been dragged into every clone + install).
-  *Remaining for the theme:* README narrative refresh + `doctor` Full-Disk-Access
-  detection (small).
+  *Remaining for the theme:* first-run model-download progress/ETA/resumable
+  (the one sizable item) + an in-app update *action* (the surfaces show
+  "available" but don't yet run the update for you).
 - [x] **`jaeger autostart`** (this commit) — opt-in boot/login service so a
   deployed unit runs unattended after reboot/power-loss. macOS LaunchAgent +
   Linux `systemd --user` (+ linger). Manual `jaeger` start unchanged.

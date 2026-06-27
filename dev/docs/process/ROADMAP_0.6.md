@@ -104,10 +104,15 @@ current audience. Revisit only if shipping to people who won't run a one-liner.
 > export-ignore` on `dev/` + `.github/`. A product-only Release asset could
 > shrink it further still.
 
-## Uninstall
+## Uninstall / reinstall
 
-- [ ] **`jaeger uninstall`** — remove the framework; prompt to keep or wipe
-  instance state (`~/jaeger/.jaeger_os/`). Mirrors the install's clean split.
+- [x] **`jaeger uninstall`** — removes the framework (product + `.venv`); keeps
+  `.jaeger_os/` (agents) unless `--purge`. Refuses on a dev clone (`.git`).
+  `--yes` for non-interactive. *(done)*
+- [x] **`jaeger reinstall`** — clean reinstall in place, keeping agents: clean
+  install → re-fetch the product (current or `--ref`) + force a dep resync; dev
+  clone → repair the editable install. Recovers a broken/half-updated install.
+  *(done — operator-requested; closes the curl-reuses-`.venv` gap.)*
 
 ## Plumbing
 
@@ -152,6 +157,10 @@ alongside it. See STATUS.md for the runtime detail.
 - [x] **README accuracy + lighter update download** (this commit) — `jaeger`
   documented as canonical, `jaeger update` upgrade path, character-pick wizard,
   badge bump; `.gitattributes export-ignore dev/` trims the release tarball.
+- [x] **`jaeger uninstall` + `jaeger reinstall`** (this commit) — uninstall
+  removes the framework (keeps agents unless `--purge`, refuses on a dev clone);
+  reinstall does a clean in-place reinstall keeping agents. Completes the
+  install → run → update → reinstall/uninstall lifecycle.
 
 **Agentic (off-theme, operator-prioritised):**
 

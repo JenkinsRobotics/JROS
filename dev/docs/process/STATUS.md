@@ -28,6 +28,27 @@ has actually been exercised and works.
 
 ---
 
+## 2026-06-27 — `jaeger uninstall` + `jaeger reinstall` [install/update]
+
+Closes the lifecycle: install → run → update → **reinstall / uninstall**.
+
+- **`jaeger uninstall [--purge] [--yes]`** (`cli/verbs/uninstall_verb.py`) —
+  removes the framework (the product allowlist + `.venv` + the updater's
+  scratch/rollback dirs); **keeps `.jaeger_os/`** (every agent) unless
+  `--purge`. **Refuses on a dev clone** (`.git` at the root — never nuke a
+  working checkout); non-interactive refuses without `--yes`. The destructive
+  + guard paths are unit-tested, and the dev-clone refusal was walked live on
+  this repo (exit 2, nothing removed).
+- **`jaeger reinstall [--ref TAG]`** (`update_verb._cmd_reinstall_argv`) — clean
+  reinstall keeping agents. Clean install → `_update_download(force=True)`
+  (re-fetch the product even at the same version + always resync deps); dev
+  clone → repair the editable install (`uv pip install -e .`). Recovers a
+  broken/half-updated install — the gap the curl installer left (it *reuses*
+  `.venv`). Per-agent reset already exists (`jaeger instance clear`/`delete`),
+  so this is framework-level by design.
+
+---
+
 ## 2026-06-26 — `jaeger autostart` + install/update polish [install/update]
 
 Completes "units running unattended" + the cheap theme wins.

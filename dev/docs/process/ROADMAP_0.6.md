@@ -81,18 +81,26 @@ current audience. Revisit only if shipping to people who won't run a one-liner.
 
 ## Update experience — the headline
 
-- [ ] **`jaeger update`** — one command, in place, **no git required** (works for
-  the product-only curl install).
-- [ ] **Check for updates** — query GitHub tags/releases (or `master`'s
-  `jaeger_os.__version__`), compare to the local `__version__`; cache the result
-  so it's cheap to call often.
-- [ ] **Download + apply** — fetch the target ref, swap the product dir
-  **atomically**, preserve `.venv/` + `.jaeger_os/`; re-run dependency install
-  **only** if `requirements.txt` / `pyproject.toml` changed.
+- [x] **`jaeger update`** — one command, in place, **no git required** for the
+  clean curl/product install (downloads + applies a release tarball). Dev
+  clones still fast-forward via git. *(done)*
+- [x] **Check for updates** — `version_check.latest_version` queries GitHub
+  tags, numeric-compares to local `__version__`. Shared by update + doctor. *(done)*
+- [x] **Download + apply** — fetch the target tag tarball, copy the PRODUCT
+  allowlist, swap each item in place (per-item `os.replace`, recoverable via
+  the kept prev dir), preserve `.venv/` + `.jaeger_os/`; reinstall deps **only**
+  if `requirements.txt` / `pyproject.toml` changed. *(done)*
 - [ ] **Surface availability in-app** — tray menu item + a Jaeger Studio banner:
-  "Update available 0.6.x → Install".
-- [ ] **Channels / pinning** — stable vs. latest; honour `JAEGER_REF`.
-- [ ] **Rollback** — keep the previous product dir; `jaeger update --rollback`.
+  "Update available 0.6.x → Install". *(still open — the in-app surface)*
+- [~] **Channels / pinning** — `jaeger update --ref TAG` pins a version; honour
+  `JAEGER_REF` in the env. Stable-vs-latest channel naming not yet formalised.
+- [x] **Rollback** — previous product kept in `.update-prev/`;
+  `jaeger update --rollback` restores it (one level). *(done)*
+
+> Note: the GitHub *git-archive* tarball is heavy (carries the whole tree).
+> Untracking `jaeger_os/interfaces/avatar/.build/` (93 MB of derived Swift
+> cache) cut the bulk; a future `.gitattributes export-ignore` on `dev/` (or a
+> product-only Release asset) would shrink the download further.
 
 ## Uninstall
 
@@ -104,9 +112,10 @@ current audience. Revisit only if shipping to people who won't run a one-liner.
 - [x] **Version source of truth** — `jaeger_os.__version__` (now `0.5.2`), and
   pyproject reads it dynamically (no second source). Bump to `0.6.0` when 0.6
   ships.
-- [ ] **Latest-version lookup** — a "what's the newest published version" query
-  the updater + `doctor` share. (Not done.)
-- [ ] **`jaeger doctor`** reports current vs. latest + update readiness.
+- [x] **Latest-version lookup** — `jaeger_os/core/version_check.py`, shared by
+  the updater + `doctor`. *(done)*
+- [x] **`jaeger doctor`** reports current vs. latest (CLI only — the agent's
+  `self_check` stays network-free). *(done)*
 
 ---
 
@@ -120,10 +129,24 @@ current audience. Revisit only if shipping to people who won't run a one-liner.
   [`../hardware/`](../hardware/). HISTORY flagged this for 0.6/0.7; the
   install/update theme takes 0.6, hardware likely lands 0.7.
 
-## Delivered on this branch (agentic — off-theme)
+## Delivered on this branch
 
-Landed alongside the install/update work; the operator prioritised the agentic
-pipeline. See STATUS.md for the runtime detail.
+The install/update **theme** work, then the agentic pipeline that landed
+alongside it. See STATUS.md for the runtime detail.
+
+**Install / update theme:**
+
+- [x] **Update mechanism — clean-install download/apply** (this commit) — the
+  theme headline's core: on a no-`.git` curl/product install, `jaeger update`
+  downloads the target release tarball and swaps the PRODUCT files in place,
+  keeping `.venv/` + `.jaeger_os/`; `--ref` pins, `--rollback` reverts, deps
+  reinstall only when they change. Latest-version lookup (`version_check`) is
+  shared with `jaeger doctor`'s current-vs-latest readout. Untracked 93 MB of
+  derived Swift `.build/` (it had been dragged into every clone + install).
+  *Remaining for the theme:* in-app update surface, Native Mac app, uninstall,
+  README accuracy.
+
+**Agentic (off-theme, operator-prioritised):**
 
 - [x] **Person index** — profiles of people the agent knows (name/handles/access/
   likes/facts), grown like skills; folds into the admin trust model.

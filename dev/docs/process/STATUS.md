@@ -28,6 +28,32 @@ has actually been exercised and works.
 
 ---
 
+## 2026-06-26 — `jaeger update`: clean-install download/apply [install/update]
+
+The install/update theme's headline lands its core. A clean curl/product
+install has no `.git`, so the old `jaeger update` (git pull) couldn't update it
+— it now **downloads the target release tarball and swaps the product in
+place**, keeping `.venv/` + `.jaeger_os/` untouched.
+
+- **`core/version_check.py`** — numeric version parse/compare + `latest_version()`
+  (GitHub tags API, degrades to `None` offline). Pure parts unit-tested; shared
+  by update + doctor.
+- **`update_verb.py`** — no-`.git` install → download tag tarball → copy the
+  PRODUCT allowlist → per-item `os.replace` swap (prev kept for rollback) →
+  reinstall deps only if `requirements`/`pyproject` changed. `--ref TAG` pins;
+  `--rollback` restores the kept previous product (one level). Dev clones keep
+  the git-pull + editable-reinstall path.
+- **`jaeger doctor`** appends a current-vs-latest line (CLI only — the agent's
+  `self_check` stays network-free).
+- **Repo hygiene:** untracked `jaeger_os/interfaces/avatar/.build/` (93 MB /
+  2189 files of derived Swift cache) that had been dragged into every clone +
+  install; `.gitignore` now ignores `.build/` anywhere.
+- Walked end-to-end against **real GitHub** (tags API + 0.5.2 tarball download +
+  extract, `dev/` correctly excluded) + 16 new unit tests. Remaining theme
+  work: in-app update surface, Native Mac app, `jaeger uninstall`, README fixes.
+
+---
+
 ## 2026-06-26 — skill self-improvement loop (on by default) [agentic]
 
 Recipe-skills now improve over time, measured. Full design:

@@ -161,6 +161,10 @@ alongside it. See STATUS.md for the runtime detail.
   removes the framework (keeps agents unless `--purge`, refuses on a dev clone);
   reinstall does a clean in-place reinstall keeping agents. Completes the
   install → run → update → reinstall/uninstall lifecycle.
+- [x] **Operator term: instance → agent** (surface only) — `jaeger agent
+  <create|list|use|inspect|delete|clear>` unifies the old setup/instance/
+  instances surface; `--agent` flag; `instance`/`setup`/`--instance` kept as
+  aliases; internal `instances/` code unchanged.
 
 **Agentic (off-theme, operator-prioritised):**
 

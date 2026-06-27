@@ -28,6 +28,28 @@ has actually been exercised and works.
 
 ---
 
+## 2026-06-27 — operator term: instance → agent (surface only) [ux]
+
+Operators were managing "instances" — vague ("instance of what?"). The
+operator-facing word is now **agent**: a deployed AI that plays a *character*,
+with its own memory/config/model. **Surface-only** by choice — internal
+`InstanceLayout` / `.jaeger_os/instances/` is unchanged (and "agent" already
+names the runtime loop, so renaming internals would collide).
+
+- **`jaeger agent <create|list|use|inspect|delete|clear>`** — one unified
+  command (`instance_verbs._cmd_agent_argv`): `create` runs the wizard (friendly
+  positional name → `--name`), the rest delegate to the instance verbs. Unifies
+  the old `setup` + `instance` + `instances` surface.
+- **`--agent`** added as an alias of `--instance` (main run path + skill /
+  memory / migrate verbs); `dest` stays `instance`, so every internal read is
+  unchanged.
+- `jaeger instance` / `jaeger setup` / `--instance` kept as quiet aliases —
+  nothing breaks. README operator examples updated.
+- Per-agent reset stays `jaeger agent clear` / `delete` (existing verbs); this
+  is purely the operator vocabulary.
+
+---
+
 ## 2026-06-27 — `jaeger uninstall` + `jaeger reinstall` [install/update]
 
 Closes the lifecycle: install → run → update → **reinstall / uninstall**.

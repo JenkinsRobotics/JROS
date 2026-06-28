@@ -42,8 +42,11 @@ a polished first impression.
   hard-fails early with the exact per-OS fix; PortAudio is a non-fatal Linux
   warning. The in-repo `install.sh` mirrors the toolchain check for the direct
   `./install.sh` path. *(done)*
-- [ ] **First-run model download** — progress bar + ETA + resumable; surface the
-  download size before it starts. *(still open — the one sizable item left.)*
+- [x] **First-run model download** — the HF path (`hf_hub_download`, the normal
+  case) already gives a progress bar + ETA + **resume** + cache; the size is
+  printed up front. The no-`huggingface_hub` urllib fallback now also shows a
+  bar + speed + ETA (`_progress_line`); it restarts rather than resumes (the HF
+  path is the resume story). *(done)*
 - [x] **Post-install summary** — next-steps output corrected to `jaeger agent
   create` / `jaeger agent list` (+ OS-aware launcher/autostart hints). *(done)*
 
@@ -159,8 +162,8 @@ alongside it. See STATUS.md for the runtime detail.
   reinstall only when they change. Latest-version lookup (`version_check`) is
   shared with `jaeger doctor`'s current-vs-latest readout. Untracked 93 MB of
   derived Swift `.build/` (it had been dragged into every clone + install).
-  *Remaining for the theme:* first-run model-download progress/ETA/resumable
-  (the one sizable item left).
+  *Theme complete.* (Model-download progress shipped; the remaining roadmap
+  items — full bundle/DMG, no-git product channel — were explicitly de-scoped.)
 - [x] **`jaeger autostart`** (this commit) — opt-in boot/login service so a
   deployed unit runs unattended after reboot/power-loss. macOS LaunchAgent +
   Linux `systemd --user` (+ linger). Manual `jaeger` start unchanged.

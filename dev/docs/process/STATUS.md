@@ -28,6 +28,23 @@ has actually been exercised and works.
 
 ---
 
+## 2026-06-28 — first-run model-download progress [install/update]
+
+The last 0.6 install-experience item — kept simple.
+
+- The **HF path** (`hf_hub_download`, the normal case since `huggingface_hub` is
+  present transitively) already gives a tqdm progress bar + ETA + **resume** +
+  cache; `download_model` prints the size up front. So the common case was
+  already covered.
+- The **urllib fallback** (only when `huggingface_hub` is absent) gained a real
+  progress bar + speed + ETA via a pure `_progress_line(name, done, total,
+  elapsed)` helper (unit-tested). It restarts rather than resumes — the HF path
+  is the resume story; the fallback is the no-extra-deps safety net.
+
+Closes the 0.6 install/update/lifecycle theme.
+
+---
+
 ## 2026-06-28 — skill evolution Plan C: archive + scoring/retirement + regrouping [agentic]
 
 Plan C (`SKILL_EVOLUTION_PLAN.md` §6–§7) closes the pipeline; the loose core

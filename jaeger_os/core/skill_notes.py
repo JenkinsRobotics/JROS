@@ -33,6 +33,11 @@ class SkillNote:
     outcome: str = "smooth"      # smooth | slow | issues | failed
     note: str = ""               # the agent's terse, concrete observation
     ts: str = ""
+    objective: str = ""          # the task objective, verbatim (1 line)
+    calls: int = 0               # tool-call count for this use
+    procedure: str = ""          # brief ordered procedure (the calls)
+    errors: str = ""             # errors / retries / dead-ends
+    flag: bool = False           # agent asks for review (fast-path)
 
 
 def _now() -> str:
@@ -43,13 +48,18 @@ def notes_path(layout: Any) -> Path:
     return Path(layout.root) / "memory" / "skill_notes.jsonl"
 
 
-def add_note(layout: Any, *, skill: str, outcome: str, note: str) -> SkillNote:
-    """Append a post-use note for a skill — one JSONL line, no model call.
+def add_note(layout: Any, *, skill: str, outcome: str, note: str = "",
+             objective: str = "", calls: int = 0, procedure: str = "",
+             errors: str = "", flag: bool = False) -> SkillNote:
+    """Append a structured post-use summary — one JSONL line, no model call.
     An unknown ``outcome`` is recorded as ``issues`` (still worth a signal)."""
     out = (outcome or "smooth").strip().lower()
     n = SkillNote(skill=(skill or "").strip(),
                   outcome=out if out in OUTCOMES else "issues",
-                  note=(note or "").strip(), ts=_now())
+                  note=(note or "").strip(), ts=_now(),
+                  objective=(objective or "").strip(), calls=int(calls or 0),
+                  procedure=(procedure or "").strip(),
+                  errors=(errors or "").strip(), flag=bool(flag))
     p = notes_path(layout)
     p.parent.mkdir(parents=True, exist_ok=True)
     with p.open("a", encoding="utf-8") as fh:

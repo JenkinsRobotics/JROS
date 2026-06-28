@@ -28,6 +28,33 @@ has actually been exercised and works.
 
 ---
 
+## 2026-06-28 — skill evolution Plan C: archive + scoring/retirement + regrouping [agentic]
+
+Plan C (`SKILL_EVOLUTION_PLAN.md` §6–§7) closes the pipeline; the loose core
+modules are grouped to match the codebase convention.
+
+- **`core/skill_improvement/`** — `skill_notes`, `skill_revisions`,
+  `skill_maintenance` moved into one package (was loose under `core/`), matching
+  `core/memory/`, `core/models/`, etc. Imports updated; usage unchanged. The
+  trigger + second-person review stay in `agent/background/skill_review.py`
+  (they ride the Deep Think loop; core can't depend on that layer).
+- **§6 per-skill archive** — `archive_superseded_versions` moves all but the
+  newest K `<skill>_vN` into `<instance>/skills/.archive/` (recoverable; the
+  loader scans direct children + `_v<N>`, so `.archive/` is invisible). The
+  only version history for gitignored instance skills.
+- **§7 scoring + retirement** — `skill_score` derives uses/wins/win-rate from
+  the notes; `retire` moves a skill to `.archive/` (recoverable) **guarded** so
+  only agent-owned (`self-improvement` revision, no `manual`) low-win skills are
+  eligible — never a user-written one. `maintenance_sweep` runs both each
+  Deep-Think idle cycle. `jaeger skills score` surfaces win-rates + candidates.
+- Recoverable + guarded throughout; nothing is ever deleted, core zone untouched.
+  6 new tests.
+
+This completes the refined skill-evolution pipeline: structured summaries →
+probabilistic idle trigger → second-person measured review → archive + retire.
+
+---
+
 ## 2026-06-28 — skill evolution Plan B: the second-person review [agentic]
 
 Plan B of the refined design (`SKILL_EVOLUTION_PLAN.md` §3, + prompt-level

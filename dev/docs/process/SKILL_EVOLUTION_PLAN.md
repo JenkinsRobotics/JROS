@@ -6,10 +6,12 @@ keep-if-better/revert), revision log, `jaeger skills notes` / `revisions`. The
 **Refinement** section at the bottom (second-person audit · richer post-use
 summaries · probabilistic severity-weighted trigger · new-skill spawning ·
 per-skill archive · scoring/retirement) is the agreed next design from the
-2026-06-27 brainstorm. **§1–§2 (structured summary + probabilistic trigger)
-SHIPPED (Plan A); §3 second-person review + prompt-level §4/§5 (validation +
-spawn-new) SHIPPED (Plan B); §6 archive + §7 scoring/retirement (+ the scoring
-half of §4) PLANNED (Plan C).**
+2026-06-27 brainstorm. **§1–§7 all SHIPPED (Plan A: structured summary +
+probabilistic trigger · Plan B: second-person review + prompt-level validation/
+spawn · Plan C: per-skill archive + scoring/retirement).** The core data +
+lifecycle modules now live under **`jaeger_os/core/skill_improvement/`**
+(`skill_notes` · `skill_revisions` · `skill_maintenance`), grouped to match the
+codebase convention; the trigger + review stay in `agent/background/skill_review.py`.
 
 ## The idea
 
@@ -168,7 +170,7 @@ defending what it did to encoding what should change. Audit prompt:
 **Honesty rule:** if step 5 can't be written as an imperative, the review
 produced nothing — leave the skill untouched.
 
-## §4 Validation — benchmark where possible, else score — ◑ prompt-directed (Plan B); scoring → Plan C
+## §4 Validation — benchmark where possible, else score — ✅ shipped (Plan B prompt + Plan C scoring)
 
 The proposed edit / new skill does **not** auto-stick:
 
@@ -189,7 +191,7 @@ a NEW playbook skill (use-when trigger + the imperative rule). **Dedup rail:**
 check existing skills first; prefer an EDIT over a near-duplicate (sprawl is the
 failure mode here).
 
-## §6 History — per-skill archive
+## §6 History — per-skill archive — ✅ shipped (Plan C)
 
 **Why it's load-bearing, not tidiness:** instance skills live under `.jaeger_os/`,
 which is **gitignored** — so git tracks none of their evolution. The archive is
@@ -204,7 +206,7 @@ comparable; it pairs with the existing `skill_revisions.jsonl` (metadata: versio
 (reference, don't copy, large assets); **cap depth** (keep the last K full
 versions; the revision log summarizes older ones). Revert stays free.
 
-## §7 Pruning / retirement (new)
+## §7 Pruning / retirement (new) — ✅ shipped (Plan C)
 
 On a schedule (idle), update each skill's score and **retire** skills that never
 fire or whose win-rate is poor. Curate, don't hoard — **never** auto-prune a

@@ -6,7 +6,9 @@ keep-if-better/revert), revision log, `jaeger skills notes` / `revisions`. The
 **Refinement** section at the bottom (second-person audit · richer post-use
 summaries · probabilistic severity-weighted trigger · new-skill spawning ·
 per-skill archive · scoring/retirement) is the agreed next design from the
-2026-06-27 brainstorm — **PLANNED, not yet built.**
+2026-06-27 brainstorm. **§1–§2 (structured summary + probabilistic trigger)
+SHIPPED 2026-06-27 (Plan A); §3–§7 (the review, archive, retirement) PLANNED
+(Plans B + C).**
 
 ## The idea
 
@@ -110,7 +112,7 @@ efficiency (step economy, batch/parallel, verify-don't-guess) — realized **per
 skill** by improving that skill's *playbook*. Tool-skill capability rewrites
 still ride the same path; the audit just feeds richer candidates.
 
-## §1 Richer post-use summary (widens the phase-1 note)
+## §1 Richer post-use summary (widens the phase-1 note) — ✅ shipped (Plan A)
 
 After using a skill the agent writes a cheap, structured summary (no model pass
 — it already has the facts):
@@ -126,7 +128,7 @@ Accrues per skill in the existing `<instance>/memory/skill_notes.jsonl`, widened
 Still inline + cheap; **no per-task audit pass** (Hermes' 5-call inline audit is
 explicitly dropped).
 
-## §2 Trigger — probabilistic, severity-weighted (the "neuron" model)
+## §2 Trigger — probabilistic, severity-weighted (the "neuron" model) — ✅ shipped (Plan A)
 
 Each skill carries a running **activation** `S` = severity-weighted sum of its
 post-use summaries *since the last review*:

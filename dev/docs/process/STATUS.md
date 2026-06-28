@@ -28,6 +28,30 @@ has actually been exercised and works.
 
 ---
 
+## 2026-06-27 — skill evolution Plan A: structured summary + probabilistic trigger [agentic]
+
+Plan A of the refined skill-evolution design (`SKILL_EVOLUTION_PLAN.md`
+Refinement §1–§2), layered on the shipped base loop.
+
+- **Structured post-use summary** — `SkillNote` / the `skill_note` tool widened
+  from a one-liner to `{objective, calls, procedure, errors, flag}`
+  (backward-compatible; old journal lines still load on defaults).
+- **Probabilistic severity-weighted trigger** (`agent/background/skill_review.py`):
+  `activation` = severity-weighted sum since the last review (`smooth 0 · slow 1
+  · issues 2 · failed 3`; a `flag` adds +4); `fire_probability` = sigmoid with a
+  **gate** (`S<S_min→0`) + **ceiling** (`S≥S_max→1`); `select_for_review` fires
+  probabilistically, worst-first, capped at `K`. A `sweep` runs each Deep-Think
+  idle cycle — proposes the selected skills and logs `S/P/fired` to
+  `skill_review_log.jsonl`; a `flag`ged note fast-tracks one. Replaces the old
+  eager count-threshold on-note trigger.
+- Randomness is only in *scheduling*; the keep/kill decision stays measured
+  (unchanged). 8 new/updated tests.
+
+Next: Plan B (second-person review + validation + spawn-new) · Plan C (per-skill
+archive + scoring/retirement).
+
+---
+
 ## 2026-06-27 — update channels + install.sh toolchain mirror [install/update]
 
 Two minor 0.6 loose ends.

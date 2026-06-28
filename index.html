@@ -934,9 +934,9 @@
 
       <div class="feature">
         <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 9V5a3 3 0 0 0-6 0v4"/><rect x="3" y="9" width="18" height="11" rx="2"/></svg>
-        <h3>Self-authored skills</h3>
-        <p>The agent researches, writes, smoke-tests, benchmarks, and versions its own skills. A skill marketplace lets agents share what works.</p>
-        <span class="pill">v1 · v2 · v3...</span>
+        <h3>Self-improving skills</h3>
+        <p>The agent writes, smoke-tests, benchmarks, and versions its own skills — then <b>improves</b> them. After each use it logs a structured note; on idle it audits its own trajectory <em>in the second person</em> ("review your own work as if someone else's"), distils one rule, and keeps the rewrite <b>only if it measurably beats the old one</b>. Superseded versions are archived; skills that never win retire.</p>
+        <span class="pill">notes · 2nd-person audit · keep-if-better</span>
       </div>
 
       <div class="feature">
@@ -995,7 +995,7 @@
       <div class="arch-box">
         <h4>~/jaeger/jaeger_os/</h4>
         <h3>Framework code</h3>
-        <p>The brain: agent loop, tool surface, memory engine, skill registry, prompt assembly, daemon server. Git-tracked. Upgraded by <code>git pull</code>. Never holds your personal state.</p>
+        <p>The brain: agent loop, tool surface, memory engine, skill registry, prompt assembly. Upgraded in place by <code>jaeger update</code>. Never holds your personal state.</p>
       </div>
       <div class="arch-box">
         <h4>~/jaeger/.jaeger_os/</h4>

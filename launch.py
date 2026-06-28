@@ -675,6 +675,25 @@ def cmd_boot(env: dict[str, str], *, no_voice: bool) -> int:
     return 1
 
 
+def cmd_dev_gui(env: dict[str, str]) -> int:
+    """Exec the Dev Launcher — a floating, always-on-top window that opens every
+    Qt surface from one place (the windows aren't unified into one app yet, so
+    this is the launchpad to open + evaluate them)."""
+    if not VENV_PY.exists():
+        fail(f".venv not at {VENV_PY} — run ./install.sh first")
+        return 1
+    say("opening the dev launcher — a floating window to open every surface…",
+        prefix="launch")
+    sys.stdout.flush()
+    os.execvpe(
+        str(VENV_PY),
+        [str(VENV_PY), "-m", "jaeger_os.interfaces.dev_launcher"],
+        env,
+    )
+    fail("could not exec the dev launcher")
+    return 1
+
+
 def cmd_boot_windowed(env: dict[str, str]) -> int:
     """Exec into the windowed-app shell — PySide6 menu-bar tray + chat
     window. The agent + model load INSIDE that process, on the main
@@ -725,6 +744,10 @@ def main() -> int:
                         help="truncate <instance>/run/jaeger.log to 0")
     parser.add_argument("--health", action="store_true",
                         help="preflight checks and exit")
+    parser.add_argument("--dev-gui", action="store_true",
+                        help="open the Dev Launcher — a floating window to open "
+                             "every Qt surface (Studio, Chat, Avatar, Gallery, "
+                             "Media, Settings, Pill) for GUI evaluation")
     # 0.4 node infrastructure entry points (Track A + B).
     parser.add_argument("--node-test", action="store_true",
                         help="run the 0.4 Track A verification gate "
@@ -765,6 +788,8 @@ def main() -> int:
         return cmd_status(env)
     if args.stop:
         return cmd_stop(env)
+    if args.dev_gui:
+        return cmd_dev_gui(env)
     if args.node_test:
         # 0.4 Track A verification gate.  Delegates to the standalone
         # script so the test logic + child-subprocess pattern stay

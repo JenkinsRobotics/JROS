@@ -40,7 +40,8 @@ a polished first impression.
 - [x] **Prereq detection + guidance.** scripts/install.sh checks Python
   3.11/3.12 + a C toolchain (macOS `xcode-select -p`; Linux `cc/gcc/clang`) and
   hard-fails early with the exact per-OS fix; PortAudio is a non-fatal Linux
-  warning. *(done; the in-repo `install.sh` could mirror the toolchain check.)*
+  warning. The in-repo `install.sh` mirrors the toolchain check for the direct
+  `./install.sh` path. *(done)*
 - [ ] **First-run model download** — progress bar + ETA + resumable; surface the
   download size before it starts. *(still open — the one sizable item left.)*
 - [x] **Post-install summary** — next-steps output corrected to `jaeger agent
@@ -99,8 +100,11 @@ current audience. Revisit only if shipping to people who won't run a one-liner.
   — it self-checks off-thread, reveals on a newer release, and its **Update
   now** button runs `jaeger update` in an `UpdateDialog` (streamed output via
   `QProcess`, restart prompt). Jaeger Studio now hosts it. *(done)*
-- [~] **Channels / pinning** — `jaeger update --ref TAG` pins a version; honour
-  `JAEGER_REF` in the env. Stable-vs-latest channel naming not yet formalised.
+- [x] **Channels / pinning** — `jaeger update --channel {stable,latest}`
+  (stable = newest release tag, default; latest = master / development HEAD).
+  `--ref TAG` pins an exact tag/branch/sha and overrides the channel; `$JAEGER_REF`
+  is honoured when neither is set. The archive URL is the general
+  `/archive/<ref>.tar.gz` form (resolves tags + branches). *(done)*
 - [x] **Rollback** — previous product kept in `.update-prev/`;
   `jaeger update --rollback` restores it (one level). *(done)*
 

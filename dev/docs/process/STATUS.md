@@ -28,6 +28,24 @@ has actually been exercised and works.
 
 ---
 
+## 2026-06-27 — update channels + install.sh toolchain mirror [install/update]
+
+Two minor 0.6 loose ends.
+
+- **`jaeger update --channel {stable,latest}`** — stable = newest release tag
+  (default); latest = `master` / development HEAD. `--ref` pins an exact
+  tag/branch/sha and overrides the channel; `$JAEGER_REF` is honoured when
+  neither is set (`_resolve_ref`). The archive URL switched to the general
+  `/archive/<ref>.tar.gz` form so a branch (master) is fetchable — verified
+  HTTP 200 for both `0.5.2` and `master`.
+- **`install.sh`** now mirrors the C-toolchain check from `scripts/install.sh`
+  (macOS `xcode-select -p`; Linux `cc/gcc/clang`) for the direct `./install.sh`
+  path (manual clone), not just the curl bootstrap.
+
+1 new test (`_resolve_ref` precedence); gate green.
+
+---
+
 ## 2026-06-27 — in-app update action: reusable UpdateBanner widget [install/update]
 
 The in-app update went from notice-only to a real **action**, packaged as a

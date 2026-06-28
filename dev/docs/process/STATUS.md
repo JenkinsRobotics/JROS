@@ -28,6 +28,28 @@ has actually been exercised and works.
 
 ---
 
+## 2026-06-28 — skill evolution Plan B: the second-person review [agentic]
+
+Plan B of the refined design (`SKILL_EVOLUTION_PLAN.md` §3, + prompt-level
+§4/§5) — the centerpiece.
+
+- **`_summaries_block`** renders a skill's accrued structured summaries (since
+  the last review) as the trajectory the auditor reads cold.
+- **`review_description` rewritten into a second-person audit** — "review your
+  own logged uses AS IF THEY WERE SOMEONE ELSE'S": a 6-step audit (objective ·
+  issues · step economy · guess-vs-verify · THE ONE LESSON as an imperative ·
+  edit/new/nothing) with the honesty rule (no imperative → change nothing).
+  Then MEASURED application: benchmarkable → keep-if-better/revert; pure
+  playbook → apply (scored later); no-fit → spawn a new skill (dedup: prefer
+  EDIT). The grammatical distance is the point — it encodes *what should change*
+  rather than *what happened*.
+- §4 validation + §5 spawn-new are **directed by this prompt** (executed with
+  the existing `benchmark_skill`/`reload_skills`/`file_write`/
+  `record_skill_revision` tools); the scoring tally + retirement land in Plan C.
+- 5 new/updated tests.
+
+---
+
 ## 2026-06-27 — skill evolution Plan A: structured summary + probabilistic trigger [agentic]
 
 Plan A of the refined skill-evolution design (`SKILL_EVOLUTION_PLAN.md`

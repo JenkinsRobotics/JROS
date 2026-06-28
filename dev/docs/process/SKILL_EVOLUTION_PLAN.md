@@ -7,8 +7,9 @@ keep-if-better/revert), revision log, `jaeger skills notes` / `revisions`. The
 summaries · probabilistic severity-weighted trigger · new-skill spawning ·
 per-skill archive · scoring/retirement) is the agreed next design from the
 2026-06-27 brainstorm. **§1–§2 (structured summary + probabilistic trigger)
-SHIPPED 2026-06-27 (Plan A); §3–§7 (the review, archive, retirement) PLANNED
-(Plans B + C).**
+SHIPPED (Plan A); §3 second-person review + prompt-level §4/§5 (validation +
+spawn-new) SHIPPED (Plan B); §6 archive + §7 scoring/retirement (+ the scoring
+half of §4) PLANNED (Plan C).**
 
 ## The idea
 
@@ -148,7 +149,7 @@ post-use summaries *since the last review*:
 **Principle:** randomness is only in *scheduling* (what to look at, when). The
 keep/kill decision stays deterministic + measured (§4).
 
-## §3 The review — second-person reflection (the heart)
+## §3 The review — second-person reflection (the heart) — ✅ shipped (Plan B)
 
 At review time (Deep Think, strong model) the agent reads the skill's accrued
 post-logs and reflects **in the second person** — reviewing "your own" logged
@@ -167,7 +168,7 @@ defending what it did to encoding what should change. Audit prompt:
 **Honesty rule:** if step 5 can't be written as an imperative, the review
 produced nothing — leave the skill untouched.
 
-## §4 Validation — benchmark where possible, else score
+## §4 Validation — benchmark where possible, else score — ◑ prompt-directed (Plan B); scoring → Plan C
 
 The proposed edit / new skill does **not** auto-stick:
 
@@ -181,7 +182,7 @@ The proposed edit / new skill does **not** auto-stick:
   **tool-calls-per-task + first-try success**. That turns "did this efficiency
   rule actually help?" from a vibe into a number — measured, not just scored.
 
-## §5 No-skill case → spawn a new skill
+## §5 No-skill case → spawn a new skill — ✅ prompt-directed (Plan B)
 
 When the lesson is worth keeping but **no skill was in play**, the review creates
 a NEW playbook skill (use-when trigger + the imperative rule). **Dedup rail:**

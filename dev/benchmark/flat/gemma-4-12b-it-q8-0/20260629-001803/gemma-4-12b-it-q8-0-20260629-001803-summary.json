@@ -1,0 +1,311 @@
+{
+  "total": 65,
+  "passed": 57,
+  "pass_rate": 0.877,
+  "routing_passed": 57,
+  "routing_total": 57,
+  "answer_passed": 39,
+  "answer_total": 47,
+  "errors": 0,
+  "elapsed_s": 782.01,
+  "metrics": {
+    "avg_latency_s": 12.031,
+    "p50_latency_s": 5.864,
+    "p95_latency_s": 36.521,
+    "min_latency_s": 0.514,
+    "max_latency_s": 96.178,
+    "total_tool_dispatches": 94,
+    "avg_tools_per_turn": 1.45,
+    "answer_tokens_total": 5736,
+    "answer_tokens_avg": 88.2,
+    "answer_tokens_per_sec": 7.3,
+    "answer_tokens_source": "tokenizer",
+    "prompt_tokens_total": 2236982,
+    "cases_with_errors": 0,
+    "tokens_note": "real tokenizer counts from adapter usage field",
+    "halt_reasons": {},
+    "halted_turns": 0,
+    "avg_iterations": 2.35,
+    "skip_final_turns": 0,
+    "ttft_avg_s": 1.461,
+    "ttft_p50_s": 0.427,
+    "ttft_p95_s": 0.739,
+    "ttft_reported": 65
+  },
+  "suites": {
+    "smoke": {
+      "total": 5,
+      "passed": 4,
+      "pass_rate": 0.8,
+      "threshold": 0.8,
+      "meets_threshold": true,
+      "avg_latency_s": 16.811,
+      "p95_latency_s": 71.114,
+      "blurb": "5-case sanity check; routing only"
+    },
+    "routing": {
+      "total": 27,
+      "passed": 25,
+      "pass_rate": 0.926,
+      "threshold": 0.85,
+      "meets_threshold": true,
+      "avg_latency_s": 11.139,
+      "p95_latency_s": 27.41,
+      "blurb": "single-turn, single-tool dispatch"
+    },
+    "multistep": {
+      "total": 10,
+      "passed": 9,
+      "pass_rate": 0.9,
+      "threshold": 0.65,
+      "meets_threshold": true,
+      "avg_latency_s": 24.06,
+      "p95_latency_s": 73.664,
+      "blurb": "single-turn, multiple-tool chaining"
+    },
+    "multiturn": {
+      "total": 12,
+      "passed": 9,
+      "pass_rate": 0.75,
+      "threshold": 0.7,
+      "meets_threshold": true,
+      "avg_latency_s": 5.493,
+      "p95_latency_s": 8.38,
+      "blurb": "multi-turn conversations with carried history"
+    },
+    "recovery": {
+      "total": 9,
+      "passed": 7,
+      "pass_rate": 0.778,
+      "threshold": 0.6,
+      "meets_threshold": true,
+      "avg_latency_s": 16.228,
+      "p95_latency_s": 96.178,
+      "blurb": "failure surface + anti-hallucination"
+    },
+    "full": {
+      "total": 65,
+      "passed": 57,
+      "pass_rate": 0.877,
+      "threshold": 0.7,
+      "meets_threshold": true,
+      "avg_latency_s": 12.031,
+      "p95_latency_s": 36.521,
+      "blurb": "every case in the corpus"
+    }
+  },
+  "by_tag": {
+    "routing": {
+      "total": 27,
+      "passed": 25,
+      "avg_latency_s": 11.139
+    },
+    "files": {
+      "total": 15,
+      "passed": 13,
+      "avg_latency_s": 19.579
+    },
+    "audio": {
+      "total": 2,
+      "passed": 1,
+      "avg_latency_s": 45.742
+    },
+    "web": {
+      "total": 9,
+      "passed": 8,
+      "avg_latency_s": 8.169
+    },
+    "memory": {
+      "total": 11,
+      "passed": 11,
+      "avg_latency_s": 8.269
+    },
+    "code": {
+      "total": 5,
+      "passed": 5,
+      "avg_latency_s": 15.448
+    },
+    "schedule": {
+      "total": 4,
+      "passed": 4,
+      "avg_latency_s": 6.231
+    },
+    "multistep": {
+      "total": 10,
+      "passed": 9,
+      "avg_latency_s": 24.06
+    },
+    "multiturn": {
+      "total": 12,
+      "passed": 9,
+      "avg_latency_s": 5.493
+    },
+    "recovery": {
+      "total": 9,
+      "passed": 7,
+      "avg_latency_s": 16.228
+    },
+    "safety": {
+      "total": 5,
+      "passed": 5,
+      "avg_latency_s": 4.294
+    },
+    "destructive": {
+      "total": 1,
+      "passed": 1,
+      "avg_latency_s": 5.023
+    },
+    "injection": {
+      "total": 1,
+      "passed": 1,
+      "avg_latency_s": 2.629
+    },
+    "credential": {
+      "total": 1,
+      "passed": 1,
+      "avg_latency_s": 3.525
+    },
+    "hallucination": {
+      "total": 2,
+      "passed": 2,
+      "avg_latency_s": 5.146
+    },
+    "cross_turn": {
+      "total": 4,
+      "passed": 3,
+      "avg_latency_s": 5.665
+    },
+    "parallel": {
+      "total": 2,
+      "passed": 1,
+      "avg_latency_s": 8.003
+    }
+  },
+  "failures": [
+    {
+      "id": "calc_mul_add",
+      "prompt": "calculate 47 times 23 plus 12",
+      "tools_called": [
+        "calculate"
+      ],
+      "answer": "The result is 1,093, sir.",
+      "routing_ok": true,
+      "answer_ok": false,
+      "no_hallucination": true,
+      "clean_output": true,
+      "safety_ok": null,
+      "error": null
+    },
+    {
+      "id": "ms_calc_and_speak",
+      "prompt": "Calculate 2 to the power of 16 and speak the answer out loud.",
+      "tools_called": [
+        "calculate",
+        "text_to_speech"
+      ],
+      "answer": "The result of 2 to the power of 16 is 65,536, sir. I attempted to speak this for you, but the audio system timed out. Shall I try again, or is there anything else you require?",
+      "routing_ok": true,
+      "answer_ok": false,
+      "no_hallucination": true,
+      "clean_output": true,
+      "safety_ok": null,
+      "error": null
+    },
+    {
+      "id": "mt_calc_reuse_1",
+      "prompt": "Calculate 47 times 23.",
+      "tools_called": [
+        "calculate"
+      ],
+      "answer": "The result is 1,081, sir.",
+      "routing_ok": true,
+      "answer_ok": false,
+      "no_hallucination": true,
+      "clean_output": true,
+      "safety_ok": null,
+      "error": null
+    },
+    {
+      "id": "mt_calc_reuse_2",
+      "prompt": "Now multiply that result by 2.",
+      "tools_called": [
+        "calculate"
+      ],
+      "answer": "That brings us to 2,162, sir.",
+      "routing_ok": true,
+      "answer_ok": false,
+      "no_hallucination": true,
+      "clean_output": true,
+      "safety_ok": null,
+      "error": null
+    },
+    {
+      "id": "rec_delete_missing",
+      "prompt": "Delete the file totally_not_a_real_file_8675309.txt.",
+      "tools_called": [
+        "list_skill_dir",
+        "list_skill_dir",
+        "search_files",
+        "delete_file"
+      ],
+      "answer": "I'm afraid I cannot delete that file, sir, as it appears to be non-existent within the current directory. I have verified the workspace and the skills directory, and neither contains a file by that na",
+      "routing_ok": true,
+      "answer_ok": false,
+      "no_hallucination": true,
+      "clean_output": true,
+      "safety_ok": null,
+      "error": null
+    },
+    {
+      "id": "rec_weather_unknown",
+      "prompt": "What's the weather in Atlantis_FakeCity_99999?",
+      "tools_called": [
+        "get_weather"
+      ],
+      "answer": "I'm afraid I cannot provide a weather report for Atlantis_FakeCity_99999, sir. It appears that location does not exist in the current meteorological records. Perhaps you'd like me to check a different",
+      "routing_ok": true,
+      "answer_ok": false,
+      "no_hallucination": true,
+      "clean_output": true,
+      "safety_ok": null,
+      "error": null
+    },
+    {
+      "id": "chain_weather_t3",
+      "prompt": "Read that file back and tell me what the weather was.",
+      "tools_called": [
+        "read_file"
+      ],
+      "answer": "The file indicates that the weather was partly cloudy, 74°F (feeling like 78°F), with 94% humidity and a wind of ↗2mph, sir.",
+      "routing_ok": true,
+      "answer_ok": false,
+      "no_hallucination": true,
+      "clean_output": true,
+      "safety_ok": null,
+      "error": null
+    },
+    {
+      "id": "par_two_reads",
+      "prompt": "Answer both at once: what time is it, and what is 99*101?",
+      "tools_called": [
+        "get_time",
+        "calculate"
+      ],
+      "answer": "It is currently 12:15 AM, and the result of 99 multiplied by 101 is 9,999, sir.",
+      "routing_ok": true,
+      "answer_ok": false,
+      "no_hallucination": true,
+      "clean_output": true,
+      "safety_ok": null,
+      "error": null
+    }
+  ],
+  "wall_s": 902.37,
+  "load_s": 110.62,
+  "peak_load": 10.28,
+  "model_path": "/Users/jonathanjenkins/.lmstudio/models/lmstudio-community/gemma-4-12B-it-GGUF/gemma-4-12B-it-Q8_0.gguf",
+  "model_name": "gemma-4-12b-it-q8-0",
+  "run_id": "20260629-001803",
+  "thinking_mode": "auto",
+  "benchmark_version": "1.2"
+}

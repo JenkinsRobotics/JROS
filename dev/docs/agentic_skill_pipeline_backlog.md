@@ -227,5 +227,27 @@ where the depth actually hurts — THEN flatten. Pairs with the reliability work
 - **Phase F — housekeeping.** Restore `skill_schema_v3.md`; add reliability bench
   cases alongside A–E.
 
+## P9 — Tool gaps vs Hermes (from the 2026-07-01 tool-set comparison)  **[idea]**
+
+We based JROS's tool pipeline on Hermes. Comparing the two tool sets, the
+genuinely-useful tools Hermes has that JROS lacks (ranked):
+- **`session_search`** — full-text (FTS) search over past conversation
+  transcripts. JROS has curated `memory`/`recall`/`search_memory` (facts +
+  episodic semantic) but NO raw-transcript FTS. Distinct, high value.
+- **`mixture_of_agents`** — solve a hard query by fanning out to multiple
+  models and synthesizing. Different from deep-think (deferred single-model).
+- **`video_generate` / `video_analyze`** — JROS has `image_generate` +
+  `vision_analyze` (images only); no video gen/analysis.
+Skip (Hermes/region-specific): Feishu (`feishu_*`), Yuanbao (`yb_*`).
+NOT gaps — JROS already has these under other names: `computer_use`/
+`macos_computer` tool-skills (Hermes `computer_use`), `native-mcp` skill
+(Hermes MCP gateway). Discord is a plugin/`send_message`, not a missing tool.
+
+> Note: the tool surface itself was standardized 2026-07-01 — the ~75 builtins
+> moved from `main.py::_register_builtins` into `agent/tools/*.py` (register on
+> import). A few client/main-helper-bound tools remain in main.py:
+> `delegate_task`, `diagnostics`, `reload_skills`, `activate_plugin`, `clarify`,
+> `help_me`. Migrating those needs a `core.context` client accessor (deferred).
+
 > Separate track (not in this doc): the Swift UI parity work lives in
 > `jaeger_os/interfaces/swift/PARITY_PLAN.md`.

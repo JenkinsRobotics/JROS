@@ -39,12 +39,24 @@ PROTOCOL_VERSION = "1"
 # ── agent → client frame builders (used by the bridge / any transport) ──
 
 
-def ready_frame(instance: str, model: str | None) -> dict[str, Any]:
-    return {"type": "ready", "instance": instance, "model": model}
+def ready_frame(instance: str, model: str | None,
+                character: str | None = None, icon: str | None = None) -> dict[str, Any]:
+    # ``character`` = the active character's display name; ``icon`` = an absolute
+    # path to its profile image. Both let the native client show the agent's face
+    # + name in the tray/header, matching the PySide6 UI.
+    return {"type": "ready", "instance": instance, "model": model,
+            "character": character, "icon": icon}
 
 
 def state_frame(busy: bool, session: str = "") -> dict[str, Any]:
     return {"type": "state", "busy": busy, "session": session}
+
+
+def result_frame(req_id: Any, data: Any = None, ok: bool = True,
+                 error: str | None = None) -> dict[str, Any]:
+    # Reply to a native client's {"op":"query"|"command", "id":…}. ``data`` holds
+    # the query payload; ``ok``/``error`` report command success.
+    return {"type": "result", "id": req_id, "ok": ok, "data": data, "error": error}
 
 
 def tool_frame(name: str, phase: str, elapsed_s: float = 0.0,

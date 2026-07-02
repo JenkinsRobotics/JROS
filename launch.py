@@ -59,6 +59,7 @@ if _VENV_PY.exists() and not _sys.executable.startswith(str(_VENV_DIR)):
 
 import argparse
 import os
+import shutil
 import signal
 import subprocess
 import sys
@@ -706,6 +707,12 @@ def cmd_boot_windowed(env: dict[str, str]) -> int:
         fail(f"dev instance not found at {DEV_INSTANCE}")
         say("run ./run.sh setup jros-dev to create it", prefix="launch")
         return 1
+    # Toolkit routing: Swift native app (default) vs the PySide6 shell.
+    if _ui_toolkit() == "swift":
+        rc = _boot_swift(env)
+        if rc is not None:
+            return rc
+        warn("Swift app unavailable — falling back to the PySide6 shell")
     say("launching the windowed app — menu-bar tray + chat window "
         "(the model loads on boot)…", prefix="launch")
     sys.stdout.flush()
@@ -716,6 +723,43 @@ def cmd_boot_windowed(env: dict[str, str]) -> int:
     )
     fail("could not exec the windowed app")
     return 1
+
+
+SWIFT_DIR = REPO / "jaeger_os" / "interfaces" / "swift"
+
+
+def _ui_toolkit() -> str:
+    """Read interaction.ui from the dev instance config (default 'swift')."""
+    try:
+        from jaeger_os.core.instance.instance import InstanceLayout
+        from jaeger_os.core.instance.schemas import Config, load_yaml
+        cfg = load_yaml(InstanceLayout(root=DEV_INSTANCE).config_path, Config)
+        return cfg.interaction.ui
+    except Exception:  # noqa: BLE001
+        return "swift"
+
+
+def _boot_swift(env: dict[str, str]) -> int | None:
+    """Build (if needed) + run the native Swift app. Returns an exit code once
+    it finishes, or None to signal 'unavailable → fall back to PySide6'.
+
+    The Swift app spawns its own ``jaeger bridge`` child, so it needs the venv's
+    ``jaeger`` on PATH; everything else it drives itself."""
+    if not (SWIFT_DIR / "Package.swift").exists() or not shutil.which("swift"):
+        return None
+    say("building the Swift app (interfaces/swift)…", prefix="launch")
+    build = subprocess.run(["swift", "build", "-c", "release"], cwd=str(SWIFT_DIR))
+    if build.returncode != 0:
+        warn("swift build failed")
+        return None
+    binary = SWIFT_DIR / ".build" / "release" / "JaegerOS"
+    if not binary.exists():
+        return None
+    # Make the venv's `jaeger` CLI discoverable to the app's bridge child.
+    env = {**env, "PATH": f"{VENV_PY.parent}{os.pathsep}{env.get('PATH', '')}"}
+    say("launching the Swift app — menu-bar tray + chat window…", prefix="launch")
+    sys.stdout.flush()
+    return subprocess.run([str(binary)], env=env).returncode
 
 
 # ─── main ─────────────────────────────────────────────────────────────

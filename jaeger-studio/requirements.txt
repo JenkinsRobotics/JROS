@@ -1,0 +1,5 @@
+# Jaeger Studio link baseline — same wire stack as JROS, plus QUIC for the seam.
+pyzmq>=26.0        # internal bus (matches JROS)
+msgspec>=0.18      # MessagePack framing (matches JROS)
+aioquic>=1.0       # QUIC/UDP external seam — industry-standard IETF QUIC
+pyside6>=6.5       # Studio GUI (Qt)

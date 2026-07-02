@@ -154,10 +154,23 @@ knowledge lives + enforcement + measurement**:
 - **macos vs generic computer-use** specifically: disambiguate the two tool
   descriptions + P6 tier + a preference rule; verify with a bench case.
 
+## P8 — Flatten discovery depth (hardening, post-baseline)  **[idea 2026-07-01]**
+
+The agent shouldn't wade through many layers before it can start a task. Today
+the pull path is: lean hint → `skill(list)` → `skill(view)` → *then* work — up to
+3 tool round-trips before the first real action. Reduce the depth:
+- **Combine layers** where possible — e.g. `skill(search)` could return the recipe
+  inline (list+view in one hop), or `skill(list)` could return enough to act, or
+  the lean hint could name the few most-relevant skills directly.
+- **Merge playbook + skill discovery** into one surface so the agent asks once.
+- Goal: fewest hops from "user asks" → "agent acts", without hiding what it needs.
+Test the agent AS-IS first (v1.3 baseline) — the skill/workflow failures tell us
+where the depth actually hurts — THEN flatten. Pairs with the reliability work
+(P4). *Do not implement before the baseline.* **[idea]**
+
 ## Housekeeping
 
-- `dev/docs/skill_schema_v3.md` is **referenced by the startup log but missing** —
-  restore/write it (defines the v3 manifest form P5 migrates to). **[idea]**
+- ~~`dev/docs/skill_schema_v3.md`~~ — **[done]** written.
 
 ---
 

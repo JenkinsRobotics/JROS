@@ -60,7 +60,7 @@ def _plugin_ready(plugin_name: str) -> bool:
     "any of discord / telegram / imessage is ready" — that's the
     correct gate for the generic ``send_message`` tool."""
     try:
-        from .plugins import list_plugins
+        from jaeger_os.agent.tools.plugins import list_plugins
         report = list_plugins() or {}
     except Exception:  # noqa: BLE001 — listing must never crash the gate
         return True   # fail-open: don't hide tools because the gate broke

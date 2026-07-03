@@ -41,10 +41,42 @@ The single most common bug is documenting a tool that isn't registered under tha
 name. Confirm against the registry / how the agent actually calls it (a bench
 transcript is ground truth) before listing a tool in a skill.
 
-## Rollout — measured, not big-bang
-1. Rewrite the benchmark-exercised skills first (`macos-computer-use`, `arxiv`,
-   `ascii-art`, `codebase-inspection`), bench, confirm they flip the failures.
-2. Then roll the checklist across the registry.
+## Rollout — DONE (2026-07-03), tiered
+- **Tier 1 (correctness):** fixed stale JROS tool names across ~8 skills
+  (`skill_view`/`skill_manage`→`use_skill`/`skill`, `computer_do` names) and
+  dropped the odd `_computer_*` underscore. `e71f9d0`, `6ec91b8`.
+- **Tier 2 (integrated/selected skills):** rewrote 17 skills to the 8-point
+  standard (arxiv, ascii-art, codebase-inspection, research-paper-writing,
+  spike, node-inspect-debugger, native-mcp, opencode, himalaya, hermes-agent,
+  systematic-debugging, test-driven-development, writing-plans, plan,
+  requesting-code-review, subagent-driven-development, hermes-agent-skill-authoring).
+  Removed the fabricated `delegate_task` tool everywhere; split the 2377- and
+  1013-line monsters into `references/`. Every tool name verified against the
+  registry.
+- **Tier 3 (the tail):** all 70 tail skills already had descriptions; 63 had
+  loader-readable tags. Added tags to the 7 that lacked them. Migrating the
+  hermes→jros tag namespace was skipped as cosmetic (the loader now reads both,
+  see `_tags_of`).
+- **skill-builder** (new meta-skill): the canonical create/review/improve SOP +
+  the full authoring standard (references/authoring-standard.md).
+
+## Bench note (2026-07-03): 77 → 75/81, two borderline flips
+The full unscoped bench went 77→75 after the skill work. Both losses are the
+same phenomenon — a knife-edge case flipping *deterministically* because the
+skill-index prompt changed (17 rewritten descriptions + skill-builder added),
+NOT a broken skill:
+- `skill_native_tier` — the agent DRIVES the desktop correctly via the
+  CORE-visible `computer_*` tools but skips `use_skill(macos-computer-use)`, so
+  the skill-loading scorer fails it. It *plans* `use_skill` then executes the
+  tool directly — the deferred planning/runner lever (make `PLAN:` obligate the
+  stated first action).
+- `selfimprove_curate` — expects the `skill` tool but the agent picks
+  `skill_notes` (whose own description — "blank → a tally of which skills are
+  stale/unused" — matches the prompt "check for stale/unused skills"); the call
+  then halts. skill-builder's "audit the skill library" description likely
+  primes this. A defensible choice the scorer doesn't credit.
+Neither was fixed by loosening a case (that would be gaming). Both are recovered
+by the deferred planning-lever work, not more skill edits.
 
 ## Status
 - `macos-computer-use` — rewritten with the correct tool NAMES **and arg shapes**

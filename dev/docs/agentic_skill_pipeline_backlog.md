@@ -4,13 +4,37 @@ Captured 2026-07-01 from a design session. This is the tracking doc for how JROS
 routes **tools ↔ tool-skills ↔ playbook skills**, so the threads don't get lost.
 Status legend: **[idea]** discussed · **[approved]** agreed, not built · **[done]**.
 
-Vocabulary (verified against the code):
-- **Tool** — a callable function (`agent/tools/*.py`), in the one tool registry
-  (`agent/schemas/tool_registry.py`, `get_tools()`). ~many.
-- **Tool-skill** — a skill that *registers tools* (`computer_use`, `macos_computer`). 2 today.
-- **Playbook skill** — a `SKILL.md` process doc, registers **no** tools; surfaced via
-  the `skill` tool. 87 today. `PlaybookSkill` already parses name/category/**description**/
-  **tags**/path/**fallback_for_tools**/platforms/requires_tools from the SKILL.md.
+## New (2026-07-02 session)
+- **[approved] Skill surface by purpose.** Default agent surface = `use_skill`
+  ONLY (one consistent entry; 4B does better with fewer options). `skill(list/
+  search)` + curation tools (`skill_note`, `skill_notes`, `request_skill_review`,
+  `set_skill_review`, `record_skill_revision`) move to a **self-improvement
+  toolset** loaded only during library maintenance (`selfimprove_curate`). The
+  `use_skill` enum names are the lightweight "summary" the agent reviews; its
+  return is the full skill. Bench-gated (bundle with the 5W1H TRIAGE change).
+- **[approved] Unify skill types (future).** Collapse tool-skill vs playbook into
+  ONE `Skill` = optional executable module (registers tools into the shared
+  global pool) + optional recipe + optional tool references (`requires_tools`
+  hard, `recommended_tools` soft, `fallback_for_tools` intercept). Tools are a
+  shared pool, never owned by a skill. Merge the two loaders + superset schema
+  (every field optional, N/A normal). Milestone-sized; spec before code.
+- **[idea] Permission + tier standardization.** Evaluate whether permission
+  tiers and task tiers actually work TOGETHER today — if not, that's the signal
+  to refine. A task can be tiered, and each tier may carry different permissions;
+  standardize a task-tier → permission-tier mapping so it's one consistent model
+  rather than two parallel ones. (Raised alongside the skill-unify work.)
+
+Vocabulary (unified model — 2026-07-02):
+- **Tool** — a callable function, in the one global registry
+  (`agent/schemas/tool_registry.py`, `get_tools()`). Tools are a shared pool.
+- **Skill** — a folder that may carry a **module** (provides tools → registered
+  into the shared pool at boot) and/or a **recipe** (`SKILL.md`, loaded via
+  `use_skill`). "Tool-skill" vs "playbook" are not categories — just a skill
+  *with a module*, *with a recipe*, or *both*. Today: 2 provide tools, 87 provide
+  recipes. `PlaybookSkill` parses name/category/description/tags/path/platforms/
+  requires_tools/requires_toolsets/tier. (`fallback_for_tools` removed — it was
+  inert. The two discovery loaders remain as an implementation detail; see
+  dev/docs/skill_unification.md for the physical-merge plan.)
 
 ---
 

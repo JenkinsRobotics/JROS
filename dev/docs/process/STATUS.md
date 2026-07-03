@@ -28,6 +28,47 @@ has actually been exercised and works.
 
 ---
 
+## 2026-07-01..03 — agentic-quality sprint: persona, scoped surface, skill framework [agentic]
+
+E4B (gemma-4-e4b) accuracy + the tool/skill surface. All bench numbers are the
+dev bench (81-case corpus, `dev/benchmark/bench.py`), E4B, headless.
+
+- **Workers run vanilla (persona out of execution)** — an A/B/C bench measured
+  persona-in-worker taxing the 4B ~7-10% (vanilla 75.5 vs full 68). Execution
+  context is now persona-free; the character-voice output filter is **deferred
+  (planned)**, so worker replies currently have no persona voice.
+- **Lean scoped tool surface** — `list_tools`/`load_tools`/`describe_tool` +
+  a search-before-act mandate let the model scope its own toolset. **Opt-in,
+  default OFF** (`JAEGER_TOOLSET_SCOPING=0`). Measured: scoped 73/81 at ~460s
+  beats the full 96-tool surface (70) and is ~24% faster — the scaling path,
+  not yet the default.
+- **Gemma tool-call salvage** — Gemma-4 sometimes drops the closing
+  `<tool_call|>` token, stranding a real call as text. `dialects/gemma.py` gained
+  a tolerant fallback (only when the strict patterns match nothing).
+- **Skill framework overhaul** — all 90 skills scrubbed to an 8-point authoring
+  standard (`dev/docs/skill_standard.md`): correct + real tool names, boundary
+  descriptions, lean SOPs, lazy-loaded references. New `skill-builder` meta-skill
+  (create/review/improve SOP). Tool loader now reads `metadata.jros.tags`.
+  Regression caught + fixed: the Tier-2 rewrite subagents were given a tool list
+  built from a bare import (missing build-time tools like `delegate_task`) and
+  wrongly stripped `delegate_task` from 8 skills — restored.
+- **Symmetric tool/skill surface** — `skill`→`list_skills`, `load_toolset`→
+  `load_tools`, so it reads `list_tools`+`load_tools` / `list_skills`+`use_skill`.
+- **Bench:** E4B unscoped default lands in the **75-77/81** band (a record 77
+  before the skill overhaul; 75 after — two borderline cases flip
+  deterministically on the changed skill-index prompt: `skill_native_tier` and
+  `selfimprove_curate`, both cases where the agent does something defensible the
+  scorer doesn't credit). Harness false-negatives were also fixed (4 cases).
+
+**Planned / deferred (NOT done — do not assume shipped):**
+- The planning/runner lever that makes a `PLAN:` line OBLIGATE its stated first
+  action (recovers `native_tier` + `selfimprove_curate`).
+- Two-pass persona voice filter over the vanilla worker output.
+- Flipping the scoped surface on by default once the tool library is large enough.
+- 26B re-bench on the current stack (only E4B has been exercised lately).
+
+---
+
 ## 2026-06-28 — first-run model-download progress [install/update]
 
 The last 0.6 install-experience item — kept simple.

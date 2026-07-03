@@ -17,9 +17,11 @@ benchmark work (see `session_retrospective_2026_07.md`).
    nested markdown tables, no `**bold**`). Punchy and scannable.
 4. **Tool coupling (the cheat sheet)** — list the EXACT registered tool names the
    recipe calls, inline. This is the #1 rule: `pf_macos_do` failed because the
-   skill said `computer_do` but the real tool is `computer_open_app`/`_computer_do`
-   — the agent hallucinated the documented-but-unregistered name. Names must be
-   correct and inline (cheap); heavy assets go external (rule 8).
+   skill documented `computer_do` while the tool was actually registered as
+   `_computer_do` — the agent hallucinated the documented-but-unregistered name.
+   (Fixed both ways: the skill now lists the real names AND the tool was renamed
+   to drop its odd leading underscore.) Names must be correct and inline (cheap);
+   heavy assets go external (rule 8).
 5. **State offloading** — if a procedure has >3 outputs or >3 steps, MANDATE
    `append_file`/`write_file`/`kanban` for intermediate work. A 4B can't juggle a
    list in context. "Append each finding to `workspace/x.md` immediately."
@@ -46,13 +48,13 @@ transcript is ground truth) before listing a tool in a skill.
 
 ## Status
 - `macos-computer-use` — rewritten with the correct tool NAMES **and arg shapes**
-  (`computer_open_app(name=…)`, `_computer_do(goal=…)`, named args throughout).
+  (`computer_open_app(name=…)`, `computer_do(goal=…)`, named args throughout).
 - `dogfood` → renamed `web-app-qa`; its verbose report format moved to an external
   template fetched on demand (the lazy-load example).
 
 ## What the bench proved (2026-07-03, E4B, scoped) — and what it didn't
 The scrub WORKED at the skill layer, and doing so isolated the real blockers:
-- `pf_macos_plan` now **loads `macos-computer-use` and calls the real `_computer_do`**
+- `pf_macos_plan` now **loads `macos-computer-use` and calls the real `computer_do`**
   (was: hallucinated `computer_do`, no skill loaded). The skill cheat sheet fixed
   selection + naming.
 - `pf_macos_do` still can't *complete* — the computer_use tools have **no

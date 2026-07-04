@@ -98,3 +98,10 @@ Worth importing, held to the JROS 8-point skill standard on the way in:
   worker output (persona is currently OFF in execution).
 - **Scoped surface as default** — validated (`JAEGER_TOOLSET_SCOPING`), still opt-in.
 - **26B on the current stack** — benched at 75/81; keep re-checking as changes land.
+
+## 0.7 goals
+- **InfluxDB for robot/hardware telemetry** — JP01 `/sense/node_health` (1 Hz),
+  motor positions, latencies. Time-series firehose; wrong fit for SQL. Keep it
+  SEPARATE from the SQL knowledge memory. (Operator call, 2026-07-03.)
+- Remove the one-shot `facts.json`→SQL importer in `memory.py` once no
+  un-migrated instance can exist (facts.py itself already removed).

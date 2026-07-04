@@ -143,7 +143,12 @@ latency-free, unattended, huge contexts, objective success criteria.
   78/81 (ties the record), 26B 76/81 (new 26B high); corpus B 73/81
   (improved). Target class fixed (rec_python_*, write_bench_txt, pf_arxiv
   false-positive caught by A/B and fixed with the plan-requested stand-down).
-- Station 3 (persona pass): queued behind the gate bench.
+- Station 3 (persona pass): ✅ SHIPPED 2026-07-04 — one bounded clean-
+  context call at the user boundary; fail-open; live-verified (0.5-1.3s,
+  facts/paths preserved verbatim). Bench isolated by construction.
 - Station 4 (reflect): ✅ shipped (journaling).
-- Deep Think Phase 1: queued after the standard runner completes.
+- Deep Think Phase 1 (verify-before-done): ✅ SHIPPED 2026-07-04 —
+  completion decided by the tool_calls evidence trace + failure-admission
+  scan; one informed pre-approved replan cycle, then failed. mark_done is
+  no longer trust-by-return.
 - Deep Think Phase 2: backlog.

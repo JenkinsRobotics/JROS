@@ -139,7 +139,10 @@ latency-free, unattended, huge contexts, objective success criteria.
 
 ## Status
 - Station 1: ✅ shipped (record band).
-- Station 2 (verify gate): IN PROGRESS.
+- Station 2 (verify gate): ✅ SHIPPED + benched 2026-07-04 — corpus A: E4B
+  78/81 (ties the record), 26B 76/81 (new 26B high); corpus B 73/81
+  (improved). Target class fixed (rec_python_*, write_bench_txt, pf_arxiv
+  false-positive caught by A/B and fixed with the plan-requested stand-down).
 - Station 3 (persona pass): queued behind the gate bench.
 - Station 4 (reflect): ✅ shipped (journaling).
 - Deep Think Phase 1: queued after the standard runner completes.

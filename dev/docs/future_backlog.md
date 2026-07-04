@@ -38,6 +38,38 @@ There are NO clean scorer false-negatives left this round (the "9,999" and
 Highest-value fix: **item 1 (the planning lever)** — flips 2-3 cases across models
 and is the same lever behind the scoped-path losses.
 
+## The closed-loop agentic pipeline (ongoing, multi-day continuous-improvement zone)
+Target loop: **research → plan → execute → verify → reflect**. We've been tuning
+the first half (SKILLS-FIRST triage, tool routing). The back half is where the
+learning lives and it's underbuilt. Build it CAREFULLY, in order:
+
+- **VERIFY (small, high-value, do soon):** a runner/prompt gate that catches the
+  #1 failure — the agent emits a `PLAN:` line but ZERO tool calls and the loop
+  ends. On end-of-turn with a plan-but-no-call, nudge once ("you planned but
+  didn't act; do it now") instead of accepting it as final. Flips `rec_python_*`
+  and scoped `native_tier`. (The old deny-and-retry gate regressed 73→66 — nudge,
+  don't deny.)
+- **REFLECT (STARTED today — journaling only):** added the `reflect` tool +
+  framework REFLECT bullet. After a non-trivial task the agent records
+  what-worked / what-was-hard / the-one-lesson to `<instance>/memory/reflections.md`.
+  Today it ONLY journals — building the practice. NOTHING auto-creates skills yet.
+- **REFLECT → skills (the eventual feature, careful setup):**
+  1. *Make new skills* — a successful, novel, repeatable multi-step trajectory
+     becomes a skill (reflection decides + `propose_deep_think_task` with the
+     captured trajectory as the spec; Deep Think authors it).
+  2. *Prune + refine skills* — the existing sweep (`skill_review.py`) already
+     scores skills from `skill_note` telemetry and proposes Deep Think reviews for
+     strugglers; `curator`/`retire` archive stale ones. Wire reflection into this
+     so live task-failures also feed it.
+  This must be staged: journal (now) → nudge the loop (verify+reflect prompt/
+  runner hardening) → reflection triggers skill creation → creation feeds prune/
+  refine. Each stage benched before the next.
+
+Note: `skill_note` (per-skill-use telemetry → the Deep Think review sweep) and
+`reflect_on_task` (fires after a background Deep Think task → reflections.jsonl +
+memory) ALREADY exist. The gap is task-level reflection on LIVE turns and the
+reflect→new-skill step.
+
 ## Session persistence (operator-requested future look)
 Hermes has `hermes_state.py` — SQLite + FTS transcript persistence with
 parent-session chains, so a restart doesn't lose the conversation. JROS

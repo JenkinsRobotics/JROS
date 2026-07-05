@@ -742,35 +742,34 @@ def _boot_swift(env: dict[str, str], dev: bool = False) -> int | None:
     None to signal 'unavailable → fall back to PySide6'.
 
     Packaged-app-first (Phase 2): a bare ``./launch`` RUNS the existing
-    JaegerOS.app / release binary and only builds when nothing is built
-    yet; ``./launch --dev`` forces a rebuild (the old always-build was a
-    dev-script behaviour that made every app open pay a compile).
+    JaegerOS-dev.app (the dev shell — pinned to the jros-dev instance via
+    its Info.plist LSEnvironment) and only builds when nothing is built
+    yet; ``./launch --dev`` forces a rebuild. The PRODUCT app
+    (JaegerOS.app, default instance) builds via
+    ``Scripts/build-app.sh --release`` and never routes through here.
 
-    The Swift app spawns its own ``jaeger bridge`` child, so it needs the
-    venv's ``jaeger`` on PATH; everything else it drives itself."""
+    The dev app self-locates the repo's ``jaeger`` launcher by walking up
+    from its own bundle path, so no PATH injection is needed."""
     if not (SWIFT_DIR / "Package.swift").exists():
         return None
-    bundle_bin = SWIFT_DIR / ".build" / "JaegerOS.app" / "Contents" / "MacOS" / "JaegerOS"
-    bare_bin = SWIFT_DIR / ".build" / "release" / "JaegerOS"
-    if dev or not (bundle_bin.exists() or bare_bin.exists()):
+    bundle_bin = (SWIFT_DIR / ".build" / "JaegerOS-dev.app"
+                  / "Contents" / "MacOS" / "JaegerOS")
+    if dev or not bundle_bin.exists():
         if not shutil.which("swift"):
             return None
-        say("building the Swift app (Scripts/build-app.sh --release)…",
+        say("building JaegerOS-dev.app (Scripts/build-app.sh --dev)…",
             prefix="launch")
         build = subprocess.run(
-            [str(SWIFT_DIR / "Scripts" / "build-app.sh"), "--release"],
+            [str(SWIFT_DIR / "Scripts" / "build-app.sh"), "--dev"],
             cwd=str(SWIFT_DIR))
         if build.returncode != 0:
             warn("swift app build failed")
             return None
-    binary = bundle_bin if bundle_bin.exists() else bare_bin
-    if not binary.exists():
+    if not bundle_bin.exists():
         return None
-    # Make the venv's `jaeger` CLI discoverable to the app's bridge child.
-    env = {**env, "PATH": f"{VENV_PY.parent}{os.pathsep}{env.get('PATH', '')}"}
-    say("launching the Swift app — menu-bar tray + chat window…", prefix="launch")
+    say("launching JaegerOS-dev — menu-bar tray + chat window…", prefix="launch")
     sys.stdout.flush()
-    return subprocess.run([str(binary)], env=env).returncode
+    return subprocess.run([str(bundle_bin)], env=env).returncode
 
 
 # ─── main ─────────────────────────────────────────────────────────────

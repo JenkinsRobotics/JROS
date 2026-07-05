@@ -36,16 +36,43 @@ from typing import Any
 
 PROTOCOL_VERSION = "1"
 
+# What this transport can do — sent in ``ready`` so a client can feature-gate
+# instead of probing. A client seeing an unknown capability ignores it; a
+# client MISSING one it needs degrades that feature, not the connection.
+CAPABILITIES: tuple[str, ...] = (
+    "query", "command", "chat", "sessions", "permissions", "agent_state",
+)
+
 # ── agent → client frame builders (used by the bridge / any transport) ──
 
 
 def ready_frame(instance: str, model: str | None,
-                character: str | None = None, icon: str | None = None) -> dict[str, Any]:
+                character: str | None = None, icon: str | None = None,
+                agent: str = "ready") -> dict[str, Any]:
     # ``character`` = the active character's display name; ``icon`` = an absolute
     # path to its profile image. Both let the native client show the agent's face
     # + name in the tray/header, matching the PySide6 UI.
-    return {"type": "ready", "instance": instance, "model": model,
-            "character": character, "icon": icon}
+    #
+    # v1 additions: ``proto`` + ``capabilities`` (so shell/core version skew
+    # fails loudly instead of degrading silently) and ``agent`` — the agent
+    # lifecycle state at handshake time. The bridge now emits ``ready`` the
+    # moment the TRANSPORT is usable (queries/commands work immediately);
+    # ``agent`` says whether the model is loaded ("ready") or still coming up
+    # ("booting"), with ``agent_state`` frames streaming the transition.
+    return {"type": "ready", "proto": PROTOCOL_VERSION,
+            "capabilities": list(CAPABILITIES),
+            "instance": instance, "model": model,
+            "character": character, "icon": icon, "agent": agent}
+
+
+def agent_state_frame(state: str, model: str | None = None,
+                      character: str | None = None, icon: str | None = None,
+                      error: str | None = None) -> dict[str, Any]:
+    """The agent lifecycle, decoupled from transport readiness:
+    ``booting`` → ``ready`` (model/character attached) or ``failed``
+    (``error`` says why; ``kind`` distinguishes a held instance lock)."""
+    return {"type": "agent_state", "state": state, "model": model,
+            "character": character, "icon": icon, "error": error}
 
 
 def state_frame(busy: bool, session: str = "") -> dict[str, Any]:
@@ -77,8 +104,20 @@ def request_frame(id: str, kind: str, prompt: str,
             "options": list(options), "session": session}
 
 
-def fatal_frame(error: str) -> dict[str, Any]:
-    return {"type": "fatal", "error": error}
+def fatal_frame(error: str, kind: str = "boot") -> dict[str, Any]:
+    """Unrecoverable failure — the bridge exits after this. ``kind``:
+    ``boot`` (agent failed to start) or ``locked`` (another process holds
+    this instance's lock — the client should offer attach-or-pick-another,
+    not a generic error)."""
+    return {"type": "fatal", "error": error, "kind": kind}
+
+
+def bye_frame(reason: str = "quit") -> dict[str, Any]:
+    """Clean-shutdown marker: emitted right before the bridge exits on a
+    ``quit`` op (or EOF), so the client can tell an ORDERLY exit from a
+    crash even though the process may exit through ``os._exit`` (the ggml
+    Metal teardown makes exit codes unreliable — see F1 in STATUS.md)."""
+    return {"type": "bye", "reason": reason}
 
 
 # ── client → agent op builders (used by the client SDK) ──

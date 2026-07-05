@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""launch.py — dev TUI launcher for JROS (also reached via `jaeger --dev`).
+"""jaeger_os.cli.devtools — the developer toolbox behind `jaeger --dev`.
+
+Replaces the old repo-root launch.py (removed 2026-07-05): the windowed
+dev shell is JaegerOS-dev.app (double-click it, or `jaeger --dev` builds +
+runs it); this module keeps the dev TUI + utility verbs.
 
 Surfaces (CLI/TUI -> windowed-app migration, 2026-06-14):
 
@@ -48,7 +52,7 @@ from __future__ import annotations
 import os as _os
 import sys as _sys
 from pathlib import Path as _Path
-_REPO_ROOT = _Path(__file__).resolve().parent
+_REPO_ROOT = _Path(__file__).resolve().parents[2]
 _VENV_DIR = _REPO_ROOT / ".venv"
 _VENV_PY = _VENV_DIR / "bin" / "python"
 if _VENV_PY.exists() and not _sys.executable.startswith(str(_VENV_DIR)):
@@ -63,7 +67,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-REPO = Path(__file__).resolve().parent
+REPO = Path(__file__).resolve().parents[2]
 # The single dev instance, shared with `jaeger --dev`. Lives under the
 # repo's gitignored operator-state root (`.jaeger_os/`), so it never
 # ships to end users. (Pre-2026-06-19 this was an isolated `sandbox/`

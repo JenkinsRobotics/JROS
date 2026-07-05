@@ -95,6 +95,7 @@
     "respond": { "op": "respond", "id": "perm1", "answer": "allow" },
     "quit": { "op": "quit" },
     "query": { "op": "query", "id": "r1", "what": "config", "args": {} },
-    "command": { "op": "command", "id": "r2", "cmd": "select_character", "args": { "id": "jarvis" } }
+    "command": { "op": "command", "id": "r2", "cmd": "select_character", "args": { "id": "jarvis" } },
+    "command_speak": { "op": "command", "id": "r3", "cmd": "speak", "args": { "text": "Good day." } }
   }
 }

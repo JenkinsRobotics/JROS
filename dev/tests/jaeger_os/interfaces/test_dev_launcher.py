@@ -1,7 +1,7 @@
 """Dev Launcher — a floating panel that opens every Qt surface. Offscreen
 (conftest defaults QT_QPA_PLATFORM=offscreen). We assert it lists the surfaces
 and that a failing opener is reported, not fatal — the actual window-opening is
-walked live by the operator (`./launch --dev-gui`)."""
+walked live by the operator (`jaeger dev --dev-gui`)."""
 
 from __future__ import annotations
 

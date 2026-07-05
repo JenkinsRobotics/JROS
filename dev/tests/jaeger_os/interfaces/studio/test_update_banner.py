@@ -19,9 +19,17 @@ def _app():
     return QApplication.instance() or QApplication([])
 
 
-def test_window_hosts_update_banner_hidden_by_default(_app):
+def test_window_hosts_update_banner_hidden_by_default(_app, tmp_path, monkeypatch):
     from jaeger_os.interfaces.pyside6.widgets.update_banner import UpdateBanner
     from jaeger_os.interfaces.studio.window import JaegerStudioWindow
+
+    # Pin the media-library scan to an empty dir. Since the studio split,
+    # _default_media_dir()'s <pkg>/assets candidate (now jaeger-studio/assets)
+    # doesn't exist, so it falls back to Path.home() and the constructor
+    # rglobs the whole home directory — minutes, not milliseconds. This test
+    # is about the update banner, not the media page.
+    monkeypatch.setattr(JaegerStudioWindow, "_default_media_dir",
+                        lambda self: str(tmp_path))
     w = JaegerStudioWindow()
     assert isinstance(w._update_banner, UpdateBanner)
     assert w._update_banner.isHidden()                       # nothing yet

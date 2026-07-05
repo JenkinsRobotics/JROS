@@ -101,6 +101,19 @@
     "quit": { "op": "quit" },
     "query": { "op": "query", "id": "r1", "what": "config", "args": {} },
     "command": { "op": "command", "id": "r2", "cmd": "select_character", "args": { "id": "jarvis" } },
-    "command_speak": { "op": "command", "id": "r3", "cmd": "speak", "args": { "text": "Good day." } }
+    "command_speak": { "op": "command", "id": "r3", "cmd": "speak", "args": { "text": "Good day." } },
+    "query_instance_exists": { "op": "query", "id": "r4", "what": "instance_exists", "args": {} },
+    "query_setup_defaults": { "op": "query", "id": "r5", "what": "setup_defaults", "args": {} },
+    "command_create_instance": {
+      "op": "command",
+      "id": "r6",
+      "cmd": "create_instance",
+      "args": {
+        "character_id": "jarvis",
+        "display_name": "Jarvis",
+        "permission_mode": "confirm",
+        "interaction_mode": "gui"
+      }
+    }
   }
 }

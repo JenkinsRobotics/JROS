@@ -1,15 +1,12 @@
 #!/usr/bin/env python3
 """launch.py — dev TUI launcher for JROS (also reached via `jaeger --dev`).
 
-Surfaces (CLI/TUI → windowed-app migration, 2026-06-14):
+Surfaces (CLI/TUI -> windowed-app migration, 2026-06-14):
 
-   ./launch --tui    CLI/TUI — the in-process TUI agent (today's
-                     surface; this terminal becomes the TUI).
-   ./launch          Windowed app — the PySide6 shell: menu-bar tray by
-                     default, chat / avatar / settings as on-demand
-                     windows, agent booted in-process.  Modelled on the
-                     jaeger_app_framework jros demo.  NOT BUILT YET — a
-                     bare ./launch currently points you at --tui.
+   ./launch          Windowed app — the Swift app if available, otherwise
+                     the PySide6 shell.
+   ./launch --tui    CLI/TUI — the in-process TUI agent (this terminal
+                     becomes the TUI).
 
 The in-process TUI loads the plugin stack directly:
 
@@ -20,7 +17,8 @@ The in-process TUI loads the plugin stack directly:
    - Gemma 4 + updated registry                         (core/models/)
    - bench infra (writer/aggregator dir fix)            (core/bench/)
 
-   ./launch --tui              boot the in-process TUI in this terminal
+   ./launch                   boot the windowed JROS app
+   ./launch --tui             boot the in-process TUI in this terminal
    ./launch --tui --no-voice   ... skipping voice startup
    ./launch --stop             kill a lingering TUI singleton
    ./launch --restart          stop, then boot the TUI
@@ -695,7 +693,7 @@ def cmd_dev_gui(env: dict[str, str]) -> int:
     return 1
 
 
-def cmd_boot_windowed(env: dict[str, str]) -> int:
+def cmd_boot_windowed(env: dict[str, str], dev: bool = False) -> int:
     """Exec into the windowed-app shell — PySide6 menu-bar tray + chat
     window. The agent + model load INSIDE that process, on the main
     thread (Metal-safe), before the window appears — so expect a short
@@ -709,7 +707,7 @@ def cmd_boot_windowed(env: dict[str, str]) -> int:
         return 1
     # Toolkit routing: Swift native app (default) vs the PySide6 shell.
     if _ui_toolkit() == "swift":
-        rc = _boot_swift(env)
+        rc = _boot_swift(env, dev=dev)
         if rc is not None:
             return rc
         warn("Swift app unavailable — falling back to the PySide6 shell")
@@ -739,20 +737,33 @@ def _ui_toolkit() -> str:
         return "swift"
 
 
-def _boot_swift(env: dict[str, str]) -> int | None:
-    """Build (if needed) + run the native Swift app. Returns an exit code once
-    it finishes, or None to signal 'unavailable → fall back to PySide6'.
+def _boot_swift(env: dict[str, str], dev: bool = False) -> int | None:
+    """Run the native Swift app. Returns an exit code once it finishes, or
+    None to signal 'unavailable → fall back to PySide6'.
 
-    The Swift app spawns its own ``jaeger bridge`` child, so it needs the venv's
-    ``jaeger`` on PATH; everything else it drives itself."""
-    if not (SWIFT_DIR / "Package.swift").exists() or not shutil.which("swift"):
+    Packaged-app-first (Phase 2): a bare ``./launch`` RUNS the existing
+    JaegerOS.app / release binary and only builds when nothing is built
+    yet; ``./launch --dev`` forces a rebuild (the old always-build was a
+    dev-script behaviour that made every app open pay a compile).
+
+    The Swift app spawns its own ``jaeger bridge`` child, so it needs the
+    venv's ``jaeger`` on PATH; everything else it drives itself."""
+    if not (SWIFT_DIR / "Package.swift").exists():
         return None
-    say("building the Swift app (interfaces/swift)…", prefix="launch")
-    build = subprocess.run(["swift", "build", "-c", "release"], cwd=str(SWIFT_DIR))
-    if build.returncode != 0:
-        warn("swift build failed")
-        return None
-    binary = SWIFT_DIR / ".build" / "release" / "JaegerOS"
+    bundle_bin = SWIFT_DIR / ".build" / "JaegerOS.app" / "Contents" / "MacOS" / "JaegerOS"
+    bare_bin = SWIFT_DIR / ".build" / "release" / "JaegerOS"
+    if dev or not (bundle_bin.exists() or bare_bin.exists()):
+        if not shutil.which("swift"):
+            return None
+        say("building the Swift app (Scripts/build-app.sh --release)…",
+            prefix="launch")
+        build = subprocess.run(
+            [str(SWIFT_DIR / "Scripts" / "build-app.sh"), "--release"],
+            cwd=str(SWIFT_DIR))
+        if build.returncode != 0:
+            warn("swift app build failed")
+            return None
+    binary = bundle_bin if bundle_bin.exists() else bare_bin
     if not binary.exists():
         return None
     # Make the venv's `jaeger` CLI discoverable to the app's bridge child.
@@ -779,8 +790,10 @@ def main() -> int:
                         help="tell the TUI to skip voice startup")
     parser.add_argument("--tui", action="store_true",
                         help="boot the CLI/TUI in-process agent (Pattern 0). "
-                             "A bare ./launch boots the windowed app "
-                             "(Pattern 1: PySide6 tray + chat window).")
+                             "A bare ./launch boots the windowed JROS app.")
+    parser.add_argument("--dev", action="store_true",
+                        help="rebuild the Swift app before launching it "
+                             "(a bare ./launch runs the existing build)")
     # Housekeeping
     parser.add_argument("--reset-audio", action="store_true",
                         help="sudo killall coreaudiod — unwedge CoreAudio")
@@ -881,7 +894,7 @@ def main() -> int:
         return cmd_boot(env, no_voice=args.no_voice)
     # Bare ./launch → the windowed app (PySide6 menu-bar tray + chat
     # window). The agent boots inside that process.
-    return cmd_boot_windowed(env)
+    return cmd_boot_windowed(env, dev=args.dev)
 
 
 if __name__ == "__main__":

@@ -88,6 +88,11 @@
       "error": "instance 'jros-dev' is locked by pid 4242 (still running).",
       "kind": "locked"
     },
+    "fatal_no_instance": {
+      "type": "fatal",
+      "error": "no instance named 'default' exists yet — first-run setup required",
+      "kind": "no_instance"
+    },
     "bye": { "type": "bye", "reason": "quit" }
   },
   "ops": {

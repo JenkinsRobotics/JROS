@@ -106,9 +106,12 @@ def request_frame(id: str, kind: str, prompt: str,
 
 def fatal_frame(error: str, kind: str = "boot") -> dict[str, Any]:
     """Unrecoverable failure — the bridge exits after this. ``kind``:
-    ``boot`` (agent failed to start) or ``locked`` (another process holds
+    ``boot`` (agent failed to start), ``locked`` (another process holds
     this instance's lock — the client should offer attach-or-pick-another,
-    not a generic error)."""
+    not a generic error), or ``no_instance`` (v1 additive: the resolved
+    instance doesn't exist on disk yet — first-run. The transport STAYS
+    alive for queries/commands so a native client can run onboarding and
+    ``create_instance`` over the same pipe)."""
     return {"type": "fatal", "error": error, "kind": kind}
 
 

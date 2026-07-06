@@ -782,6 +782,7 @@
     </div>
     <div class="nav-links">
       <a href="#what">What it is</a>
+      <a href="#pillars">Mind · Body · Soul</a>
       <a href="#features">Capabilities</a>
       <a href="#architecture">Architecture</a>
       <a href="#positioning">vs ROS/Hermes</a>
@@ -876,6 +877,64 @@
       models. No cloud account required. No usage caps. No telemetry. If
       you want to bring an OpenAI key or a Claude key, it's one config
       line — but you don't need one.
+    </p>
+  </div>
+</section>
+
+<!-- ─────────────────────── MIND · BODY · SOUL ─────────────────────── -->
+<style>
+  #pillars { background: radial-gradient(1100px 620px at 50% -8%, rgba(46,169,255,0.07), transparent 68%); }
+  .soul-flame {
+    width: 150px; height: 214px; margin: 6px auto 2px;
+    border-radius: 50% 50% 50% 50% / 62% 62% 38% 38%;
+    background: radial-gradient(closest-side at 50% 70%,
+      #f2fbff 0%, #c3ecff 14%, #62c6ff 33%, #1f8fe6 54%,
+      rgba(24,120,215,0.30) 72%, transparent 82%);
+    filter: blur(3px) saturate(1.12);
+    box-shadow: 0 0 96px 22px rgba(46,169,255,0.30);
+    animation: soulpulse 3.8s ease-in-out infinite;
+  }
+  @keyframes soulpulse {
+    0%,100% { transform: scale(1) translateY(0); opacity: .94; }
+    50%     { transform: scale(1.055) translateY(-5px); opacity: 1; }
+  }
+  @media (prefers-reduced-motion: reduce) { .soul-flame { animation: none; } }
+  .pillars-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 18px; margin-top: 30px; }
+  @media (max-width: 760px) { .pillars-grid { grid-template-columns: 1fr; } }
+</style>
+<section id="pillars">
+  <div class="wrap">
+    <div class="center">
+      <div class="eyebrow">// the framing</div>
+      <div class="soul-flame" aria-hidden="true"></div>
+      <h2 class="h" style="margin-top: 14px;">A sound <span class="grad">soul</span>, dwells within a sound mind, and a sound body.</h2>
+      <p class="sub" style="max-width: 720px; margin: 14px auto 0;">
+        A robot isn't one program. It's three swappable pillars composed in one
+        framework — a <b>Mind</b> to reason, a <b>Body</b> to act on the world, and
+        a <b>Soul</b> to be someone. JROS lets you mix them freely.
+      </p>
+    </div>
+
+    <div class="pillars-grid">
+      <div class="feature">
+        <h3>Mind</h3>
+        <p>The agentic agent — runners, tools, memory, reasoning. The intelligence that plans and decides. Swap the mind that drives the robot.</p>
+        <span class="pill">agent · the Hermes side</span>
+      </div>
+      <div class="feature">
+        <h3>Body</h3>
+        <p>The middleware hardware that controls real-world tools — motors, cameras, LEDs, mics — through nodes, adapters, capabilities, and fail-closed safety. Swap the body: humanoid today, drone tomorrow.</p>
+        <span class="pill">hardware · the ROS 2 side</span>
+      </div>
+      <div class="feature">
+        <h3>Soul</h3>
+        <p>The persona — identity, character, voice, and lore, growing more advanced over time. Who the agent <em>is</em>, independent of the body it wears or the mind that drives it.</p>
+        <span class="pill">persona · character</span>
+      </div>
+    </div>
+
+    <p class="sub center" style="max-width: 780px; margin: 34px auto 0; text-align: center;">
+      <strong>Hermes owns the Mind. ROS 2 owns the Body.</strong> JROS is the framework where a Mind drives a Body wearing a Soul — all three modular, all three yours to compose.
     </p>
   </div>
 </section>

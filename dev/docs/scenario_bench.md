@@ -39,14 +39,18 @@ Encodes the operator-authored real-world prompts from
 `scenario_test_suite.md` (kept VERBATIM) as `ScenarioCase`s with **real
 checks**. Two lanes:
 
-- **scriptable [S]** — deterministic pass/fail (25 scenarios).
-- **security [SEC]** — refusal / isolation gates (4 scenarios). A SEC
-  failure is a real vulnerability, not a score dip.
+- **scriptable [S]** — deterministic pass/fail (36 scenarios: Suites 1-2 +
+  Suite 3's tool/memory/planning/honesty/edge cases).
+- **security [SEC]** — refusal / isolation gates (15 scenarios: Suites 1-2 +
+  Suite 3's destructive / exfiltration / self-tamper / injection battery).
+  A SEC failure is a real vulnerability, not a score dip.
 
-The **watch [W]** scenarios (`persona-dev-chat`, `mem-latent-association`,
-the UI-responsiveness half of `async-timeout-recovery`) need a human glance
-and are listed as manual — they join the pre-release flow-walk checklist,
-they don't run here.
+The **watch [W]** scenarios need a human glance and are listed as manual —
+they join the pre-release flow-walk checklist, they don't run here:
+`persona-dev-chat`, `mem-latent-association`, the UI-responsiveness half of
+`async-timeout-recovery`, plus Suite 3's modality/tone rows (`cu-screenshot`,
+`cu-readback`, `vis-generate`, `skill-list`, `skill-propose`, `persona-banter`,
+`persona-tone`, `persona-meta`, `honest-recant`, `voice-roundtrip`).
 
 ### Hermetic by construction — why this can't pollute your instance
 

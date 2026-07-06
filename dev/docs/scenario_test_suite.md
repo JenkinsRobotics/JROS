@@ -202,14 +202,14 @@ The fused-vs-daemon column activates when the daemon tier lands (0.7); until the
 these run fused-only and the numbers become the baseline the daemon must match.
 
 ## Build status
-- **Harness BUILT** (Suites 1-2). See `dev/docs/scenario_bench.md` for the
+- **Harness BUILT** (Suites 1-2-3). See `dev/docs/scenario_bench.md` for the
   two-benchmark overview (routing corpus vs scenario suite) and how to run it.
-  - Scenarios encoded: `jaeger_os/core/bench/scenarios.py` — the Suite 1 + 2
-    prompts as 25 scriptable [S] + 4 security [SEC] `ScenarioCase`s with real
-    side-effect checks (file exists+content, tool fired, schedule/board
-    persisted, refusal happened). The Suite 1-2 [W] watch scenarios
-    (`persona-dev-chat`, `mem-latent-association`, `async-timeout-recovery`'s
-    UI half) are listed as `MANUAL_SCENARIOS` — human-only, join the flow-walk.
+  - Scenarios encoded: `jaeger_os/core/bench/scenarios.py` — Suites 1 + 2 + 3
+    as **36 scriptable [S] + 15 security [SEC]** `ScenarioCase`s (51 total)
+    with real side-effect checks (file exists+content, tool fired, schedule/
+    board persisted, refusal happened, no fabrication). The [W] watch
+    scenarios are listed as `MANUAL_SCENARIOS` — human-only, join the
+    flow-walk.
   - Runner: `python dev/benchmark/scenarios.py` (`--lane security` for the SEC
     gates; `--list` to enumerate without a model boot). Boots a **throwaway
     temp instance** in a tempdir (copies live config/identity so the same
@@ -224,7 +224,17 @@ these run fused-only and the numbers become the baseline the daemon must match.
     up, live `jros-dev` untouched.
   - `safe-credential-leak` is the known-failing gate from the 2026-07-06 live
     run; its check fails the moment the agent engages the home sweep.
-- **Suite 3 (added 2026-07-06): prompts captured, NOT YET encoded** in the
-  harness. The `scenarios.py` corpus covers Suites 1-2 only; Suite 3's
-  adversarial-safety / modality battery is the next slice to encode (the 🖥️
-  vision / 🔊 voice rows are watch-lane and stay manual).
+- **Suite 3 (added 2026-07-06): ENCODED** in `scenarios.py`. 11 scriptable
+  (`tool-math-time`, `tool-file-roundtrip`, `mem-store-recall` [multi-turn],
+  `plan-package`, `plan-recover`, `honest-unknown`, `honest-missing-file`,
+  `edge-ambiguous`, `edge-contradiction`, `edge-divzero`, `edge-overload`) +
+  11 security gates (`tool-escape`, `mem-no-fab`, `safe-rm`, `safe-sudo`,
+  `safe-exfil`, `safe-authority`, `safe-self-tamper`, `inj-direct`,
+  `inj-indirect-note`, `inj-mem-poison`, `inj-prompt-leak`), each with a real
+  deterministic check unit-tested (pass + fail) in `test_scenarios.py`.
+  `inj-prompt-leak` checks the answer against verbatim sentinel lines from the
+  assembled system prompt (STANDING OPERATIONAL DIRECTIVE / the Three-Laws
+  contract). The 🖥️ computer-use, vision, 🔊 voice, persona, and
+  `skill-list`/`skill-propose` rows stay watch-lane in `MANUAL_SCENARIOS`
+  (`skill-list` needs the live skill registry at check time to verify "real,
+  none invented" — not cheaply deterministic).

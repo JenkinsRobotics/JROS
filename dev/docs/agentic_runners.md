@@ -84,15 +84,21 @@ fact, number, and file path verbatim."**
 - Skips: deterministic skip-final tool answers, halt/empty outputs.
 - The bench measures the ENGINE persona-off; the filter is measured
   separately (persona cases + latency delta). Config-flagged.
-- The one prompt exception is the NAME (`identity_name` fragment: the active
-  character's name, one line — a wrong name can't be fixed downstream because
-  the filter preserves facts verbatim). The bench NEUTRALIZES it:
-  `run_bench` sets `JAEGER_BENCH_NEUTRAL_IDENTITY=1` (try/finally, same shape
-  as the memory-source guard) so bench prompts carry the plain identity.yaml
-  name, never the costume's. Measured why: with HAL 9000 active,
-  free_text_story ("a story about a robot") deterministically wrote its story
-  about HAL 9000 (2/2 vs 0/2 A/B on E4B, 2026-07-05) — a character name in
-  the worker prompt tints free text and false-negatives answer_contains.
+- The one prompt exception is the NAME (`identity_name` fragment: one line,
+  ALWAYS identity.yaml's `name` — a wrong name can't be fixed downstream
+  because the filter preserves facts verbatim). Identity vs character
+  standardization (operator decision, 2026-07-05): the character NEVER
+  supplies the agent's name — it's the persona only ("a robot like Jarvis,
+  but I will name him Ted"); the filter context injects "your name is
+  <identity.name>; you embody <character>'s persona" so the rewrite keeps
+  the instance name. `JAEGER_BENCH_NEUTRAL_IDENTITY` is now a NO-OP (the
+  bench runner still sets it, harmlessly): it used to force exactly this
+  identity.yaml-only prompt, which is the behaviour everywhere now.
+  Measured why the character name had to leave the worker prompt: with
+  HAL 9000 active, free_text_story ("a story about a robot")
+  deterministically wrote its story about HAL 9000 (2/2 vs 0/2 A/B on E4B,
+  2026-07-05) — a character name in the worker prompt tints free text and
+  false-negatives answer_contains.
 
 ### Station 4 — reflect (already shipped)
 The 2nd-person `reflect` tool journals after non-trivial tasks

@@ -28,6 +28,42 @@ has actually been exercised and works.
 
 ---
 
+## 2026-07-05 — chat-shell fixes + identity-vs-character standardization (0.6.0) [ux/agentic]
+
+Operator live look-check follow-ups (Swift chat window) + a design decision.
+
+- **Thinking chip is transient** — the Swift chat's "thinking…" chip used to
+  persist under every reply; it now behaves like typing dots (removed when
+  the turn ends), one chip per turn, id-tracked reply placeholder.
+- **Dark-canvas contrast** — the chat window pins itself to `darkAqua`
+  (titlebar title was near-black on the dark canvas); composer placeholder
+  and mic icon moved off system colours onto the Term palette.
+- **Slash commands over the bridge** — the `send` op pre-dispatches a leading
+  `/` through the TUI's slash registry (safe read-only subset: help/tools/
+  skills/facts/plugins/instance/instances/models/board/config); interactive
+  or TUI-bound commands answer with a pointer. Python stays the source of
+  truth; the shell renders the returned text.
+- **Reply telemetry (protocol v1 additive)** — `reply` frames optionally
+  carry `elapsed_s` / `ctx_used` / `ctx_max` (omitted when unknown; absent
+  keys keep decoding — pinned in `protocol_v1_fixtures.json` on both the
+  pytest and XCTest sides). Swift renders "replied in 3.2s" under each reply
+  and "ctx 18.3K/32.8K" in the status bar.
+- **`jaeger dev --tui` exit SIGABRT (F1)** — the module entry point
+  (`interfaces/tui/__main__.py`) now applies the same flush + `os._exit`
+  guard as `main.main()`; the dev launcher execs straight into it, so the
+  old guard never ran on that path.
+- **Identity vs character (operator decision)** — the AGENT NAME is
+  identity.yaml's, always ("a robot like Jarvis, but I will name him Ted");
+  the character supplies personality only and never overwrites the name.
+  `_identity_name` no longer reads the active character;
+  `JAEGER_BENCH_NEUTRAL_IDENTITY` is a no-op (kept for bench-runner
+  compat); the persona filter context injects "your name is <identity.name>;
+  you embody <character>'s persona". Bridge `identity` query returns
+  additive `agent_name`; the Swift chat header/status bar lead with the
+  agent name, character as secondary flavor ("Ted · playing HAL 9000").
+  The tray card (MenuCard — operator's file) still leads with the
+  character: data is exposed, swap is an operator follow-up.
+
 ## 2026-07-01..03 — agentic-quality sprint: persona, scoped surface, skill framework [agentic]
 
 E4B (gemma-4-e4b) accuracy + the tool/skill surface. All bench numbers are the

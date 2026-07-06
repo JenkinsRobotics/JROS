@@ -886,15 +886,15 @@
     <div class="center">
       <div class="eyebrow">// capabilities</div>
       <h2 class="h">Everything an agent needs to live in the real world.</h2>
-      <p class="sub">~70 built-in tools across 11 toolsets. A 20-tool CORE is always visible; the rest unlock on demand via <code style="background:var(--panel);padding:1px 6px;border-radius:4px;border:1px solid var(--border);font-family:var(--mono);font-size:13px;color:var(--accent2)">describe_tool</code> / <code style="background:var(--panel);padding:1px 6px;border-radius:4px;border:1px solid var(--border);font-family:var(--mono);font-size:13px;color:var(--accent2)">load_toolset</code>.</p>
+      <p class="sub">~100 built-in tools plus 99 self-authored skills. A CORE set is always visible; the rest unlock on demand via <code style="background:var(--panel);padding:1px 6px;border-radius:4px;border:1px solid var(--border);font-family:var(--mono);font-size:13px;color:var(--accent2)">describe_tool</code> / <code style="background:var(--panel);padding:1px 6px;border-radius:4px;border:1px solid var(--border);font-family:var(--mono);font-size:13px;color:var(--accent2)">load_toolset</code>.</p>
     </div>
 
     <div class="feature-grid">
       <div class="feature">
         <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 19c-5 1.5-5-2.5-7-3m14 6v-3.87a3.37 3.37 0 0 0-.94-2.61c3.14-.35 6.44-1.54 6.44-7A5.44 5.44 0 0 0 20 4.77 5.07 5.07 0 0 0 19.91 1S18.73.65 16 2.48a13.38 13.38 0 0 0-7 0C6.27.65 5.09 1 5.09 1A5.07 5.07 0 0 0 5 4.77a5.44 5.44 0 0 0-1.5 3.78c0 5.42 3.3 6.61 6.44 7A3.37 3.37 0 0 0 9 18.13V22"/></svg>
         <h3>Local LLM</h3>
-        <p>In-process Gemma-4 + Qwen3 MoE pair via llama.cpp on Metal. Sleep-cycle architecture swaps to a heavier coder model on idle.</p>
-        <span class="pill">gemma-4 · qwen3 · mlx</span>
+        <p>In-process Gemma-4 via llama.cpp on Metal — E4B for real-time, 26B-A4B for Deep Think. Dual-context inference lanes keep the conversation warm: persona-on cold start <b>45.6s → 0.71s</b>.</p>
+        <span class="pill">gemma-4 · metal · dual-lane</span>
       </div>
 
       <div class="feature">
@@ -907,8 +907,8 @@
       <div class="feature">
         <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>
         <h3>Tool surface</h3>
-        <p>Files, memory, web, code execution, scheduling, kanban, delegation. MCP servers plug in as first-class peers. Every tool tier-gated by a 6-level permission ladder.</p>
-        <span class="pill">~70 tools · MCP</span>
+        <p>Files, memory, web, code execution, scheduling, kanban, delegation, computer use. MCP servers plug in as first-class peers. Every action is permission-gated (confirm / allow) and audit-logged.</p>
+        <span class="pill">~100 tools · MCP</span>
       </div>
 
       <div class="feature">
@@ -941,9 +941,9 @@
 
       <div class="feature">
         <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
-        <h3>Daemon + attach</h3>
-        <p>One model in RAM. Many client surfaces (TUI, voice, Discord, Telegram, iMessage, GUI) attach via local socket. Run everything at once on a 32 GB Mac.</p>
-        <span class="pill">single-model</span>
+        <h3>Native Mac app</h3>
+        <p>Since 0.7, <code>JaegerOS.app</code> is the primary UI — menu-bar resident, splash → chat / settings windows, quit-from-tray. It talks to the Python core over a versioned NDJSON bridge: usable in ~0.5s while the model warms behind it. The terminal (<code>--tui</code>) stays first-class for SSH / headless.</p>
+        <span class="pill">menu-bar · bridge v1 · TUI</span>
       </div>
 
       <div class="feature">
@@ -951,6 +951,27 @@
         <h3>Embodiment-ready</h3>
         <p>Body contract + capability-gated skill loader in place. Same agent loop on a Mac today, on a Jetson Orin tomorrow. The brain doesn't care what the body is.</p>
         <span class="pill">Mac · Jetson · ESP32</span>
+      </div>
+
+      <div class="feature">
+        <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 17l6-6-6-6"/><line x1="12" y1="19" x2="20" y2="19"/></svg>
+        <h3>Two-runner agentic core</h3>
+        <p>A real-time runner — a fluid loop with a hard boundary: a <b>verify gate</b> that catches a stalled plan or a claim-without-action, and a <b>persona filter</b> that restores character voice with no reasoning tax. Plus a staged plan → execute → verify Deep Think runner for the heavy jobs.</p>
+        <span class="pill">verify gate · persona filter</span>
+      </div>
+
+      <div class="feature">
+        <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="4"/><path d="M4 21v-1a6 6 0 0 1 12 0v1"/></svg>
+        <h3>Your agent, its own identity</h3>
+        <p>Name your robot Ted — it can <em>play</em> HAL. The agent's name and profile picture belong to the instance and never change with the persona it wears. Swap characters freely; the identity you built stays put.</p>
+        <span class="pill">name · picture · persona</span>
+      </div>
+
+      <div class="feature">
+        <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2l8 4v6c0 5-3.5 8-8 10-4.5-2-8-5-8-10V6l8-4z"/></svg>
+        <h3>Benchmarked + security-gated</h3>
+        <p>Every pipeline change holds a routing corpus at <b>79/81</b>, and a 51-case hermetic scenario suite runs the whole system end-to-end against a throwaway instance — including <b>15 security gates</b> (prompt injection, credential-sweep, memory-poisoning). Safety is a measured gate, not a promise.</p>
+        <span class="pill">79/81 · 51 scenarios · 15 sec gates</span>
       </div>
     </div>
 
@@ -1009,7 +1030,7 @@
         <h4>Runtime model</h4>
         <h3>The brain shipped first. 0.4 wired the spine.</h3>
         <p style="margin-top: 12px;">
-          <code>jaeger</code> boots the agent: one Gemma instance, the persistent voice pipeline, the skill registry, the memory store — all in one Python process for sub-microsecond function-call latency. <strong>0.4 adopted a node architecture</strong>: brain stays one process; audio I/O, STT, TTS, vision, motors, lights each become their own node, talking over the <code>ZmqBus</code>. Same code laptop or fleet — only the transport changes. (0.5 added the character system + Jaeger Studio GUI on top; 0.6 wrapped it in a real install/update/lifecycle shell.)
+          <code>jaeger</code> boots the agent: one Gemma instance, the persistent voice pipeline, the skill registry, the memory store — all in one Python process for sub-microsecond function-call latency. <strong>0.4 adopted a node architecture</strong>: brain stays one process; audio I/O, STT, TTS, vision, motors, lights each become their own node, talking over the <code>ZmqBus</code>. Same code laptop or fleet — only the transport changes. (0.5 added the character system; 0.6 wrapped it in a real install/update/lifecycle shell; 0.7 made it a native Mac app with a measured two-runner agent core.)
         </p>
       </div>
     </div>
@@ -1022,8 +1043,8 @@
           <strong>Tools = networking shims; nodes = execution.</strong> The agent's tool signatures (<code>text_to_speech("hi")</code>, <code>listen(seconds=5)</code>) stay identical — what changes is the implementation: in-process call becomes a topic publish + correlation-ID wait for the ack. STT and TTS get their own nodes because voice pipelines evolve (today's Kokoro becomes tomorrow's MLX-TTS without touching the brain). The brain doesn't know whether <code>/sense/audio_in</code> comes from a Mac mic, a Jetson mic, or a simulated WAV file.
         </p>
         <p style="margin-top: 12px;">
-          Full diagram + track breakdown in
-          <a href="https://github.com/JenkinsRobotics/JROS/blob/master/dev_docs/ROADMAP_0.4.md" target="_blank" rel="noopener" style="color: var(--accent2);">ROADMAP_0.4.md</a>.
+          Architecture + the two runners in
+          <a href="https://github.com/JenkinsRobotics/JROS/blob/master/dev/docs/agentic_runners.md" target="_blank" rel="noopener" style="color: var(--accent2);">agentic_runners.md</a>.
         </p>
       </div>
     </div>
@@ -1057,7 +1078,7 @@
           <tr style="border-bottom: 1px solid var(--border);"><td style="padding: 8px 12px; color: var(--muted);">Learning curve</td><td style="padding: 8px 12px; color: var(--red);">hard</td><td style="padding: 8px 12px; color: var(--green);">easy</td><td style="padding: 8px 12px;">medium — one Python file per node</td></tr>
           <tr style="border-bottom: 1px solid var(--border);"><td style="padding: 8px 12px; color: var(--muted);">One-Mac development</td><td style="padding: 8px 12px; color: var(--red);">painful</td><td style="padding: 8px 12px; color: var(--green);">easy</td><td style="padding: 8px 12px; color: var(--green);">✅ monolith mode = same code, no IPC</td></tr>
           <tr style="border-bottom: 1px solid var(--border);"><td style="padding: 8px 12px; color: var(--muted);">Multi-board production</td><td style="padding: 8px 12px; color: var(--green);">✅ designed for it</td><td style="padding: 8px 12px; color: var(--red);">❌ no</td><td style="padding: 8px 12px; color: var(--green);">✅ flip a config flag</td></tr>
-          <tr style="border-bottom: 1px solid var(--border);"><td style="padding: 8px 12px; color: var(--muted);">Operator UX out of the box</td><td style="padding: 8px 12px; color: var(--red);">❌ build your own</td><td style="padding: 8px 12px; color: var(--muted);">n/a</td><td style="padding: 8px 12px; color: var(--green);">✅ TUI + web inspector (Track F)</td></tr>
+          <tr style="border-bottom: 1px solid var(--border);"><td style="padding: 8px 12px; color: var(--muted);">Operator UX out of the box</td><td style="padding: 8px 12px; color: var(--red);">❌ build your own</td><td style="padding: 8px 12px; color: var(--muted);">n/a</td><td style="padding: 8px 12px; color: var(--green);">✅ native Mac app + TUI</td></tr>
           <tr><td style="padding: 8px 12px; color: var(--muted);">Crash isolation per subsystem</td><td style="padding: 8px 12px; color: var(--green);">✅ best</td><td style="padding: 8px 12px; color: var(--red);">❌ none</td><td style="padding: 8px 12px; color: var(--green);">✅ per node when split</td></tr>
         </tbody>
       </table>
@@ -1139,7 +1160,7 @@
       <div class="step">
         <span class="n">3</span>
         <h3>Launch</h3>
-        <p>Runs the agent. <code style="background:var(--bg2);padding:1px 5px;border-radius:4px;border:1px solid var(--border);font-family:var(--mono);font-size:12px;color:var(--accent2)">--tui</code> for the terminal; <code style="background:var(--bg2);padding:1px 5px;border-radius:4px;border:1px solid var(--border);font-family:var(--mono);font-size:12px;color:var(--accent2)">/help</code> for slash commands.</p>
+        <p>Opens the Mac app (menu-bar tray). <code style="background:var(--bg2);padding:1px 5px;border-radius:4px;border:1px solid var(--border);font-family:var(--mono);font-size:12px;color:var(--accent2)">--tui</code> for the terminal; <code style="background:var(--bg2);padding:1px 5px;border-radius:4px;border:1px solid var(--border);font-family:var(--mono);font-size:12px;color:var(--accent2)">/help</code> for slash commands.</p>
 <pre><span class="pmt">$</span> ./jaeger --agent lilith
 <span class="cm"># run unattended at boot/login:</span>
 <span class="pmt">$</span> ./jaeger autostart enable</pre>
@@ -1169,12 +1190,12 @@
 <span class="pmt">$</span> jaeger agent create|list|use|delete|clear
 
 <span class="cm"># run it — manually, or unattended after a reboot</span>
-<span class="pmt">$</span> jaeger                  <span class="cm"># --tui for the terminal</span>
+<span class="pmt">$</span> jaeger                  <span class="cm"># opens JaegerOS.app · --tui for the terminal</span>
 <span class="pmt">$</span> jaeger autostart enable
-<span class="pmt">$</span> jaeger launcher install  <span class="cm"># macOS: a clickable Dock app</span>
+<span class="pmt">$</span> jaeger dev               <span class="cm"># the dev app, pinned to the jros-dev instance</span>
 
 <span class="cm"># keep it current — downloads + applies in place</span>
-<span class="pmt">$</span> jaeger doctor            <span class="cm"># "0.6.x available"</span>
+<span class="pmt">$</span> jaeger doctor            <span class="cm"># "0.7.x available"</span>
 <span class="pmt">$</span> jaeger update            <span class="cm"># --rollback · --ref to pin</span>
 
 <span class="cm"># recover or remove — agents kept unless --purge</span>
@@ -1201,7 +1222,7 @@
       <div class="milestone done">
         <h4>0.1–0.3 — Shipped</h4>
         <h3>The agent layer</h3>
-        <p>Local-first agent, ~70 tools, self-authored skills, kanban, Deep Think, the external-model pipeline, computer_use — then the System/Runtime/User layout, voice (wake-word + AEC barge-in), messaging bridges, the tray, and the skill-v3 system.</p>
+        <p>Local-first agent, self-authored skills, kanban, Deep Think, the external-model pipeline, computer_use — then the System/Runtime/User layout, voice (wake-word + AEC barge-in), messaging bridges, the tray, and the skill-v3 system.</p>
       </div>
 
       <div class="milestone done">
@@ -1212,18 +1233,30 @@
 
       <div class="milestone done">
         <h4>0.5.0 — Shipped</h4>
-        <h3>Identity + the Mochi fold</h3>
-        <p>Transport-agnostic voice, the character system (each agent plays a character), the animation/avatar pipeline, the skill tree, and the Jaeger Studio GUI — one repo for the brain and the body tooling.</p>
+        <h3>Character system + Studio</h3>
+        <p>Transport-agnostic voice, the character system (each agent plays a character), the animation/avatar pipeline, the skill tree, and the Jaeger Studio GUI (since spun out to its own repo).</p>
+      </div>
+
+      <div class="milestone done">
+        <h4>0.6.0 — Shipped</h4>
+        <h3>The product shell</h3>
+        <p>Feels like real software: a clean install, in-place <code>jaeger update</code> with rollback, autostart, reinstall / uninstall — plus the agentic-quality arc (autonomy modes, memory provenance, a self-improving skill loop).</p>
+      </div>
+
+      <div class="milestone done">
+        <h4>0.7.0 — Shipped</h4>
+        <h3>Swift-first + the two-runner core</h3>
+        <p>The native Mac app (<code>JaegerOS.app</code>) over a versioned NDJSON bridge; the measured real-time + Deep Think runners with dual-context inference lanes; the agent-name / profile-picture split from the character; and a hermetic scenario benchmark alongside the routing corpus.</p>
       </div>
 
       <div class="milestone next">
-        <h4>0.6 — In progress</h4>
-        <h3>The product shell</h3>
-        <p>Feels like real software: a clean install, in-place <code>jaeger update</code> with rollback, autostart, a clickable launcher, reinstall / uninstall — plus agentic polish (autonomy modes, a person index, a self-improving skill loop).</p>
+        <h4>0.8 — Next</h4>
+        <h3>The modular framework</h3>
+        <p>Modules — TTS / STT / vision / hardware nodes, plugins — that own their own config, settings, and lifecycle and register into one unified surface. The ROS2-style federation seam that turns JROS from one agent into a framework for composing many.</p>
       </div>
 
       <div class="milestone">
-        <h4>0.7 — Next</h4>
+        <h4>Later</h4>
         <h3>Hardware · JP01</h3>
         <p>The first hardware Jaeger — the same brain Lilith runs, a new body around it. Mic-in / RGB-out / speaker-out streaming on the device over the <code>MediaFrame</code> / <code>ZmqBus</code> seam.</p>
       </div>

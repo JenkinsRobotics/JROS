@@ -152,6 +152,54 @@ latency-free, unattended, huge contexts, objective success criteria.
 
 ---
 
+## Inference lanes — two KV contexts on one loaded model
+
+Both runners share ONE loaded model but need TWO isolated KV caches. Why:
+llama-cpp-python's `Llama` owns a single `llama_context` with a single-slot
+prefix cache — the worker lane keeps a ~20K-token conversation prefix warm,
+but any clean-context side call on the same context EVICTS it, and the next
+turn pays a full re-prefill. Measured 2026-07-05: the persona filter (station
+3) drove **ttft 41–44s with the filter ON vs 0.3–0.4s OFF** — the filter's
+own call is cheap (~1–3s); the eviction was the whole cost.
+
+**Fix (`core/models/aux_lane.py`): a second `llama_context` on the SAME
+`llama_model`.** llama.cpp separates weights (`llama_model`, shared) from
+KV+compute (`llama_context`, cheap); `spawn_aux_context` builds a full
+`Llama` whose model-load step ADOPTS the worker's already-loaded weights
+(scoped constructor patch + a no-op-close proxy so neither instance can free
+the shared model out from under the other). Cost: **+0.13 GB** (KV/compute
+buffers only, no second weight load), 0.08s to spawn.
+
+- **Worker lane** = the agent loop (`LocalLlamaAdapter` → `client.llm`).
+  Big context (`model.ctx`, default 32K, ≤131K = gemma-4's train ceiling);
+  its warm prefix is now never evicted by anything.
+- **Aux lane** = every side-channel model call, through the ONE chokepoint
+  `LlamaCppPythonClient.chat()`: the persona output filter, the skip-final
+  finalizer, reflection, deep-think planner/digests, memory review, goal
+  clarify/eval. Small context (`model.aux_ctx`, default 4096). Lazy-spawned,
+  `_aux_lock` serialises aux-vs-aux, **fail-open** to the old shared-context
+  path (spawn failure latches; `aux_ctx: 0` disables the lane entirely).
+
+Result — persona voice AND pre-persona speed:
+
+| turn 2 (warm), persona ON | before | after |
+|---|---|---|
+| wall clock | 48.8s | **5.2s** |
+| ttft | 45.6s | **0.71s** |
+
+Rejected alternative: `save_state()/load_state()` around each aux call —
+0.32s+0.37s memcpy at 6K tokens, scales linearly (~2s+/0.5GB at 20K), and
+the aux call still cold-prefills in the borrowed context every time. Dual
+context wins on every axis. Config: `model.ctx` + `model.aux_ctx` (both
+over the bridge config query / `save_config`; apply on restart — KV is
+allocated at model load).
+
+**Design rule this establishes:** any NEW side-channel model call routes
+through the aux lane (`client.chat()`), never the worker context — or it
+regresses this. The worker context is sacred; the aux context is disposable.
+
+---
+
 ## Status
 - Station 1: ✅ shipped (record band).
 - Station 2 (verify gate): ✅ SHIPPED + benched 2026-07-04 — corpus A: E4B
@@ -162,8 +210,17 @@ latency-free, unattended, huge contexts, objective success criteria.
   context call at the user boundary; fail-open; live-verified (0.5-1.3s,
   facts/paths preserved verbatim). Bench isolated by construction.
 - Station 4 (reflect): ✅ shipped (journaling).
+- Inference lanes (aux context): ✅ SHIPPED 2026-07-05 — persona ON warm
+  ttft 45.6s → 0.71s; bench held 79/81 (nothing leaked between lanes).
 - Deep Think Phase 1 (verify-before-done): ✅ SHIPPED 2026-07-04 —
   completion decided by the tool_calls evidence trace + failure-admission
   scan; one informed pre-approved replan cycle, then failed. mark_done is
   no longer trust-by-return.
 - Deep Think Phase 2: backlog.
+
+## Where the pipeline stands (2026-07-05)
+E4B **79/81** (all-time high) · 26B 75-76 · corpus B 73 · warm ttft ~0.7s
+with full persona. The realtime runner (fluid loop + verify gate + aux-lane
+persona filter + reflect) and the Deep Think staged runner are both live and
+measured. The engine work is essentially complete for this line; remaining
+levers are backlog (Deep Think Phase 2, reflect→skills, the PLAN-halt tail).

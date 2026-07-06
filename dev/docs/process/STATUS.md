@@ -1,6 +1,27 @@
 # Jaeger-OS — Pipeline Runtime-Verification Status
 
-**Date:** 2026-05-31 *(baselined for `0.2.0`)*
+**Current: `0.7.0` (2026-07-05).** Runtime-verified state as of the Swift-first
++ two-runner line:
+
+| Area | Runtime status |
+|---|---|
+| Realtime runner | ✅ verify gate + persona filter + aux-lane, live-verified; E4B bench 79/81 |
+| Deep Think runner | ✅ Phase 1+2 (staged, evidence-verified); full Phase-2 pipeline backlog |
+| Inference lanes | ✅ dual-context; persona-ON warm ttft 45.6s→0.71s |
+| Memory | ✅ SQL v2 (subject/source/history), hermetic bench isolation |
+| Swift app | ✅ JaegerOS.app + JaegerOS-dev.app; bridge protocol v1 (fast-ready, typed, state machine, interactive permissions, first-run onboarding) |
+| CLI/TUI | ✅ `jaeger` / `jaeger --tui` / `jaeger dev`; F1 exit-abort fixed on all paths |
+| Plugins/skills | ✅ HomeAssistant + fal.ai; 99 integrity-guarded skills |
+| Known gaps | scenario/security suite (logged, not built); HUD config pickers (in-flight); reflect→skill creation (backlog) |
+
+Test state: interfaces + cli 430 green; full suite passes in isolation.
+`jaeger-studio` extracted to its own repo. The 0.2.0 matrix below is retained
+as the historical baseline (the hermes-parity era) — its audit-vs-runtime and
+permission-flow lessons still apply.
+
+---
+
+**Baseline (historical): 2026-05-31 · `0.2.0`**
 **Why this doc:** the two hermes-parity audits
 (`hermes_tool_skill_audit.md`, `hermes_internals_audit.md`) compare
 *features and architecture* — "does JROS have a 6-tier permission

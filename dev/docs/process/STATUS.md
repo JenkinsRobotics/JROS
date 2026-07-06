@@ -28,6 +28,53 @@ has actually been exercised and works.
 
 ---
 
+## 2026-07-05 — aux inference lane: ONE model, TWO llama contexts (0.6.0) [perf]
+
+The operator-priority latency fix. Root cause (measured, previous entry):
+llama-cpp's prefix cache is single-slot per context, so any clean-context
+side call on the worker's context (the persona filter was the trigger)
+evicted the ~18-20K-token warm prefix and the NEXT turn re-prefilled it
+(~40s TTFT). Architecture (operator-approved): one loaded model, two
+llama contexts.
+
+- **Mechanism: dual context, not save/restore** — llama.cpp separates
+  `llama_model` (weights) from `llama_context` (KV); llama-cpp-python
+  0.3.23 has no public second-context API, so `core/models/aux_lane.py`
+  builds a normal `Llama` while a scoped constructor patch ADOPTS the
+  worker's already-loaded model (0.08s spawn, +0.13 GB, zero re-read of
+  the GGUF; full `create_chat_completion` machinery). Alternative
+  measured and rejected: `save_state()/load_state()` memcpy costs
+  0.7s round-trip at 6K tokens, scales linearly (~2s+ at 20K), and the
+  aux call still cold-prefills inside the borrowed context every time.
+- **One chokepoint** — `LlamaCppPythonClient.chat()` IS the aux lane;
+  every side-channel call already routes through it (persona filter,
+  skip-final finalizer, reflection, deep-think plan/digest, memory
+  review, goal clarify/eval, ThinkingRunner), so future aux calls can't
+  regress the worker KV. The finalizer no longer replays the ~10K-token
+  tool schemas (that trick existed only to protect the worker prefix;
+  lane separation does it structurally). Fail-open: spawn failure or
+  `aux_ctx: 0` degrades to the old shared-context behaviour.
+- **Config (HUD-ready, applies on restart)** — `model.ctx` stays the
+  worker knob; new `model.aux_ctx` (default 4096, 0 = off) sizes the aux
+  lane. Both ride the bridge config query / `save_config` as additive
+  `model_ctx` / `model_aux_ctx` keys (pytest-pinned; no Swift shape
+  change needed).
+- **Acceptance (REAL bridge on jros-dev, persona ON, HAL/jarvis)** —
+  operator prompts, wall = send→reply including the filter:
+  before (lane off): turn 1 9.9s (ttft 0.33), turn 2 **48.8s (ttft
+  45.6)**; after (lane on): turn 1 10.0s (ttft 0.33), turn 2 **5.2s
+  (ttft 0.71)**. Persona filter cost ~1.3-2.8s/turn, now off the
+  critical prefix. Both turns beat the <10s target; turns 2+ are back
+  at the pre-persona 0.3-0.7s TTFT.
+- **65K worker ctx (measured for the operator; restored to 32768)** —
+  KV buffer 1.75 GiB @32K → 3.5 GiB @65K (+2.1 GB RSS); boot prewarm
+  identical (42.6s vs 43.8s); warm turns 1.9-6.2s; synthetic 17K-token
+  cold prefill 50.4s @65K. 65K costs ~2 GB RAM and nothing else at
+  today's prefix sizes.
+- **Bench gate** — full corpus A on E4B: **79/81 (98%), errors=0**
+  (run 20260705-195422), equal to the pre-lane baseline — the aux lane
+  did not change worker behaviour.
+
 ## 2026-07-05 — chat-shell fixes + identity-vs-character standardization (0.6.0) [ux/agentic]
 
 Operator live look-check follow-ups (Swift chat window) + a design decision.

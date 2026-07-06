@@ -63,6 +63,22 @@ Operator live look-check follow-ups (Swift chat window) + a design decision.
   agent name, character as secondary flavor ("Ted · playing HAL 9000").
   The tray card (MenuCard — operator's file) still leads with the
   character: data is exposed, swap is an operator follow-up.
+- **Bench gate (framework-prompt change)** — full corpus A on E4B:
+  **79/81 (98%)**, errors=0 (run 20260705-182745; fails: mt_file_round_2,
+  pf_macos_do). Meets the ≥79 baseline.
+- **Activity trace + turn separators (operator keepers)** —
+  `display.activity_trace` now also drives the Swift chat's tool/thought
+  chips (full/summary/clear/off); new `display.turn_separators` bool gates
+  the thin accent rule between turns. Both flow over the bridge config
+  query / save_config. HUD picker not built (operator's file).
+- **Latency regression MEASURED, not fixed (queued next)** — per-stage
+  probe on jros-dev/E4B (~20K-token prefix): with the persona filter ON,
+  EVERY turn pays ~41-44s TTFT (full re-prefill — the filter's clean-
+  context call evicts the single-slot KV between turns; the filter call
+  itself is only 1-5s). With `JAEGER_PERSONA_FILTER=0`, turns 2+ hit the
+  KV cache: TTFT 0.3-0.4s, totals 3-14s vs 42-48s. The f6d72fe follow-up
+  hypothesis is confirmed; skip-final finalizer likely contributes the
+  same way. Fix is the next work item — nothing restructured in this pass.
 
 ## 2026-07-01..03 — agentic-quality sprint: persona, scoped surface, skill framework [agentic]
 

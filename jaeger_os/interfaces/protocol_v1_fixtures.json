@@ -83,6 +83,13 @@
       "data": { "name": "Jaeger", "voice_enabled": true },
       "error": null
     },
+    "result_settings_set": {
+      "type": "result",
+      "id": "r7",
+      "ok": true,
+      "data": { "restart_required": true, "path": "model.ctx", "value": 16384 },
+      "error": null
+    },
     "request_approval": {
       "type": "request",
       "id": "perm1",
@@ -113,6 +120,13 @@
     "command_speak": { "op": "command", "id": "r3", "cmd": "speak", "args": { "text": "Good day." } },
     "query_instance_exists": { "op": "query", "id": "r4", "what": "instance_exists", "args": {} },
     "query_setup_defaults": { "op": "query", "id": "r5", "what": "setup_defaults", "args": {} },
+    "query_settings_catalog": { "op": "query", "id": "r7", "what": "settings_catalog", "args": {} },
+    "command_settings_set": {
+      "op": "command",
+      "id": "r8",
+      "cmd": "settings_set",
+      "args": { "path": "voice.speak_replies", "value": false }
+    },
     "command_create_instance": {
       "op": "command",
       "id": "r6",

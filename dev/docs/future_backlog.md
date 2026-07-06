@@ -105,3 +105,6 @@ Worth importing, held to the JROS 8-point skill standard on the way in:
   SEPARATE from the SQL knowledge memory. (Operator call, 2026-07-03.)
 - Remove the one-shot `facts.json`→SQL importer in `memory.py` once no
   un-migrated instance can exist (facts.py itself already removed).
+
+## Scenario test suite (deferred — implement later)
+- dev/docs/scenario_test_suite.md — 25 operator-authored full-system real-world prompts (day-to-day + advanced), sorted scriptable/watch/security. NOT built; security gates are the priority slice when picked up.

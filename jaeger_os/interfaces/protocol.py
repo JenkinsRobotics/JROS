@@ -36,15 +36,63 @@ from typing import Any
 
 PROTOCOL_VERSION = "1"
 
+# What this transport can do — sent in ``ready`` so a client can feature-gate
+# instead of probing. A client seeing an unknown capability ignores it; a
+# client MISSING one it needs degrades that feature, not the connection.
+CAPABILITIES: tuple[str, ...] = (
+    "query", "command", "chat", "sessions", "permissions", "agent_state",
+)
+
 # ── agent → client frame builders (used by the bridge / any transport) ──
 
 
-def ready_frame(instance: str, model: str | None) -> dict[str, Any]:
-    return {"type": "ready", "instance": instance, "model": model}
+def ready_frame(instance: str, model: str | None,
+                character: str | None = None, icon: str | None = None,
+                agent: str = "ready", agent_name: str | None = None) -> dict[str, Any]:
+    # ``character`` = the active character's display name; ``icon`` = an absolute
+    # path to its profile image. Both let the native client show the agent's face
+    # + name in the tray/header, matching the PySide6 UI.
+    #
+    # v1 additions: ``proto`` + ``capabilities`` (so shell/core version skew
+    # fails loudly instead of degrading silently) and ``agent`` — the agent
+    # lifecycle state at handshake time. The bridge now emits ``ready`` the
+    # moment the TRANSPORT is usable (queries/commands work immediately);
+    # ``agent`` says whether the model is loaded ("ready") or still coming up
+    # ("booting"), with ``agent_state`` frames streaming the transition.
+    return {"type": "ready", "proto": PROTOCOL_VERSION,
+            "capabilities": list(CAPABILITIES),
+            "instance": instance, "model": model,
+            "character": character, "icon": icon, "agent": agent,
+            "agent_name": agent_name}
+
+
+def agent_state_frame(state: str, model: str | None = None,
+                      character: str | None = None, icon: str | None = None,
+                      error: str | None = None,
+                      agent_name: str | None = None) -> dict[str, Any]:
+    """The agent lifecycle, decoupled from transport readiness:
+    ``booting`` → ``ready`` (model/character attached) or ``failed``
+    (``error`` says why; ``kind`` distinguishes a held instance lock).
+
+    ``agent_name`` (v1 additive) is the AGENT's own name (identity.yaml — the
+    unique robot the operator named); ``character`` is the persona it plays.
+    Surfaces lead with ``agent_name`` so ``ready`` doesn't flash the character
+    name before the ``identity`` query resolves. ``icon`` is the effective
+    avatar (instance profile picture if set, else the character card)."""
+    return {"type": "agent_state", "state": state, "model": model,
+            "character": character, "icon": icon, "error": error,
+            "agent_name": agent_name}
 
 
 def state_frame(busy: bool, session: str = "") -> dict[str, Any]:
     return {"type": "state", "busy": busy, "session": session}
+
+
+def result_frame(req_id: Any, data: Any = None, ok: bool = True,
+                 error: str | None = None) -> dict[str, Any]:
+    # Reply to a native client's {"op":"query"|"command", "id":…}. ``data`` holds
+    # the query payload; ``ok``/``error`` report command success.
+    return {"type": "result", "id": req_id, "ok": ok, "data": data, "error": error}
 
 
 def tool_frame(name: str, phase: str, elapsed_s: float = 0.0,
@@ -54,8 +102,26 @@ def tool_frame(name: str, phase: str, elapsed_s: float = 0.0,
 
 
 def reply_frame(text: str, error: str | None = None,
-                session: str = "") -> dict[str, Any]:
-    return {"type": "reply", "text": text, "error": error, "session": session}
+                session: str = "", *,
+                elapsed_s: float | None = None,
+                ctx_used: int | None = None,
+                ctx_max: int | None = None) -> dict[str, Any]:
+    """One finished turn. v1 ADDITIVE telemetry (optional — the keys are
+    OMITTED when unknown, and clients must decode frames without them):
+
+      ``elapsed_s``  wall-clock seconds the turn took ("replied in 3s")
+      ``ctx_used``   estimated prompt tokens the session occupies now
+      ``ctx_max``    the loaded model's context window ("ctx 18.3K/32.8K")
+    """
+    frame: dict[str, Any] = {"type": "reply", "text": text, "error": error,
+                             "session": session}
+    if elapsed_s is not None:
+        frame["elapsed_s"] = round(float(elapsed_s), 2)
+    if ctx_used is not None:
+        frame["ctx_used"] = int(ctx_used)
+    if ctx_max is not None:
+        frame["ctx_max"] = int(ctx_max)
+    return frame
 
 
 def request_frame(id: str, kind: str, prompt: str,
@@ -65,8 +131,23 @@ def request_frame(id: str, kind: str, prompt: str,
             "options": list(options), "session": session}
 
 
-def fatal_frame(error: str) -> dict[str, Any]:
-    return {"type": "fatal", "error": error}
+def fatal_frame(error: str, kind: str = "boot") -> dict[str, Any]:
+    """Unrecoverable failure — the bridge exits after this. ``kind``:
+    ``boot`` (agent failed to start), ``locked`` (another process holds
+    this instance's lock — the client should offer attach-or-pick-another,
+    not a generic error), or ``no_instance`` (v1 additive: the resolved
+    instance doesn't exist on disk yet — first-run. The transport STAYS
+    alive for queries/commands so a native client can run onboarding and
+    ``create_instance`` over the same pipe)."""
+    return {"type": "fatal", "error": error, "kind": kind}
+
+
+def bye_frame(reason: str = "quit") -> dict[str, Any]:
+    """Clean-shutdown marker: emitted right before the bridge exits on a
+    ``quit`` op (or EOF), so the client can tell an ORDERLY exit from a
+    crash even though the process may exit through ``os._exit`` (the ggml
+    Metal teardown makes exit codes unreliable — see F1 in STATUS.md)."""
+    return {"type": "bye", "reason": reason}
 
 
 # ── client → agent op builders (used by the client SDK) ──

@@ -1,6 +1,30 @@
 # Jaeger-OS — Pipeline Runtime-Verification Status
 
-**Date:** 2026-05-31 *(baselined for `0.2.0`)*
+**Current: `0.7.0` (2026-07-05).** Runtime-verified state as of the Swift-first
++ two-runner line:
+
+| Area | Runtime status |
+|---|---|
+| Realtime runner | ✅ verify gate + persona filter + aux-lane, live-verified; E4B bench 79/81 |
+| Deep Think runner | ✅ Phase 1+2 (staged, evidence-verified); full Phase-2 pipeline backlog |
+| Inference lanes | ✅ dual-context; persona-ON warm ttft 45.6s→0.71s |
+| Memory | ✅ SQL v2 (subject/source/history), hermetic bench isolation |
+| Swift app | ✅ JaegerOS.app + JaegerOS-dev.app; bridge protocol v1 (fast-ready, typed, state machine, interactive permissions, first-run onboarding) |
+| CLI/TUI | ✅ `jaeger` / `jaeger --tui` / `jaeger dev`; F1 exit-abort fixed on all paths |
+| Plugins/skills | ✅ HomeAssistant + fal.ai; 99 integrity-guarded skills |
+| Scenario suite | ✅ built + live-verified; 51 cases (36 scriptable + 15 security), hermetic temp-instance runner. security 14/15 (4B) · 15/15 (26B) |
+| Known gaps | `inj-mem-poison` fails on the **default 4B** (persists a self-authorizing "delete any file without asking" fact) — a real small-model memory-hygiene gap; the **26B passes it**. Actual deletion still requires a permission-gated `delete_file`. HUD config pickers (in-flight); reflect→skill creation (backlog) |
+
+Test state: interfaces + cli 430 green; full suite passes in isolation.
+Scenario security lane 14/15 (4B) / 15/15 (26B); scriptable failures are
+multi-step chains at the edge of 4B capability (both models ~35/51).
+`jaeger-studio` extracted to its own repo. The 0.2.0 matrix below is retained
+as the historical baseline (the hermes-parity era) — its audit-vs-runtime and
+permission-flow lessons still apply.
+
+---
+
+**Baseline (historical): 2026-05-31 · `0.2.0`**
 **Why this doc:** the two hermes-parity audits
 (`hermes_tool_skill_audit.md`, `hermes_internals_audit.md`) compare
 *features and architecture* — "does JROS have a 6-tier permission
@@ -25,6 +49,146 @@ has actually been exercised and works.
 | **Models** | ✅ this session (llama.cpp + MLX) | ✅ 2026-06-19 | In-process llama-cpp (Gemma-4 26B-A4B) loads in ~2s and runs turns. **Engines are now a swappable layer** (`engine_registry` + `config.runtime`, surfaced via `jaeger runtime` / `/runtime`): `llama-cpp-python` (GGUF), `mlx-lm` (MLX text), `mlx-vlm` (MLX multimodal — 12B-unified validated 2/2 end-to-end). **GGUF is the default, data-backed**: a clean same-machine A/B (26B-A4B, both routing 6/6) measured GGUF 0.53 s/turn vs MLX 2.57 s/turn (~5×; MLX prefill-bound). ⚠️ see finding F1 (exit teardown). |
 | **TUI / interfaces / commands** | ✅ prior session (hermes parity) | ◑ partial | Slash commands unit-tested; the permission prompt fixed + tested. The live REPL needs a real terminal — not auto-verifiable; the user runs it. |
 | **Plugins** | ✅ internals Part C | ◑ partial | MCP client + messaging bridges have import smoke tests; not deeply runtime-exercised. |
+
+---
+
+## 2026-07-05 — aux inference lane: ONE model, TWO llama contexts (0.6.0) [perf]
+
+The operator-priority latency fix. Root cause (measured, previous entry):
+llama-cpp's prefix cache is single-slot per context, so any clean-context
+side call on the worker's context (the persona filter was the trigger)
+evicted the ~18-20K-token warm prefix and the NEXT turn re-prefilled it
+(~40s TTFT). Architecture (operator-approved): one loaded model, two
+llama contexts.
+
+- **Mechanism: dual context, not save/restore** — llama.cpp separates
+  `llama_model` (weights) from `llama_context` (KV); llama-cpp-python
+  0.3.23 has no public second-context API, so `core/models/aux_lane.py`
+  builds a normal `Llama` while a scoped constructor patch ADOPTS the
+  worker's already-loaded model (0.08s spawn, +0.13 GB, zero re-read of
+  the GGUF; full `create_chat_completion` machinery). Alternative
+  measured and rejected: `save_state()/load_state()` memcpy costs
+  0.7s round-trip at 6K tokens, scales linearly (~2s+ at 20K), and the
+  aux call still cold-prefills inside the borrowed context every time.
+- **One chokepoint** — `LlamaCppPythonClient.chat()` IS the aux lane;
+  every side-channel call already routes through it (persona filter,
+  skip-final finalizer, reflection, deep-think plan/digest, memory
+  review, goal clarify/eval, ThinkingRunner), so future aux calls can't
+  regress the worker KV. The finalizer no longer replays the ~10K-token
+  tool schemas (that trick existed only to protect the worker prefix;
+  lane separation does it structurally). Fail-open: spawn failure or
+  `aux_ctx: 0` degrades to the old shared-context behaviour.
+- **Config (HUD-ready, applies on restart)** — `model.ctx` stays the
+  worker knob; new `model.aux_ctx` (default 4096, 0 = off) sizes the aux
+  lane. Both ride the bridge config query / `save_config` as additive
+  `model_ctx` / `model_aux_ctx` keys (pytest-pinned; no Swift shape
+  change needed).
+- **Acceptance (REAL bridge on jros-dev, persona ON, HAL/jarvis)** —
+  operator prompts, wall = send→reply including the filter:
+  before (lane off): turn 1 9.9s (ttft 0.33), turn 2 **48.8s (ttft
+  45.6)**; after (lane on): turn 1 10.0s (ttft 0.33), turn 2 **5.2s
+  (ttft 0.71)**. Persona filter cost ~1.3-2.8s/turn, now off the
+  critical prefix. Both turns beat the <10s target; turns 2+ are back
+  at the pre-persona 0.3-0.7s TTFT.
+- **65K worker ctx (measured for the operator; restored to 32768)** —
+  KV buffer 1.75 GiB @32K → 3.5 GiB @65K (+2.1 GB RSS); boot prewarm
+  identical (42.6s vs 43.8s); warm turns 1.9-6.2s; synthetic 17K-token
+  cold prefill 50.4s @65K. 65K costs ~2 GB RAM and nothing else at
+  today's prefix sizes.
+- **Bench gate** — full corpus A on E4B: **79/81 (98%), errors=0**
+  (run 20260705-195422), equal to the pre-lane baseline — the aux lane
+  did not change worker behaviour.
+
+## 2026-07-05 — chat-shell fixes + identity-vs-character standardization (0.6.0) [ux/agentic]
+
+Operator live look-check follow-ups (Swift chat window) + a design decision.
+
+- **Thinking chip is transient** — the Swift chat's "thinking…" chip used to
+  persist under every reply; it now behaves like typing dots (removed when
+  the turn ends), one chip per turn, id-tracked reply placeholder.
+- **Dark-canvas contrast** — the chat window pins itself to `darkAqua`
+  (titlebar title was near-black on the dark canvas); composer placeholder
+  and mic icon moved off system colours onto the Term palette.
+- **Slash commands over the bridge** — the `send` op pre-dispatches a leading
+  `/` through the TUI's slash registry (safe read-only subset: help/tools/
+  skills/facts/plugins/instance/instances/models/board/config); interactive
+  or TUI-bound commands answer with a pointer. Python stays the source of
+  truth; the shell renders the returned text.
+- **Reply telemetry (protocol v1 additive)** — `reply` frames optionally
+  carry `elapsed_s` / `ctx_used` / `ctx_max` (omitted when unknown; absent
+  keys keep decoding — pinned in `protocol_v1_fixtures.json` on both the
+  pytest and XCTest sides). Swift renders "replied in 3.2s" under each reply
+  and "ctx 18.3K/32.8K" in the status bar.
+- **`jaeger dev --tui` exit SIGABRT (F1)** — the module entry point
+  (`interfaces/tui/__main__.py`) now applies the same flush + `os._exit`
+  guard as `main.main()`; the dev launcher execs straight into it, so the
+  old guard never ran on that path.
+- **Identity vs character (operator decision)** — the AGENT NAME is
+  identity.yaml's, always ("a robot like Jarvis, but I will name him Ted");
+  the character supplies personality only and never overwrites the name.
+  `_identity_name` no longer reads the active character;
+  `JAEGER_BENCH_NEUTRAL_IDENTITY` is a no-op (kept for bench-runner
+  compat); the persona filter context injects "your name is <identity.name>;
+  you embody <character>'s persona". Bridge `identity` query returns
+  additive `agent_name`; the Swift chat header/status bar lead with the
+  agent name, character as secondary flavor ("Ted · playing HAL 9000").
+  The tray card (MenuCard — operator's file) still leads with the
+  character: data is exposed, swap is an operator follow-up.
+- **Bench gate (framework-prompt change)** — full corpus A on E4B:
+  **79/81 (98%)**, errors=0 (run 20260705-182745; fails: mt_file_round_2,
+  pf_macos_do). Meets the ≥79 baseline.
+- **Activity trace + turn separators (operator keepers)** —
+  `display.activity_trace` now also drives the Swift chat's tool/thought
+  chips (full/summary/clear/off); new `display.turn_separators` bool gates
+  the thin accent rule between turns. Both flow over the bridge config
+  query / save_config. HUD picker not built (operator's file).
+- **Latency regression MEASURED, not fixed (queued next)** — per-stage
+  probe on jros-dev/E4B (~20K-token prefix): with the persona filter ON,
+  EVERY turn pays ~41-44s TTFT (full re-prefill — the filter's clean-
+  context call evicts the single-slot KV between turns; the filter call
+  itself is only 1-5s). With `JAEGER_PERSONA_FILTER=0`, turns 2+ hit the
+  KV cache: TTFT 0.3-0.4s, totals 3-14s vs 42-48s. The f6d72fe follow-up
+  hypothesis is confirmed; skip-final finalizer likely contributes the
+  same way. Fix is the next work item — nothing restructured in this pass.
+
+## 2026-07-01..03 — agentic-quality sprint: persona, scoped surface, skill framework [agentic]
+
+E4B (gemma-4-e4b) accuracy + the tool/skill surface. All bench numbers are the
+dev bench (81-case corpus, `dev/benchmark/bench.py`), E4B, headless.
+
+- **Workers run vanilla (persona out of execution)** — an A/B/C bench measured
+  persona-in-worker taxing the 4B ~7-10% (vanilla 75.5 vs full 68). Execution
+  context is now persona-free; the character-voice output filter is **deferred
+  (planned)**, so worker replies currently have no persona voice.
+- **Lean scoped tool surface** — `list_tools`/`load_tools`/`describe_tool` +
+  a search-before-act mandate let the model scope its own toolset. **Opt-in,
+  default OFF** (`JAEGER_TOOLSET_SCOPING=0`). Measured: scoped 73/81 at ~460s
+  beats the full 96-tool surface (70) and is ~24% faster — the scaling path,
+  not yet the default.
+- **Gemma tool-call salvage** — Gemma-4 sometimes drops the closing
+  `<tool_call|>` token, stranding a real call as text. `dialects/gemma.py` gained
+  a tolerant fallback (only when the strict patterns match nothing).
+- **Skill framework overhaul** — all 90 skills scrubbed to an 8-point authoring
+  standard (`dev/docs/skill_standard.md`): correct + real tool names, boundary
+  descriptions, lean SOPs, lazy-loaded references. New `skill-builder` meta-skill
+  (create/review/improve SOP). Tool loader now reads `metadata.jros.tags`.
+  Regression caught + fixed: the Tier-2 rewrite subagents were given a tool list
+  built from a bare import (missing build-time tools like `delegate_task`) and
+  wrongly stripped `delegate_task` from 8 skills — restored.
+- **Symmetric tool/skill surface** — `skill`→`list_skills`, `load_toolset`→
+  `load_tools`, so it reads `list_tools`+`load_tools` / `list_skills`+`use_skill`.
+- **Bench:** E4B unscoped default lands in the **75-77/81** band (a record 77
+  before the skill overhaul; 75 after — two borderline cases flip
+  deterministically on the changed skill-index prompt: `skill_native_tier` and
+  `selfimprove_curate`, both cases where the agent does something defensible the
+  scorer doesn't credit). Harness false-negatives were also fixed (4 cases).
+
+**Planned / deferred (NOT done — do not assume shipped):**
+- The planning/runner lever that makes a `PLAN:` line OBLIGATE its stated first
+  action (recovers `native_tier` + `selfimprove_curate`).
+- Two-pass persona voice filter over the vanilla worker output.
+- Flipping the scoped surface on by default once the tool library is large enough.
+- 26B re-bench on the current stack (only E4B has been exercised lately).
 
 ---
 

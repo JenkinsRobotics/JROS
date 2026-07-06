@@ -67,6 +67,15 @@
       "error": "model exploded",
       "session": "desktop-app"
     },
+    "reply_telemetry": {
+      "type": "reply",
+      "text": "It's 3:48 PM PDT.",
+      "error": null,
+      "session": "desktop-app",
+      "elapsed_s": 3.21,
+      "ctx_used": 18300,
+      "ctx_max": 32768
+    },
     "result": {
       "type": "result",
       "id": "r1",

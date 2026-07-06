@@ -93,8 +93,26 @@ def tool_frame(name: str, phase: str, elapsed_s: float = 0.0,
 
 
 def reply_frame(text: str, error: str | None = None,
-                session: str = "") -> dict[str, Any]:
-    return {"type": "reply", "text": text, "error": error, "session": session}
+                session: str = "", *,
+                elapsed_s: float | None = None,
+                ctx_used: int | None = None,
+                ctx_max: int | None = None) -> dict[str, Any]:
+    """One finished turn. v1 ADDITIVE telemetry (optional — the keys are
+    OMITTED when unknown, and clients must decode frames without them):
+
+      ``elapsed_s``  wall-clock seconds the turn took ("replied in 3s")
+      ``ctx_used``   estimated prompt tokens the session occupies now
+      ``ctx_max``    the loaded model's context window ("ctx 18.3K/32.8K")
+    """
+    frame: dict[str, Any] = {"type": "reply", "text": text, "error": error,
+                             "session": session}
+    if elapsed_s is not None:
+        frame["elapsed_s"] = round(float(elapsed_s), 2)
+    if ctx_used is not None:
+        frame["ctx_used"] = int(ctx_used)
+    if ctx_max is not None:
+        frame["ctx_max"] = int(ctx_max)
+    return frame
 
 
 def request_frame(id: str, kind: str, prompt: str,

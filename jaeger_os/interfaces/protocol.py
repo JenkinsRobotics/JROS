@@ -48,7 +48,7 @@ CAPABILITIES: tuple[str, ...] = (
 
 def ready_frame(instance: str, model: str | None,
                 character: str | None = None, icon: str | None = None,
-                agent: str = "ready") -> dict[str, Any]:
+                agent: str = "ready", agent_name: str | None = None) -> dict[str, Any]:
     # ``character`` = the active character's display name; ``icon`` = an absolute
     # path to its profile image. Both let the native client show the agent's face
     # + name in the tray/header, matching the PySide6 UI.
@@ -62,17 +62,26 @@ def ready_frame(instance: str, model: str | None,
     return {"type": "ready", "proto": PROTOCOL_VERSION,
             "capabilities": list(CAPABILITIES),
             "instance": instance, "model": model,
-            "character": character, "icon": icon, "agent": agent}
+            "character": character, "icon": icon, "agent": agent,
+            "agent_name": agent_name}
 
 
 def agent_state_frame(state: str, model: str | None = None,
                       character: str | None = None, icon: str | None = None,
-                      error: str | None = None) -> dict[str, Any]:
+                      error: str | None = None,
+                      agent_name: str | None = None) -> dict[str, Any]:
     """The agent lifecycle, decoupled from transport readiness:
     ``booting`` → ``ready`` (model/character attached) or ``failed``
-    (``error`` says why; ``kind`` distinguishes a held instance lock)."""
+    (``error`` says why; ``kind`` distinguishes a held instance lock).
+
+    ``agent_name`` (v1 additive) is the AGENT's own name (identity.yaml — the
+    unique robot the operator named); ``character`` is the persona it plays.
+    Surfaces lead with ``agent_name`` so ``ready`` doesn't flash the character
+    name before the ``identity`` query resolves. ``icon`` is the effective
+    avatar (instance profile picture if set, else the character card)."""
     return {"type": "agent_state", "state": state, "model": model,
-            "character": character, "icon": icon, "error": error}
+            "character": character, "icon": icon, "error": error,
+            "agent_name": agent_name}
 
 
 def state_frame(busy: bool, session: str = "") -> dict[str, Any]:

@@ -10,7 +10,8 @@
       "model": null,
       "character": null,
       "icon": null,
-      "agent": "booting"
+      "agent": "booting",
+      "agent_name": null
     },
     "ready_warm": {
       "type": "ready",
@@ -18,9 +19,10 @@
       "capabilities": ["query", "command", "chat", "sessions", "permissions", "agent_state"],
       "instance": "jros-dev",
       "model": "gemma-4-E4B-it-Q4_K_M.gguf",
-      "character": "Jarvis",
-      "icon": "/tmp/jarvis.png",
-      "agent": "ready"
+      "character": "HAL 9000",
+      "icon": "/tmp/hal.png",
+      "agent": "ready",
+      "agent_name": "Jarvis"
     },
     "agent_state_booting": {
       "type": "agent_state",
@@ -28,15 +30,17 @@
       "model": null,
       "character": null,
       "icon": null,
-      "error": null
+      "error": null,
+      "agent_name": null
     },
     "agent_state_ready": {
       "type": "agent_state",
       "state": "ready",
       "model": "gemma-4-E4B-it-Q4_K_M.gguf",
-      "character": "Jarvis",
-      "icon": "/tmp/jarvis.png",
-      "error": null
+      "character": "HAL 9000",
+      "icon": "/tmp/hal.png",
+      "error": null,
+      "agent_name": "Jarvis"
     },
     "agent_state_failed": {
       "type": "agent_state",
@@ -44,7 +48,8 @@
       "model": null,
       "character": null,
       "icon": null,
-      "error": "model file missing"
+      "error": "model file missing",
+      "agent_name": null
     },
     "state_busy": { "type": "state", "busy": true, "session": "desktop-app" },
     "state_idle": { "type": "state", "busy": false, "session": "desktop-app" },

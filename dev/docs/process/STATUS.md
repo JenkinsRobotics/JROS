@@ -1,7 +1,11 @@
 # Jaeger-OS — Pipeline Runtime-Verification Status
 
-**Current: `0.7.2` (2026-07-07).** Scheduling SOP skill (first core-tool
-SKILL.md — SOPs for the remaining toolsets are an 0.8 pass **(planned)**);
+**Current: `0.7.2` (2026-07-07).** Native ONE-SHOT schedules —
+`schedule_prompt(in_minutes=…/at=…)` fires once then flips to `done`
+(cron `@once` sentinel; fixes "remind me in 1 minute" being created as a
+`*/1` every-minute cron — 5 new SQL tests); scheduling SOP skill (first
+core-tool SKILL.md — SOPs for the remaining toolsets are an 0.8 pass
+**(planned)**);
 v1-additive `detail` on `tool` frames so chat chips show WHICH skill loaded
 (fixture-pinned in both language suites, gated by the existing
 `show_tool_activity` setting); `./jaeger` from a tty now launches the app

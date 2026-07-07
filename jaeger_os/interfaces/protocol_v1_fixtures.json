@@ -5,7 +5,14 @@
     "ready": {
       "type": "ready",
       "proto": "1",
-      "capabilities": ["query", "command", "chat", "sessions", "permissions", "agent_state"],
+      "capabilities": [
+        "query",
+        "command",
+        "chat",
+        "sessions",
+        "permissions",
+        "agent_state"
+      ],
       "instance": "jros-dev",
       "model": null,
       "character": null,
@@ -16,7 +23,14 @@
     "ready_warm": {
       "type": "ready",
       "proto": "1",
-      "capabilities": ["query", "command", "chat", "sessions", "permissions", "agent_state"],
+      "capabilities": [
+        "query",
+        "command",
+        "chat",
+        "sessions",
+        "permissions",
+        "agent_state"
+      ],
       "instance": "jros-dev",
       "model": "gemma-4-E4B-it-Q4_K_M.gguf",
       "character": "HAL 9000",
@@ -51,8 +65,16 @@
       "error": "model file missing",
       "agent_name": null
     },
-    "state_busy": { "type": "state", "busy": true, "session": "desktop-app" },
-    "state_idle": { "type": "state", "busy": false, "session": "desktop-app" },
+    "state_busy": {
+      "type": "state",
+      "busy": true,
+      "session": "desktop-app"
+    },
+    "state_idle": {
+      "type": "state",
+      "busy": false,
+      "session": "desktop-app"
+    },
     "tool": {
       "type": "tool",
       "name": "web_search",
@@ -85,14 +107,21 @@
       "type": "result",
       "id": "r1",
       "ok": true,
-      "data": { "name": "Jaeger", "voice_enabled": true },
+      "data": {
+        "name": "Jaeger",
+        "voice_enabled": true
+      },
       "error": null
     },
     "result_settings_set": {
       "type": "result",
       "id": "r7",
       "ok": true,
-      "data": { "restart_required": true, "path": "model.ctx", "value": 16384 },
+      "data": {
+        "restart_required": true,
+        "path": "model.ctx",
+        "value": 16384
+      },
       "error": null
     },
     "request_approval": {
@@ -100,10 +129,17 @@
       "id": "perm1",
       "kind": "approval",
       "prompt": "Allow files.write_file?",
-      "options": ["allow", "deny"],
+      "options": [
+        "allow",
+        "deny"
+      ],
       "session": ""
     },
-    "fatal_boot": { "type": "fatal", "error": "model file missing", "kind": "boot" },
+    "fatal_boot": {
+      "type": "fatal",
+      "error": "model file missing",
+      "kind": "boot"
+    },
     "fatal_locked": {
       "type": "fatal",
       "error": "instance 'jros-dev' is locked by pid 4242 (still running).",
@@ -114,23 +150,81 @@
       "error": "no instance named 'default' exists yet — first-run setup required",
       "kind": "no_instance"
     },
-    "bye": { "type": "bye", "reason": "quit" }
+    "bye": {
+      "type": "bye",
+      "reason": "quit"
+    },
+    "tool_skill_detail": {
+      "type": "tool",
+      "name": "skill",
+      "phase": "start",
+      "elapsed_s": 0.0,
+      "session": "desktop-app",
+      "detail": "view scheduling"
+    }
   },
   "ops": {
-    "send": { "op": "send", "text": "hello", "session": "desktop-app" },
-    "respond": { "op": "respond", "id": "perm1", "answer": "allow" },
-    "quit": { "op": "quit" },
-    "query": { "op": "query", "id": "r1", "what": "config", "args": {} },
-    "command": { "op": "command", "id": "r2", "cmd": "select_character", "args": { "id": "jarvis" } },
-    "command_speak": { "op": "command", "id": "r3", "cmd": "speak", "args": { "text": "Good day." } },
-    "query_instance_exists": { "op": "query", "id": "r4", "what": "instance_exists", "args": {} },
-    "query_setup_defaults": { "op": "query", "id": "r5", "what": "setup_defaults", "args": {} },
-    "query_settings_catalog": { "op": "query", "id": "r7", "what": "settings_catalog", "args": {} },
+    "send": {
+      "op": "send",
+      "text": "hello",
+      "session": "desktop-app"
+    },
+    "respond": {
+      "op": "respond",
+      "id": "perm1",
+      "answer": "allow"
+    },
+    "quit": {
+      "op": "quit"
+    },
+    "query": {
+      "op": "query",
+      "id": "r1",
+      "what": "config",
+      "args": {}
+    },
+    "command": {
+      "op": "command",
+      "id": "r2",
+      "cmd": "select_character",
+      "args": {
+        "id": "jarvis"
+      }
+    },
+    "command_speak": {
+      "op": "command",
+      "id": "r3",
+      "cmd": "speak",
+      "args": {
+        "text": "Good day."
+      }
+    },
+    "query_instance_exists": {
+      "op": "query",
+      "id": "r4",
+      "what": "instance_exists",
+      "args": {}
+    },
+    "query_setup_defaults": {
+      "op": "query",
+      "id": "r5",
+      "what": "setup_defaults",
+      "args": {}
+    },
+    "query_settings_catalog": {
+      "op": "query",
+      "id": "r7",
+      "what": "settings_catalog",
+      "args": {}
+    },
     "command_settings_set": {
       "op": "command",
       "id": "r8",
       "cmd": "settings_set",
-      "args": { "path": "voice.speak_replies", "value": false }
+      "args": {
+        "path": "voice.speak_replies",
+        "value": false
+      }
     },
     "command_create_instance": {
       "op": "command",

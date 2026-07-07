@@ -96,9 +96,16 @@ def result_frame(req_id: Any, data: Any = None, ok: bool = True,
 
 
 def tool_frame(name: str, phase: str, elapsed_s: float = 0.0,
-               session: str = "") -> dict[str, Any]:
-    return {"type": "tool", "name": name, "phase": phase,
-            "elapsed_s": float(elapsed_s), "session": session}
+               session: str = "", *, detail: str = "") -> dict[str, Any]:
+    """``detail`` (v1 ADDITIVE, omitted when empty — clients must decode
+    frames without it): short human context for the activity chip. Today
+    only ``skill`` calls set it ("view scheduling"), so surfaces can show
+    WHICH skill loaded instead of a bare tool name."""
+    frame: dict[str, Any] = {"type": "tool", "name": name, "phase": phase,
+                             "elapsed_s": float(elapsed_s), "session": session}
+    if detail:
+        frame["detail"] = detail
+    return frame
 
 
 def reply_frame(text: str, error: str | None = None,
@@ -203,7 +210,8 @@ def event_to_frame(msg: Any) -> dict[str, Any] | None:
         return state_frame(getattr(msg, "state", "") == "thinking", session)
     if topic == "/sense/tool":
         return tool_frame(getattr(msg, "name", ""), getattr(msg, "phase", "start"),
-                          getattr(msg, "elapsed_s", 0.0), session)
+                          getattr(msg, "elapsed_s", 0.0), session,
+                          detail=getattr(msg, "detail", "") or "")
     if topic == "/sense/request":
         return request_frame(getattr(msg, "id", ""), getattr(msg, "kind", "approval"),
                              getattr(msg, "prompt", ""),

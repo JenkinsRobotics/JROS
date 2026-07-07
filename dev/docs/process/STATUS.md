@@ -1,7 +1,17 @@
 # Jaeger-OS — Pipeline Runtime-Verification Status
 
-**Current: `0.7.0` (2026-07-05).** Runtime-verified state as of the Swift-first
-+ two-runner line:
+**Current: `0.7.1` (2026-07-06).** Patch on the install/first-run flow, from
+a fresh-Mac walk of the one-line installer: end-user installs build the
+product `JaegerOS.app` (install.sh branches dev-checkout vs clean install —
+previously only the dev bundle was built, so first run fell back to the
+terminal wizard and dev next-steps leaked into the installer output); bare
+`./jaeger` and `jaeger agent create` are GUI-first (setup window) with
+`--tui`/headless keeping the terminal wizard; new single-file
+`clients/python/jros_client.py` (stdlib-only, fixture-pinned to protocol v1)
+for third-party Python apps + README integration section. `jaeger serve`
+(localhost HTTP/WS gateway) is 0.8 **(planned)**.
+
+Runtime-verified state as of the Swift-first + two-runner line:
 
 | Area | Runtime status |
 |---|---|

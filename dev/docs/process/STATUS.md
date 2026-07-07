@@ -1,6 +1,12 @@
 # Jaeger-OS — Pipeline Runtime-Verification Status
 
-**Current: `0.7.2` (2026-07-07).** Native ONE-SHOT schedules —
+**Current: `0.7.3` (2026-07-07).** `jaeger update` rebuilds `JaegerOS.app`
+after a download-update and after `--rollback` (the bundle is a build
+artifact the tarball can't carry — the 0.7.1→0.7.2 update on the operator's
+Mac left the app stale; 4 new tests). Clean installs are labelled
+`clean install (download + apply)` instead of `dev-checkout`.
+
+**`0.7.2` (2026-07-07).** Native ONE-SHOT schedules —
 `schedule_prompt(in_minutes=…/at=…)` fires once then flips to `done`
 (cron `@once` sentinel; fixes "remind me in 1 minute" being created as a
 `*/1` every-minute cron — 5 new SQL tests); scheduling SOP skill (first

@@ -1,6 +1,16 @@
 # Jaeger-OS — Pipeline Runtime-Verification Status
 
-**Current: `0.7.1` (2026-07-06).** Patch on the install/first-run flow, from
+**Current: `0.7.2` (2026-07-07).** Scheduling SOP skill (first core-tool
+SKILL.md — SOPs for the remaining toolsets are an 0.8 pass **(planned)**);
+v1-additive `detail` on `tool` frames so chat chips show WHICH skill loaded
+(fixture-pinned in both language suites, gated by the existing
+`show_tool_activity` setting); `./jaeger` from a tty now launches the app
+DETACHED (terminal closeable, log at `.jaeger_os/logs/JaegerOS.log`,
+`JAEGER_ATTACH=1` reverts; non-tty stays attached so the KeepAlive
+LaunchAgent still supervises). Live-verified: detached launch + clean kill,
+fixture suites green.
+
+**`0.7.1` (2026-07-06).** Patch on the install/first-run flow, from
 a fresh-Mac walk of the one-line installer: end-user installs build the
 product `JaegerOS.app` (install.sh branches dev-checkout vs clean install —
 previously only the dev bundle was built, so first run fell back to the

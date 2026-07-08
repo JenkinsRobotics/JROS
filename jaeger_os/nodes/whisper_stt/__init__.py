@@ -32,13 +32,14 @@ from __future__ import annotations
 
 from typing import Any
 
+from .config import WhisperSTTConfig
 from .engine import WhisperSTT, WhisperSTTContinuous, WhisperSTTTwoPass
 from .node import AudioSessionNode, STTAdapter, STTNode
 
 __all__ = [
     "AudioSessionNode", "STTNode", "STTAdapter",
     "WhisperSTT", "WhisperSTTTwoPass", "WhisperSTTContinuous",
-    "make_audio_session_node",
+    "WhisperSTTConfig", "make_audio_session_node",
 ]
 
 
@@ -52,11 +53,10 @@ def make_audio_session_node(bus: Any, config: dict[str, Any]) -> AudioSessionNod
     this factory; ``ensure_audio_session_node()``'s supervisor branch
     would call right back into ``supervisor.start("audio_session")``).
 
-    The audio session has heavy config (``AudioSessionConfig``
-    dataclass) that the runtime singleton expects; this still passes
-    ``AudioSessionConfig()`` defaults — routing the manifest's
-    config_key slice through the dataclass is 0.8 M2b Task B, not
-    this task.
+    0.8 M2b Task B: the ``AudioSessionConfig`` this builds is now
+    routed from real settings (``Config.whisper_stt`` + ``Config.voice``)
+    instead of construction defaults — see
+    ``runtime._load_audio_session_config``.
     """
     from jaeger_os.nodes.runtime import _build_audio_session_node
     return _build_audio_session_node(bus, config)

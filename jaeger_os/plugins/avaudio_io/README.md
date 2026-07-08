@@ -3,7 +3,7 @@
 PyObjC `AVAudioEngine` wrappers exposed with the **same call surface
 as sounddevice's** `InputStream` / `OutputStream` so they're a
 drop-in replacement at the existing call sites in
-`plugins/whisper_stt/_base.py` and `plugins/kokoro_tts/node.py`.
+`plugins/whisper_stt/_base.py` and `nodes/kokoro_tts/engine.py`.
 
 ## Why
 

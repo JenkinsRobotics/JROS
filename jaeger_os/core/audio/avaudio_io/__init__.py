@@ -34,7 +34,7 @@ API
 
 ::
 
-    from jaeger_os.plugins.avaudio_io import InputStream, OutputStream
+    from jaeger_os.core.audio.avaudio_io import InputStream, OutputStream
 
     # Same signature as ``sd.InputStream``:
     stream = InputStream(

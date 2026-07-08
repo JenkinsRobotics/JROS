@@ -38,10 +38,10 @@ Replacing **only the I/O layer** keeps everything else the same:
 Run the smoke suite:
 
 ```bash
-PYTHONPATH=<repo> .venv/bin/python -m jaeger_os.plugins.avaudio_io.smoke_test --input
-PYTHONPATH=<repo> .venv/bin/python -m jaeger_os.plugins.avaudio_io.smoke_test --output
-PYTHONPATH=<repo> .venv/bin/python -m jaeger_os.plugins.avaudio_io.smoke_test --loopback
-PYTHONPATH=<repo> .venv/bin/python -m jaeger_os.plugins.avaudio_io.smoke_test --aec
+PYTHONPATH=<repo> .venv/bin/python -m jaeger_os.core.audio.avaudio_io.smoke_test --input
+PYTHONPATH=<repo> .venv/bin/python -m jaeger_os.core.audio.avaudio_io.smoke_test --output
+PYTHONPATH=<repo> .venv/bin/python -m jaeger_os.core.audio.avaudio_io.smoke_test --loopback
+PYTHONPATH=<repo> .venv/bin/python -m jaeger_os.core.audio.avaudio_io.smoke_test --aec
 ```
 
 ## Status — what's NOT wired in yet (next session)
@@ -74,7 +74,7 @@ self._stream = sd.InputStream(
 
 # Becomes
 if audio_backend == "avaudio":
-    from jaeger_os.plugins.avaudio_io import InputStream
+    from jaeger_os.core.audio.avaudio_io import InputStream
     self._stream = InputStream(
         samplerate=sample_rate,
         channels=1,

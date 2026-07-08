@@ -174,7 +174,7 @@ class _MicStream:
             if voice_processing is None:
                 voice_processing = aec is None
             try:
-                from jaeger_os.plugins.avaudio_io import InputStream as _AVInputStream
+                from jaeger_os.core.audio.avaudio_io import InputStream as _AVInputStream
                 self._stream = _AVInputStream(
                     samplerate=sample_rate,
                     channels=1,

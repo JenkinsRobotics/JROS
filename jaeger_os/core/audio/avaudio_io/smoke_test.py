@@ -6,10 +6,10 @@ production call sites.
 
 Usage::
 
-    python -m jaeger_os.plugins.avaudio_io.smoke_test --input
-    python -m jaeger_os.plugins.avaudio_io.smoke_test --output
-    python -m jaeger_os.plugins.avaudio_io.smoke_test --loopback
-    python -m jaeger_os.plugins.avaudio_io.smoke_test --aec
+    python -m jaeger_os.core.audio.avaudio_io.smoke_test --input
+    python -m jaeger_os.core.audio.avaudio_io.smoke_test --output
+    python -m jaeger_os.core.audio.avaudio_io.smoke_test --loopback
+    python -m jaeger_os.core.audio.avaudio_io.smoke_test --aec
 
 ``--input``    capture from mic for 3 seconds, print sample stats
 ``--output``   play a 1-second 440 Hz sine through speakers

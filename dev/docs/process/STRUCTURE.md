@@ -196,7 +196,6 @@ jaeger_os/cli/
 jaeger_os/plugins/
 ├── kokoro_tts/        local TTS wrapper
 ├── whisper_stt/       local STT wrapper
-├── avaudio_io/        macOS AVAudioEngine bridge
 ├── discord/, telegram/, imessage/
 ├── mcp/               Model Context Protocol client
 ├── messaging_gateway.py

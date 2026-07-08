@@ -1,7 +1,7 @@
 """``InputStream`` — AVAudioEngine input-tap wrapper.
 
 Drop-in for ``sounddevice.InputStream`` so the call sites in
-``plugins/whisper_stt/_base.py`` can swap to Apple-native audio I/O
+``nodes/whisper_stt/engine/_base.py`` can swap to Apple-native audio I/O
 with a one-line constructor change.
 
 Shape matches sounddevice::

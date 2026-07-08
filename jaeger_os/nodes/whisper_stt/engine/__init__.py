@@ -1,4 +1,9 @@
-"""Whisper STT plugin — mic capture + VAD/energy-segmented transcription.
+"""Whisper STT engine — mic capture + VAD/energy-segmented transcription.
+
+The engine half of the ``jaeger_os.nodes.whisper_stt`` module (0.8
+M2b; folded in from ``jaeger_os/plugins/whisper_stt/``). ``registry.py``
+is the swap point ``core/audio/session.py``'s ``_build_adapter`` calls
+into by ``config.stt_mode`` name.
 
 Two algorithm modes, same public API:
   • WhisperSTTTwoPass     — VAD-segmented; fast model gates the accurate model

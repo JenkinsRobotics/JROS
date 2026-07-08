@@ -22,4 +22,4 @@ class WhisperSTTLocalAgreement:
     def __init__(self, *args, **kwargs) -> None:
         raise NotImplementedError(
             "local_agreement STT is a stub — not implemented yet. See "
-            "plugins/whisper_stt/local_agreement/pipeline.py for the plan.")
+            "nodes/whisper_stt/engine/local_agreement/pipeline.py for the plan.")

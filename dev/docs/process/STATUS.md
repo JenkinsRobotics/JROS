@@ -1,6 +1,30 @@
 # Jaeger-OS — Pipeline Runtime-Verification Status
 
-**Current: `0.7.3` (2026-07-07).** `jaeger update` rebuilds `JaegerOS.app`
+**Current: branch `0.8.0` in progress (2026-07-09) — the modular-runtime
+release.** Phase U (runtime unification): ONE bus (`app/bus/` deleted,
+chassis on `transport.InProcBus`), ONE Node class (`app/node.py` deleted),
+ONE runtime (bus instances merged via `runtime.set_bus`; the Supervisor owns
+the worker nodes; `/sense/transcript` is_final + `/sense/node_health`
+unified; base nodes heartbeat). Phase M (engine-modules — "the module IS the
+engine"): `nodes/kokoro_tts` (tts), `nodes/whisper_stt` (stt; audio_session
+node + whisper engine consolidated; supervisor path now honors
+`voice.wake_word` like the TUI always did), `nodes/animation` (avatar
+config_key mismatch fixed), `nodes/media`; each = module.yaml + own config
+leaf + tests; manifests bind by `slot=`; modules are removable (guarded
+imports, fail-closed availability, clean "no tts module installed" returns).
+M3: homeassistant/ai_gen tools gated (were fail-open), `avaudio_io` →
+`core/audio/`, messaging = first MULTI-module slot (discord/telegram/imessage
+module.yaml, `send_message` any-of fail-closed, `requires_platform`).
+Deployed-station fix: Swift app rebuilds are staleness-keyed
+(bundle build-commit stamp; git-clone `jaeger update` + launch now rebuild;
+missing app builds instead of being skipped forever) — flow-walked on a
+scratch station. Routing bench **81/81 (first perfect score)**; suites green
+per phase; every step subagent-reviewed. Mind↔Body capability layer:
+design drafted (`dev/docs/JROS_0.8_CAPABILITY_LAYER_DESIGN.md`) **(planned —
+awaiting operator review + JP01 3.0 live walk)**; hardware packages join the
+module system after the walk **(planned)**.
+
+**`0.7.3` (2026-07-07).** `jaeger update` rebuilds `JaegerOS.app`
 after a download-update and after `--rollback` (the bundle is a build
 artifact the tarball can't carry — the 0.7.1→0.7.2 update on the operator's
 Mac left the app stale; 4 new tests). Clean installs are labelled

@@ -47,7 +47,10 @@ Vocabulary (unified model — 2026-07-02):
   practice · hard enforcement (router/gate) for critical invariants · restore
   `skill_schema_v3.md`.
 - **Open decisions (need to discuss):** see the "Open decisions" section at the end.
-- **Done:** startup-log agentic-surface line.
+- **Done:** startup-log agentic-surface line · **P1+P2 (2026-07-08, commit 25d358c
+  'Skill evolution C'):** index → one-line pointer (−316 tok/turn), skill names
+  as a `use_skill` enum, `skill(list)` enriched (name·category·description·tier·
+  tools). Verified 2026-07-09: bench 80-81/81 with pull intact (6/6 skill_ok).
 
 ---
 
@@ -69,7 +72,7 @@ catches misses. **[confirmed as the model]**
 
 ---
 
-## ★ P1 — Skill discovery: push → pull (FIRST FOCUS)
+## ★ P1 — Skill discovery: push → pull ✅ DONE (25d358c; see header)
 
 **Problem.** The skill index is injected into the system prompt **every turn**
 (`playbook_skills.build_skill_index` → `_format_skill_index`), even for "hey what's
@@ -96,7 +99,7 @@ post-task gap check (P4) as the safety net.
 
 ---
 
-## P2 — Enriched `skill(list)` output (folds into P1)
+## P2 — Enriched `skill(list)` output ✅ DONE (folded into P1, 25d358c)
 
 `skill(list)` should render, per skill: **name · one-line description · tier ·
 fallback** — all from SKILL.md metadata (already parsed). Optionally filter by

@@ -150,6 +150,12 @@
       "error": "no instance named 'default' exists yet — first-run setup required",
       "kind": "no_instance"
     },
+    "fatal_no_instance_suggested": {
+      "type": "fatal",
+      "error": "no instance named 'lilith' exists yet — first-run setup required",
+      "kind": "no_instance",
+      "suggested_name": "lilith"
+    },
     "bye": {
       "type": "bye",
       "reason": "quit"

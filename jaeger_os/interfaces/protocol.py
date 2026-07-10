@@ -138,15 +138,26 @@ def request_frame(id: str, kind: str, prompt: str,
             "options": list(options), "session": session}
 
 
-def fatal_frame(error: str, kind: str = "boot") -> dict[str, Any]:
+def fatal_frame(error: str, kind: str = "boot",
+                *, suggested_name: str | None = None) -> dict[str, Any]:
     """Unrecoverable failure — the bridge exits after this. ``kind``:
     ``boot`` (agent failed to start), ``locked`` (another process holds
     this instance's lock — the client should offer attach-or-pick-another,
     not a generic error), or ``no_instance`` (v1 additive: the resolved
     instance doesn't exist on disk yet — first-run. The transport STAYS
     alive for queries/commands so a native client can run onboarding and
-    ``create_instance`` over the same pipe)."""
-    return {"type": "fatal", "error": error, "kind": kind}
+    ``create_instance`` over the same pipe).
+
+    ``suggested_name`` (v1 ADDITIVE, omitted when absent — clients must
+    decode frames without it): only sent alongside ``kind="no_instance"``,
+    the operator-pinned instance name (e.g. ``./jaeger agent create
+    lilith``'s ``JAEGER_INSTANCE_NAME`` pin) so onboarding can default the
+    identity step's name field to it instead of silently orphaning it
+    behind whatever character the operator picks."""
+    frame: dict[str, Any] = {"type": "fatal", "error": error, "kind": kind}
+    if suggested_name:
+        frame["suggested_name"] = suggested_name
+    return frame
 
 
 def bye_frame(reason: str = "quit") -> dict[str, Any]:

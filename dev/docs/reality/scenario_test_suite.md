@@ -202,7 +202,7 @@ The fused-vs-daemon column activates when the daemon tier lands (0.7); until the
 these run fused-only and the numbers become the baseline the daemon must match.
 
 ## Build status
-- **Harness BUILT** (Suites 1-2-3). See `dev/docs/scenario_bench.md` for the
+- **Harness BUILT** (Suites 1-2-3). See `dev/docs/reality/scenario_bench.md` for the
   two-benchmark overview (routing corpus vs scenario suite) and how to run it.
   - Scenarios encoded: `jaeger_os/core/bench/scenarios.py` — Suites 1 + 2 + 3
     as **36 scriptable [S] + 15 security [SEC]** `ScenarioCase`s (51 total)

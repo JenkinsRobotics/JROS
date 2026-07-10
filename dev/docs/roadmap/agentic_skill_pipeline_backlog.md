@@ -34,7 +34,7 @@ Vocabulary (unified model — 2026-07-02):
   recipes. `PlaybookSkill` parses name/category/description/tags/path/platforms/
   requires_tools/requires_toolsets/tier. (`fallback_for_tools` removed — it was
   inert. The two discovery loaders remain as an implementation detail; see
-  dev/docs/skill_unification.md for the physical-merge plan.)
+  dev/docs/history/skill_unification.md for the physical-merge plan.)
 
 ---
 
@@ -197,7 +197,7 @@ where the depth actually hurts — THEN flatten. Pairs with the reliability work
 
 ## Housekeeping
 
-- ~~`dev/docs/skill_schema_v3.md`~~ — **[done]** written.
+- ~~`dev/docs/history/skill_schema_v3-v1.md`~~ — **[done]** written.
 
 ---
 

@@ -132,4 +132,4 @@ fall-through.
 *Last updated: 0.6 — rewritten from the pre-0.2.6 three-layer model to the
 current two-bucket (framework + operator state) reality; see CHANGELOG 0.2.6 for
 the User-layer removal and the 2026-06-25 packaging note in
-`dev/docs/process/STATUS.md` for the editable-install model.*
+`dev/docs/reality/STATUS.md` for the editable-install model.*

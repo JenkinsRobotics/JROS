@@ -20,7 +20,7 @@ Deployed-station fix: Swift app rebuilds are staleness-keyed
 missing app builds instead of being skipped forever) — flow-walked on a
 scratch station. Routing bench **81/81 (first perfect score)**; suites green
 per phase; every step subagent-reviewed. Mind↔Body capability layer:
-design drafted (`dev/docs/JROS_0.8_CAPABILITY_LAYER_DESIGN.md`) **(planned —
+design drafted (`dev/docs/roadmap/JROS_0.8_CAPABILITY_LAYER_DESIGN.md`) **(planned —
 awaiting operator review + JP01 3.0 live walk)**; hardware packages join the
 module system after the walk **(planned)**.
 
@@ -223,7 +223,7 @@ dev bench (81-case corpus, `dev/benchmark/bench.py`), E4B, headless.
   `<tool_call|>` token, stranding a real call as text. `dialects/gemma.py` gained
   a tolerant fallback (only when the strict patterns match nothing).
 - **Skill framework overhaul** — all 90 skills scrubbed to an 8-point authoring
-  standard (`dev/docs/skill_standard.md`): correct + real tool names, boundary
+  standard (`dev/docs/reality/skill_standard.md`): correct + real tool names, boundary
   descriptions, lean SOPs, lazy-loaded references. New `skill-builder` meta-skill
   (create/review/improve SOP). Tool loader now reads `metadata.jros.tags`.
   Regression caught + fixed: the Tier-2 rewrite subagents were given a tool list
@@ -511,7 +511,7 @@ place**, keeping `.venv/` + `.jaeger_os/` untouched.
 ## 2026-06-26 — skill self-improvement loop (on by default) [agentic]
 
 Recipe-skills now improve over time, measured. Full design:
-`dev/docs/process/SKILL_EVOLUTION_PLAN.md`. **On by default (opt-out via
+`dev/docs/history/SKILL_EVOLUTION_PLAN.md`. **On by default (opt-out via
 `set_skill_review(False)`)** — the operator wants the agent to get better with
 use; it's safe by construction (sandboxed to `<instance>/skills/`, smoke-gated,
 benchmark-validated, revision-logged, append-only rollback).

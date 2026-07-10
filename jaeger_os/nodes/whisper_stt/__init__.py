@@ -10,7 +10,7 @@ registry that is the STT-mode swap point (``engine/registry.py``) —
 plus its ``module.yaml`` manifest (module/slot/version/consumes/
 produces/tools/factory/config/requires_libraries — the seam a future
 module-loader/discovery layer reads; see
-``dev/docs/JROS_0.8_M2b_WHISPER_STT_PLAN.md`` Task A).
+``dev/docs/history/JROS_0.8_M2b_WHISPER_STT_PLAN.md`` Task A).
 
 Folded in from ``jaeger_os/nodes/audio_session/`` (the generic node),
 ``jaeger_os/nodes/stt/`` (a pre-1.0 back-compat import shim), and

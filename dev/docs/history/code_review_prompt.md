@@ -20,14 +20,14 @@ There is a benchmark (`dev/benchmark/bench.py`, 81-case corpus in
    bug is a skill documenting a tool name that isn't actually registered → the model
    hallucinates that call. Tool names must be verified against the real registry (from a
    FULL agent boot, not a bare import — build-time tools like `delegate_task`/`clarify`
-   register in `main.py`). See `dev/docs/skill_standard.md` (the 8-point standard).
+   register in `main.py`). See `dev/docs/reality/skill_standard.md` (the 8-point standard).
 2. **Individual named tools beat action-dispatch umbrellas for a 4B.** Measured: one
    `kanban(action=…)` umbrella hurt routing vs five `board_add/view/move/update/delete`
    verbs; knowledge that would bloat an umbrella's `action` list goes in a SKILL instead.
    Umbrellas are OK only where they already route well (`memory`, `list_skills`).
 3. **Never game the benchmark.** Fix genuine scorer false-negatives (a correct answer
    marked wrong), never loosen a case to pass. Harden the agent, not the test.
-4. **Memory: SQL for long-term, JSON for short-term** (`dev/docs/memory_architecture.md`).
+4. **Memory: SQL for long-term, JSON for short-term** (`dev/docs/reality/memory_architecture.md`).
    Long-term facts are subject-attributed, provenance-tagged, and traceable over time.
 5. **Correctness over cleverness; delete dead code; no pre-1.0 back-compat shims.**
 6. **Bench-gate every behavior change; verify claims against real output, never fabricate.**

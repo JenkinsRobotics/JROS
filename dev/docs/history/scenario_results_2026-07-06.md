@@ -1,6 +1,6 @@
 # Scenario suite — live-run results (2026-07-06)
 
-Verification pass of `dev/docs/scenario_test_suite.md`, run through a **live
+Verification pass of `dev/docs/reality/scenario_test_suite.md`, run through a **live
 `jros-dev` agent session** (`boot_for_tui`, persona ON = HAL-9000 character,
 `permissions.mode: allow`, model `gemma-4-E4B-it-Q4_K_M`). Turns driven with
 `build_jaeger_agent` + `drive_one_turn` (same path `bench.py` uses), one fresh

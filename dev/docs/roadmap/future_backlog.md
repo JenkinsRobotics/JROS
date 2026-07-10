@@ -107,4 +107,4 @@ Worth importing, held to the JROS 8-point skill standard on the way in:
   un-migrated instance can exist (facts.py itself already removed).
 
 ## Scenario test suite (deferred — implement later)
-- dev/docs/scenario_test_suite.md — 25 operator-authored full-system real-world prompts (day-to-day + advanced), sorted scriptable/watch/security. NOT built; security gates are the priority slice when picked up.
+- dev/docs/reality/scenario_test_suite.md — 25 operator-authored full-system real-world prompts (day-to-day + advanced), sorted scriptable/watch/security. NOT built; security gates are the priority slice when picked up.

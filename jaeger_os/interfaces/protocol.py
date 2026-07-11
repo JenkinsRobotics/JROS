@@ -27,6 +27,36 @@ Frames are JSON objects, one per line (NDJSON):
 This module is the ONE place these shapes live: the bridge builds them, the
 client parses them, and the bus↔wire codec (``event_to_frame``) maps chassis
 messages onto them. ``PROTOCOL_VERSION`` bumps on any breaking change.
+
+``query``/``command`` are generic envelopes — ``what``/``cmd`` name the verb,
+``args`` carries its payload, and adding one is additive (no version bump,
+one branch in ``bridge.py``'s ``_query``/``_command``/``main``). The native
+History surface (runway item 4, 0.8) added three:
+
+  query   ``list_sessions`` {limit?}     -> [{id, title, preview,
+                                              created_at, last_active,
+                                              messages}, ...]
+  query   ``load_session``  {id}         -> [{role, text, ts}, ...]  (also
+                                             replays into the live agent —
+                                             see ``main.resume_session_from_store``)
+  command ``new_session``   {old_id?}    -> {id: <new session id>}  (evicts
+                                             old_id when given)
+
+In-app updates (0.8) added two more:
+
+  query   ``check_update``  {}          -> {current, latest, available,
+                                             notes_url}  (version_check.
+                                             cached_update_status — cached
+                                             ~6h under <instance>/run/, so a
+                                             tray poll is cheap; never
+                                             raises, degrades to
+                                             available:false offline)
+  command ``run_update``    {ref?}      -> {restart_required, returncode,
+                                             output}  (shells out to
+                                             `jaeger update`, the SAME
+                                             machinery the CLI verb runs;
+                                             refuses with an error while a
+                                             turn is in flight)
 """
 
 from __future__ import annotations
@@ -138,15 +168,26 @@ def request_frame(id: str, kind: str, prompt: str,
             "options": list(options), "session": session}
 
 
-def fatal_frame(error: str, kind: str = "boot") -> dict[str, Any]:
+def fatal_frame(error: str, kind: str = "boot",
+                *, suggested_name: str | None = None) -> dict[str, Any]:
     """Unrecoverable failure — the bridge exits after this. ``kind``:
     ``boot`` (agent failed to start), ``locked`` (another process holds
     this instance's lock — the client should offer attach-or-pick-another,
     not a generic error), or ``no_instance`` (v1 additive: the resolved
     instance doesn't exist on disk yet — first-run. The transport STAYS
     alive for queries/commands so a native client can run onboarding and
-    ``create_instance`` over the same pipe)."""
-    return {"type": "fatal", "error": error, "kind": kind}
+    ``create_instance`` over the same pipe).
+
+    ``suggested_name`` (v1 ADDITIVE, omitted when absent — clients must
+    decode frames without it): only sent alongside ``kind="no_instance"``,
+    the operator-pinned instance name (e.g. ``./jaeger agent create
+    lilith``'s ``JAEGER_INSTANCE_NAME`` pin) so onboarding can default the
+    identity step's name field to it instead of silently orphaning it
+    behind whatever character the operator picks."""
+    frame: dict[str, Any] = {"type": "fatal", "error": error, "kind": kind}
+    if suggested_name:
+        frame["suggested_name"] = suggested_name
+    return frame
 
 
 def bye_frame(reason: str = "quit") -> dict[str, Any]:

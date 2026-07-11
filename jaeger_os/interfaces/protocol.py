@@ -41,6 +41,22 @@ History surface (runway item 4, 0.8) added three:
                                              see ``main.resume_session_from_store``)
   command ``new_session``   {old_id?}    -> {id: <new session id>}  (evicts
                                              old_id when given)
+
+In-app updates (0.8) added two more:
+
+  query   ``check_update``  {}          -> {current, latest, available,
+                                             notes_url}  (version_check.
+                                             cached_update_status — cached
+                                             ~6h under <instance>/run/, so a
+                                             tray poll is cheap; never
+                                             raises, degrades to
+                                             available:false offline)
+  command ``run_update``    {ref?}      -> {restart_required, returncode,
+                                             output}  (shells out to
+                                             `jaeger update`, the SAME
+                                             machinery the CLI verb runs;
+                                             refuses with an error while a
+                                             turn is in flight)
 """
 
 from __future__ import annotations

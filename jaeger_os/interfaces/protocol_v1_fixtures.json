@@ -124,6 +124,29 @@
       },
       "error": null
     },
+    "result_check_update": {
+      "type": "result",
+      "id": "r12",
+      "ok": true,
+      "data": {
+        "current": "0.8.0",
+        "latest": "0.9.0",
+        "available": true,
+        "notes_url": "https://github.com/JenkinsRobotics/JROS/releases/tag/0.9.0"
+      },
+      "error": null
+    },
+    "result_run_update": {
+      "type": "result",
+      "id": "r13",
+      "ok": true,
+      "data": {
+        "restart_required": true,
+        "returncode": 0,
+        "output": "[jaeger update] now at 0.9.0. Restart `jaeger` to apply."
+      },
+      "error": null
+    },
     "request_approval": {
       "type": "request",
       "id": "perm1",
@@ -266,6 +289,18 @@
       "args": {
         "old_id": "a1b2c3d4"
       }
+    },
+    "query_check_update": {
+      "op": "query",
+      "id": "r12",
+      "what": "check_update",
+      "args": {}
+    },
+    "command_run_update": {
+      "op": "command",
+      "id": "r13",
+      "cmd": "run_update",
+      "args": {}
     }
   }
 }

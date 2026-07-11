@@ -27,6 +27,20 @@ Frames are JSON objects, one per line (NDJSON):
 This module is the ONE place these shapes live: the bridge builds them, the
 client parses them, and the bus↔wire codec (``event_to_frame``) maps chassis
 messages onto them. ``PROTOCOL_VERSION`` bumps on any breaking change.
+
+``query``/``command`` are generic envelopes — ``what``/``cmd`` name the verb,
+``args`` carries its payload, and adding one is additive (no version bump,
+one branch in ``bridge.py``'s ``_query``/``_command``/``main``). The native
+History surface (runway item 4, 0.8) added three:
+
+  query   ``list_sessions`` {limit?}     -> [{id, title, preview,
+                                              created_at, last_active,
+                                              messages}, ...]
+  query   ``load_session``  {id}         -> [{role, text, ts}, ...]  (also
+                                             replays into the live agent —
+                                             see ``main.resume_session_from_store``)
+  command ``new_session``   {old_id?}    -> {id: <new session id>}  (evicts
+                                             old_id when given)
 """
 
 from __future__ import annotations

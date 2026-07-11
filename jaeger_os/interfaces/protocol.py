@@ -190,6 +190,17 @@ def fatal_frame(error: str, kind: str = "boot",
     return frame
 
 
+def queued_frame(session: str, position: int) -> dict[str, Any]:
+    """v1 ADDITIVE (0.8.1 item 9): a ``send`` landed while a turn was already
+    in flight. The bridge NEVER drops it — one worker thread drains a FIFO
+    queue, so a send that arrives mid-turn just runs as the next normal
+    turn (its own ``state``/``reply`` frames follow once it's up). This
+    frame is purely a VISIBILITY signal so a client can render "queued"
+    instead of assuming nothing happened. ``position`` counts THIS
+    session's outstanding queued sends including this one (1 = next up)."""
+    return {"type": "queued", "session": session, "position": int(position)}
+
+
 def bye_frame(reason: str = "quit") -> dict[str, Any]:
     """Clean-shutdown marker: emitted right before the bridge exits on a
     ``quit`` op (or EOF), so the client can tell an ORDERLY exit from a

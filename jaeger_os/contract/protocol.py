@@ -1,5 +1,10 @@
 """JROS client protocol — the single wire contract for surfaces.
 
+Lives in ``jaeger_os.contract`` (0.9 contract package) — frame shapes are
+wire truth, not interface implementation. ``protocol_v1_fixtures.json``
+lives beside this file; ``jaeger_os.interfaces.bridge`` builds these frames
+and ``jaeger_os.interfaces.client.JrosClient`` parses them.
+
 "Transports, not endpoints": one protocol, many transports. The Swift app
 speaks it over stdio (``jaeger bridge``); the MCP server, a web backend, or
 any third-party client speaks the *same* frames over the *same* SDK

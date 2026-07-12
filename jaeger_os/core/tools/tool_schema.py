@@ -184,7 +184,7 @@ class ToolDef:
         case but not the array-wrap or JSON-decode cases, both of
         which Gemma / Qwen / GLM hit routinely.
         """
-        from jaeger_os.agent.parsing.arg_coercion import coerce_args
+        from jaeger_os.core.tools.arg_coercion import coerce_args
         coerced = coerce_args(raw_args, self.args_model.model_json_schema())
         validated = self.args_model.model_validate(coerced)
         return self.fn(**validated.model_dump())

@@ -24,7 +24,7 @@ from typing import Any, Callable, get_type_hints
 
 from pydantic import BaseModel, ConfigDict, Field, create_model
 
-from jaeger_os.agent.schemas.tool_schema import ToolDef
+from jaeger_os.core.tools.tool_schema import ToolDef
 
 
 _registry: dict[str, ToolDef] = {}

@@ -3,6 +3,32 @@
 JROS follows pragmatic semver — major.minor.patch — with the
 understanding that pre-1.0 minor bumps may carry breaking changes.
 
+## `0.8.2` — the handoff release
+
+The terminal release on this channel. JROS split into the JaegerAI
+ecosystem (JaegerOS + JaegerAI + JaegerKokoroTTS + JaegerWhisperSTT) at
+0.9.0; this release teaches `jaeger update` to carry a deployed 0.8.x
+station across, in place, keeping every byte of instance state.
+
+`jaeger update` now detects the ecosystem (JaegerAI reachable, tag
+>=0.9.0) and offers to migrate: an explicit confirm by default, `--migrate`
+to run it non-interactively, `--stay` to suppress the offer and run the
+ordinary legacy update. Migration downloads JaegerAI@ref, swaps the
+product in place (the OLD product — `jaeger_os/`, `install.sh`, etc. —
+moves wholesale into `.update-prev/`, same as an ordinary update),
+rebuilds `.venv/` from scratch, and hands off to JaegerAI's own
+`install.sh` for deps + app build. `.jaeger_os/` (identity, memory,
+credentials, models — every instance) is named in neither product's
+manifest and is therefore never touched by any code path in the
+migration — verified in the walk by a checksum sample before/after.
+`jaeger update --rollback` — unmodified, now running from the newly
+installed `jaeger_ai` package's own copy — restores the legacy stack
+wholesale, because it already reverses `.update-prev/` generically by
+name, not by knowing what a "JROS update" looks like. See MIGRATION.md
+for the full design, the exact commands that run, and the one known
+cosmetic gap (a harmless leftover `jaeger_ai/` directory after a
+rollback — documented, not a functional issue).
+
 ## `0.8.1` — the field-test patch
 
 Eleven fixes, every one traced to release-day field testing on a deployed

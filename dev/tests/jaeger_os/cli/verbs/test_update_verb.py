@@ -17,6 +17,16 @@ import pytest
 from jaeger_os.cli.verbs import update_verb as U
 
 
+# 0.8.2: every _cmd_update_argv call now probes the JaegerAI ecosystem
+# migration offer first. Default it OFF (no network, no offer printed) so
+# every pre-existing test below keeps exercising ONLY the legacy update
+# flow it was written for; the migrate-specific tests re-enable it
+# explicitly. See test_migrate_verb.py for the migration path itself.
+@pytest.fixture(autouse=True)
+def _no_ecosystem_offer(monkeypatch):
+    monkeypatch.setattr(U, "_check_ecosystem_available", lambda: None)
+
+
 # ── helpers ────────────────────────────────────────────────────────
 
 
@@ -612,3 +622,100 @@ def test_run_update_subprocess_missing_binary_never_raises(tmp_path, monkeypatch
     res = U.run_update_subprocess()
     assert res == {"ok": False, "returncode": None, "output": "",
                     "restart_required": False, "error": "no such file"}
+
+
+# ── ecosystem-migration offer wiring (0.8.2) ────────────────────────
+#
+# migrate_verb's own logic (check_ecosystem_available, the swap, the
+# install.sh handoff) is unit-tested in test_migrate_verb.py; these
+# tests only cover _cmd_update_argv's OFFER — confirm/--migrate/--stay
+# routing to migrate_verb.run_ecosystem_migration, kept out of the
+# legacy-flow tests above via the _no_ecosystem_offer fixture.
+
+
+def _no_stale(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("JAEGER_HOME", str(tmp_path))
+    monkeypatch.delenv("JAEGER_INSTANCE_DIR", raising=False)
+
+
+def test_migrate_flag_runs_migration_when_available(tmp_path, monkeypatch, capsys):
+    _no_stale(tmp_path, monkeypatch)
+    monkeypatch.setattr(U, "_check_ecosystem_available", lambda: "0.9.0")
+    (tmp_path / "jaeger_os").mkdir()
+    monkeypatch.setattr(
+        "jaeger_os.core.instance.instance.PACKAGE_ROOT", tmp_path / "jaeger_os")
+    calls: list = []
+    from jaeger_os.cli.verbs import migrate_verb
+    monkeypatch.setattr(migrate_verb, "run_ecosystem_migration",
+                        lambda home, *, ref=None: (calls.append((home, ref)), 0)[1])
+    code = U._cmd_update_argv(["--migrate"])
+    assert code == 0
+    assert calls == [(tmp_path, "0.9.0")]
+
+
+def test_no_flags_prompts_and_declines_noninteractively(tmp_path, monkeypatch, capsys):
+    """No --migrate/--stay + not a tty → _ask_yn's non-interactive default
+    (False) applies: the offer is printed but migration does NOT run, and
+    the ordinary legacy update flow continues."""
+    _no_stale(tmp_path, monkeypatch)
+    monkeypatch.setattr(U, "_check_ecosystem_available", lambda: "0.9.0")
+    (tmp_path / "jaeger_os").mkdir()
+    monkeypatch.setattr(
+        "jaeger_os.core.instance.instance.PACKAGE_ROOT", tmp_path / "jaeger_os")
+    from jaeger_os.cli.verbs import migrate_verb
+    ran: list = []
+    monkeypatch.setattr(migrate_verb, "run_ecosystem_migration",
+                        lambda home, *, ref=None: ran.append(1) or 0)
+    monkeypatch.setattr(U, "_detect_method", lambda: "pip")
+    monkeypatch.setattr(U, "_upgrade_command", lambda m: None)
+    code = U._cmd_update_argv([])
+    assert code == 0
+    assert ran == []
+    out = capsys.readouterr().out
+    assert "JaegerAI ecosystem" in out
+    assert "staying on the legacy JROS channel" in out
+
+
+def test_stay_flag_suppresses_offer_entirely(tmp_path, monkeypatch, capsys):
+    _no_stale(tmp_path, monkeypatch)
+    # Even if the ecosystem WERE available, --stay must never even ask.
+    probed: list = []
+
+    def _probe():
+        probed.append(1)
+        return "0.9.0"
+
+    monkeypatch.setattr(U, "_check_ecosystem_available", _probe)
+    (tmp_path / "jaeger_os").mkdir()
+    monkeypatch.setattr(
+        "jaeger_os.core.instance.instance.PACKAGE_ROOT", tmp_path / "jaeger_os")
+    monkeypatch.setattr(U, "_detect_method", lambda: "pip")
+    monkeypatch.setattr(U, "_upgrade_command", lambda m: None)
+    code = U._cmd_update_argv(["--stay"])
+    assert code == 0
+    assert probed == []                       # never even checked
+    assert "JaegerAI ecosystem" not in capsys.readouterr().out
+
+
+def test_check_reports_ecosystem_available_without_migrating(tmp_path, monkeypatch, capsys):
+    _no_stale(tmp_path, monkeypatch)
+    monkeypatch.setattr(U, "_check_ecosystem_available", lambda: "0.9.0")
+    (tmp_path / "jaeger_os").mkdir()
+    monkeypatch.setattr(
+        "jaeger_os.core.instance.instance.PACKAGE_ROOT", tmp_path / "jaeger_os")
+    from jaeger_os.cli.verbs import migrate_verb
+    ran: list = []
+    monkeypatch.setattr(migrate_verb, "run_ecosystem_migration",
+                        lambda home, *, ref=None: ran.append(1) or 0)
+    code = U._cmd_update_argv(["--check"])
+    assert code == 0                          # no stale instances
+    assert ran == []                          # --check never runs it
+    out = capsys.readouterr().out
+    assert "jaeger update --migrate" in out
+
+
+def test_help_mentions_migrate_and_stay(capsys):
+    assert U._cmd_update_argv(["--help"]) == 0
+    err = capsys.readouterr().err
+    assert "--migrate" in err and "--stay" in err and "MIGRATION.md" in err

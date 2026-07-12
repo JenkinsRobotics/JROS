@@ -99,10 +99,14 @@ def _download_tarball(repo: str, ref: str, dest: Path) -> None:
         dest.write_bytes(resp.read())
 
 
-def _extract_product(tarball: Path, staging: Path) -> list[str]:
-    """Extract ``tarball`` and copy the PRODUCT items into ``staging``. The
-    archive's single top-level dir (``JROS-<ref>``) is detected, not assumed.
-    Returns the product items actually present in the archive."""
+def _extract_product(tarball: Path, staging: Path,
+                     product: tuple[str, ...] = _PRODUCT) -> list[str]:
+    """Extract ``tarball`` and copy the ``product`` allowlist's items into
+    ``staging``. The archive's single top-level dir (``JROS-<ref>`` or, for
+    the ecosystem migration, ``JaegerAI-<ref>``) is detected, not assumed.
+    Returns the items actually present in the archive. ``product`` defaults
+    to this install's own allowlist; ``migrate_verb`` passes JaegerAI's
+    instead so the SAME extraction logic serves both product families."""
     staging.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory() as tmp:
         with tarfile.open(tarball) as tf:
@@ -113,7 +117,7 @@ def _extract_product(tarball: Path, staging: Path) -> list[str]:
                 f"unexpected archive layout: {[p.name for p in tops]}")
         root = tops[0]
         copied: list[str] = []
-        for item in _PRODUCT:
+        for item in product:
             src = root / item
             if not src.exists():
                 continue
@@ -478,25 +482,59 @@ def _resolve_ref(ref: str | None, channel: str) -> str | None:
     return os.environ.get("JAEGER_REF", "").strip() or None
 
 
+def _check_ecosystem_available() -> str | None:
+    """Newest JaegerAI ecosystem tag (>=0.9.0), or None if unreachable /
+    not yet released / declined via ``--stay``. A thin, easily-mocked
+    indirection to :mod:`migrate_verb` — imported lazily (it imports this
+    module for the shared tarball/swap machinery) and kept out of the
+    hot path of every test that doesn't care about the migration offer."""
+    from jaeger_os.cli.verbs import migrate_verb
+    return migrate_verb.check_ecosystem_available()
+
+
+def _confirm_migration(ref: str) -> bool:
+    """Explicit-confirm prompt for the ecosystem migration — defaults to
+    declining (``False``) both on Enter and when stdin isn't a tty, so an
+    unattended ``jaeger update`` (cron, the in-app Updates tray) never
+    migrates a station without either an interactive yes or ``--migrate``."""
+    print()
+    print(f"[jaeger update] The JaegerAI ecosystem ({ref}) is available — "
+          f"JROS has split into JaegerOS + JaegerAI + voice-engine "
+          f"packages. 0.8.2 is the terminal JROS release on this "
+          f"channel; JaegerAI is where future updates land.")
+    print("[jaeger update] Migration swaps the product in place — your "
+          ".jaeger_os/ instance data (identity, memory, credentials, "
+          "models) is never touched — and keeps the old stack in "
+          ".update-prev/ for `jaeger update --rollback`. See MIGRATION.md.")
+    return _ask_yn(f"Migrate this station to JaegerAI {ref} now?", False)
+
+
 def _cmd_update_argv(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(prog="jaeger update", add_help=False)
     parser.add_argument("--check", action="store_true",
                         help="don't upgrade or migrate — print plan + exit")
     parser.add_argument("--no-migrate", action="store_true",
                         help="run the framework upgrade but skip migration scan")
+    parser.add_argument("--migrate", action="store_true",
+                        help="ecosystem migration: run it non-interactively "
+                             "when the JaegerAI ecosystem is available")
+    parser.add_argument("--stay", action="store_true",
+                        help="suppress the ecosystem-migration offer; run "
+                             "the ordinary legacy framework update")
     parser.add_argument("--ref", default=None,
                         help="exact version/tag/branch to install (overrides --channel)")
     parser.add_argument("--channel", choices=("stable", "latest"), default="stable",
                         help="stable = newest release tag (default); "
                              "latest = development HEAD (master)")
     parser.add_argument("--rollback", action="store_true",
-                        help="revert the last download-update (clean installs)")
+                        help="revert the last download-update (clean installs) "
+                             "— also reverts a completed ecosystem migration")
     parser.add_argument("-h", "--help", action="store_true")
     args = parser.parse_args(argv)
     if args.help:
         print(
-            "usage: jaeger update [--check] [--no-migrate] [--channel stable|latest]\n"
-            "                     [--ref TAG] [--rollback]\n"
+            "usage: jaeger update [--check] [--no-migrate] [--migrate | --stay]\n"
+            "                     [--channel stable|latest] [--ref TAG] [--rollback]\n"
             "\n"
             "  Upgrade the framework via the detected install method, then\n"
             "  prompt to back up and migrate each stale instance.\n"
@@ -506,7 +544,15 @@ def _cmd_update_argv(argv: list[str]) -> int:
             "  (master / development HEAD). --ref pins an exact tag/branch/sha\n"
             "  and overrides --channel; $JAEGER_REF is honoured when neither is\n"
             "  set. --rollback reverts the previous download-update. Dev clones\n"
-            "  fast-forward via git.\n",
+            "  fast-forward via git.\n"
+            "\n"
+            "  0.8.2 (this release) also offers the JaegerAI ecosystem\n"
+            "  migration when it's reachable: --migrate runs it non-\n"
+            "  interactively, --stay declines and runs the ordinary update.\n"
+            "  With neither flag you're asked to confirm. --rollback also\n"
+            "  reverts a completed migration back to the legacy stack. See\n"
+            "  MIGRATION.md. (--no-migrate is unrelated — it only skips the\n"
+            "  per-instance schema-migration scan below.)\n",
             file=sys.stderr,
         )
         return 0
@@ -515,14 +561,32 @@ def _cmd_update_argv(argv: list[str]) -> int:
         from jaeger_os.core.instance.instance import PACKAGE_ROOT
         return _do_rollback(PACKAGE_ROOT.parent)
 
+    from jaeger_os.core.instance.instance import PACKAGE_ROOT
+    home = PACKAGE_ROOT.parent
+
+    ecosystem_ref = None if args.stay else _check_ecosystem_available()
+    if ecosystem_ref:
+        if args.check:
+            print(f"[jaeger update] JaegerAI ecosystem available: "
+                  f"{ecosystem_ref} — run `jaeger update --migrate` to move "
+                  f"this station, or `jaeger update --stay` to suppress "
+                  f"this offer. See MIGRATION.md.")
+        else:
+            proceed = args.migrate or _confirm_migration(ecosystem_ref)
+            if proceed:
+                from jaeger_os.cli.verbs import migrate_verb
+                return migrate_verb.run_ecosystem_migration(
+                    home, ref=ecosystem_ref)
+            print("[jaeger update] staying on the legacy JROS channel "
+                  "(`jaeger update --migrate` any time).")
+
     method = _detect_method()
     # ``dev-checkout`` is the detector's name for ANY source-tree run,
     # but a clean curl install has no .git and updates by tarball —
     # label it honestly so operators don't think they're on a git clone.
     label = method
     if method == "dev-checkout":
-        from jaeger_os.core.instance.instance import PACKAGE_ROOT
-        if not (PACKAGE_ROOT.parent / ".git").exists():
+        if not (home / ".git").exists():
             label = "clean install (download + apply)"
     print(f"[jaeger update] install method: {label}")
 

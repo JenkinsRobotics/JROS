@@ -181,9 +181,134 @@ Mirrors the source split exactly (each test dir mirrors its `jaeger_os/` counter
 
 ---
 
+## 7. Staging findings (Phase B evidence — corrects §2/§3 above)
+
+Per `THREE_TIER_STRUCTURE.md`'s own header ("When this doc and reality
+disagree, reality wins and this doc gets edited"): running the actual
+`git filter-repo` extraction and an import-level AST scan against the
+JaegerOS candidate tree (not just docstring reading) found real
+corrections and one genuine architecture wall. JaegerOS is now staged,
+packaged, and **gated GREEN standalone** (see `.superpowers/sdd/094-split-report.md`
+for the full run); these are the deltas from §1-§3 above:
+
+1. **`cli/` moves ENTIRELY to JaegerAI** — §3's "framework runtime verbs"
+   split does not survive contact with the code. Every verb that does
+   anything real (`status_cmd.py`, `config_cmd.py`, `runtime_cmd.py`,
+   `_common.py`, every `verbs/*.py`) imports `jaeger_os.core.instance.*`
+   (Config/schemas/instance layout — JaegerAI-owned) at module level.
+   There is no layering-clean framework-only CLI subset in the current
+   code. `devtools.py` was also mis-scoped in §3 — it's the product's
+   dev-shell (Swift/PySide6 app launcher, kokoro/whisper package
+   diagnostics), not a framework verb. This resolves OPERATOR-DECISION
+   #1 below: there's no composition question anymore, JaegerOS ships
+   no CLI, no `jaeger` script, at all.
+2. **`core/context.py` → JaegerAI** (was a "soft flag, provisionally
+   JaegerOS" in §2). Module-level `from jaeger_os.core.instance.instance
+   import InstanceLayout` — unconditional, not a lazy/guarded import
+   like the rest of the module system's cross-tier references. Not
+   importable standalone in JaegerOS.
+3. **`core/diagnostics/probe.py` → JaegerAI**, joining `doctor.py`.
+   Every one of its 8 "framework substrate" checks lazily calls
+   `agent.tools.*` / `agent.skill_registry` / `jaeger_os.main._pipeline`
+   — it's a live agent-loop probe, not framework substrate, despite its
+   docstring's framing.
+4. **`core/instance/setting_meta.py` (+ its `__init__.py` package
+   marker) → JaegerOS**, the one file pulled OUT of the otherwise
+   JaegerAI-owned `core/instance/`. Its own docstring: split out in 0.8
+   M1 specifically "so an engine-module's own config slice... can carry
+   catalog metadata WITHOUT importing schemas.py" — zero `jaeger_os`
+   dependencies (verified). Both `nodes/kokoro_tts/config.py` and
+   `nodes/whisper_stt/config.py` import it at module level; per the
+   operator's "engines pin JaegerOS only" rule it has to live there.
+5. **`nodes/runtime.py`, `nodes/__init__.py`, `core/voice/*` stay
+   JaegerOS as named** — their cross-tier references (to
+   `core.instance.schemas.Config`, `jaeger_os.main._pipeline`,
+   `skill_tree`, `personality.character`, `agent.dialects`) are ALL
+   function-local/lazy, matching the existing graceful-degradation
+   pattern already built for kokoro/whisper module removal (M2a/M2b).
+   Verified importable standalone; the affected *behavior* (voice
+   selection honoring the active character, language from instance
+   Config) degrades to a fallback default without the Mind installed,
+   which is correct headless-body behavior, not a bug.
+6. **Test-level corrections** (18 test functions moved from JaegerOS's
+   `dev/tests` copy to JaegerAI's): `test_modules.py` (11),
+   `test_app_format.py` (4), `test_file_safety.py` (2),
+   `test_voice_helpers.py` (1) — each asserts behavior against the
+   REAL assembled product's module tree (kokoro_tts/animation/mind
+   discoverable on disk) or a JaegerAI-owned symbol, which by
+   definition can't pass in a standalone JaegerOS checkout. The
+   underlying mechanism (`discover_modules()`, `app.py`'s slot
+   resolution, `file_safety`'s blocklist) still has full coverage —
+   just via JaegerOS's synthetic-fixture tests, not the real-tree ones.
+7. **`dev/tests/conftest.py` needs a per-repo prune, not a straight
+   copy** (§1 undersold this as just "trim markers"): the monorepo's
+   copy has two fixtures (`_full_tool_registry_snapshot`,
+   `_restore_tool_registry`, the second `autouse=True`) that hard-import
+   `jaeger_os.agent.tools` with no guard — would fail EVERY test's setup
+   in a JaegerOS-only run. Removed in JaegerOS's copy (they exist to
+   manage agent-loop state across tests, meaningless without a Mind).
+
+### The wall: four repos currently share one Python top-level package name
+
+**This is the one item this pass could not resolve by file placement,
+and did not improvise a fix for.** All four split targets currently
+live under the single import path `jaeger_os.*` (a monorepo artifact —
+`jaeger_os/nodes/kokoro_tts/`, `jaeger_os/agent/`, etc., all share the
+literal top-level package `jaeger_os`). Verified empirically in a
+combined venv (`jaeger-os` + a throwaway `jaeger-kokoro-tts` package,
+both `pip install -e`'d): two setuptools editable-install distributions
+that both declare the regular (non-namespace) package `jaeger_os` do
+NOT merge — `packages.find(include=["jaeger_os*"])` on the engine side
+produces its own conflicting claim on the whole `jaeger_os` name, and
+resolution becomes undefined/foreign (observed importing a THIRD,
+unrelated `jaeger_os` off disk in one run). This is a fundamental
+Python packaging constraint (PEP 420 namespace-package merging only
+works when NO contributing distribution has a real `__init__.py` at
+the shared prefix), not a tooling bug — and JaegerOS's `jaeger_os/__init__.py`
+(`__version__`) and `jaeger_os/nodes/__init__.py` (Node re-exports +
+the kokoro/whisper guarded-import shim) both carry real code.
+
+This blocks the FULL ASSEMBLED PRODUCT (JaegerAI + JaegerKokoroTTS +
+JaegerWhisperSTT + JaegerOS all installed together in one venv) —
+which is exactly what Phase C's gate 2 (instance-boot-identical) and
+the engine repos' "standalone CLI smoke" need. It does NOT block
+JaegerOS alone (proven green). Two real fixes, both real code changes
+across multiple repos, neither attempted here:
+
+- **(a) Rename.** JaegerAI's package becomes e.g. `jaeger_ai` (not
+  `jaeger_os`); the engine packages become `jaeger_kokoro_tts` /
+  `jaeger_whisper_stt` (their OWN top-level names, not nested under
+  `jaeger_os.nodes.*`). Requires rewriting every `jaeger_os.<AI-owned>`
+  import across ~1600 JaegerAI files (mechanical, scriptable) PLUS
+  converting `nodes/runtime.py`'s and `nodes/__init__.py`'s hardcoded
+  `from jaeger_os.nodes.kokoro_tts import ...` / `whisper_stt` imports
+  (found during staging, §1's "hard call" list didn't anticipate this)
+  to go through `discover_modules()` / entry-point-style dynamic
+  loading instead — the dotted path they currently hardcode won't
+  exist post-rename.
+- **(b) True namespace packaging.** Keep the `jaeger_os.*` surface
+  literally shared; make `jaeger_os/__init__.py` and
+  `jaeger_os/nodes/__init__.py` pure-namespace (zero code) in EVERY
+  repo that touches them, relocating their current real content
+  (version string, fork-safety env var, the Node/adapter re-exports)
+  to specifically-named leaf modules. Touches JaegerOS's own contract
+  for what its package root is allowed to contain.
+
+Neither is a staging-time file move; both are real, cross-repo code
+changes that need the operator's call before any repo pushes.
+
 ## Summary — OPERATOR-DECISION items (not guessed, need the operator's word)
 
-1. **`cli/entry.py` composition shape** (§3): JaegerAI imports JaegerOS's verb modules directly and owns the sole `jaeger` console-script (used as staging default) vs. JaegerOS also shipping its own minimal command for non-AI bodies. Both defensible; nothing in-repo picks one.
+0. **[BLOCKING] The shared-`jaeger_os`-package-name wall (§7).** Rename
+   (JaegerAI → `jaeger_ai`, engines → `jaeger_kokoro_tts`/`jaeger_whisper_stt`,
+   plus converting `nodes/runtime.py`'s hardcoded engine imports to
+   dynamic `discover_modules()` loading) vs. true PEP 420 namespace
+   packaging (JaegerOS's package root carries zero code in every repo).
+   Both are real code changes spanning multiple repos — needs the
+   operator's pick before any further cross-repo integration staging
+   (gate 2, gate 3, or the engine repos' combined-install smoke test)
+   can proceed.
+1. ~~`cli/entry.py` composition shape~~ **RESOLVED by evidence (§7.1):** `cli/` moves entirely to JaegerAI; JaegerOS ships no CLI at all. No composition question remains.
 2. **`history/`, `revision_summaries/`, `library_review/`, `archive/` copy-forward** (§4): default used is "stays JROS-only, new repos start clean" (matches the template's replace-checklist framing) — confirm this is intended, since it means 0.1.0–0.8.1's development narrative doesn't travel with the code it describes.
 3. **`vision/` duplication vs. link-out** (§4): default is JaegerOS-canonical + other repos link out (matches `CONVENTIONS.md`'s own citation pattern) rather than copying `THREE_TIER_STRUCTURE.md` into all four.
 4. **Repo name `JaegerAI` vs `Jaeger-AI`**: `Jaeger-Template`'s README uses the hyphenated form in its Ecosystem-links section; `progress.md` and this task's brief both use the unhyphenated form for the repo already created on GitHub. Confirm the real name before Phase B sets remotes (staging uses `JaegerAI`, matching what's documented as already-created).
